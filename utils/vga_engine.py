@@ -5,12 +5,22 @@ from shapely.geometry import Point, LineString, Polygon, MultiLineString
 from shapely.strtree import STRtree
 
 
-def extract_dxf_walls(dxf_file_stream):
+import ezdxf
+from ezdxf import recover
+from shapely.geometry import LineString
+
+def extract_dxf_walls(dxf_file_path):
     """
-    Parses an uploaded DXF file stream and extracts wall line segments.
+    Parses a DXF file from disk and extracts wall line segments.
     Supports LINE, LWPOLYLINE, and POLYLINE entities.
     """
-    doc = ezdxf.readzip_or_file(dxf_file_stream) if hasattr(dxf_file_stream, 'name') and dxf_file_stream.name.endswith('.zip') else ezdxf.read(dxf_file_stream)
+    try:
+        # ezdxf.readfile is used for reading file paths on disk
+        doc = ezdxf.readfile(dxf_file_path)
+    except ezdxf.DXFStructureError:
+        # If the DXF has minor errors or non-standard formatting, attempt recovery
+        doc, _ = recover.readfile(dxf_file_path)
+
     msp = doc.modelspace()
     lines = []
 
@@ -22,11 +32,12 @@ def extract_dxf_walls(dxf_file_stream):
             if start != end:
                 lines.append(LineString([start, end]))
         elif dxftype in ['LWPOLYLINE', 'POLYLINE']:
+            # get_points('xy') yields (x, y) tuples
             points = [(p[0], p[1]) for p in entity.get_points('xy')]
             for i in range(len(points) - 1):
                 if points[i] != points[i + 1]:
                     lines.append(LineString([points[i], points[i + 1]]))
-            if entity.is_closed and len(points) > 1:
+            if getattr(entity, 'is_closed', False) and len(points) > 1:
                 lines.append(LineString([points[-1], points[0]]))
 
     return lines
