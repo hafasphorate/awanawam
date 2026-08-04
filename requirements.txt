@@ -1,0 +1,11 @@
+streamlit>=1.30.0
+streamlit-drawable-canvas
+ezdxf
+shapely
+opencv-python-headless
+ultralytics
+pandas
+numpy
+scipy
+plotly
+supabase
