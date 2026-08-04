@@ -15,6 +15,7 @@ from utils.vga_engine import (
     compute_isovist_metrics,
     extract_dxf_walls,
     generate_isovist_polygon,
+    process_cad_file,
 )
 
 st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
@@ -36,7 +37,7 @@ st.markdown(
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
+    "Upload a CAD floorplan (**DXF or DWG**), hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
 )
 
 # Sidebar Settings
@@ -52,7 +53,7 @@ door_snap_dist = st.sidebar.slider(
     "Doorway/Corridor Auto-Close Gap (mm)", min_value=100, max_value=3000, value=1200, step=100
 )
 
-uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
+uploaded_file = st.file_uploader("Upload CAD Floorplan (DXF or DWG)", type=["dxf", "dwg"])
 
 
 @st.cache_data
@@ -239,10 +240,10 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
 
 
 def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
-    """Renders VGA metric heatmap with original DXF floorplan wall lines underlaid."""
+    """Renders VGA metric heatmap with original CAD floorplan wall lines underlaid."""
     fig = go.Figure()
 
-    # 1. Underlay DXF Wall Lines
+    # 1. Underlay Wall Lines
     wall_x, wall_y = [], []
     for line in wall_lines:
         x, y = line.xy
@@ -257,7 +258,7 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
             line=dict(color="#666666", width=1.5),
             hoverinfo="none",
             showlegend=False,
-            name="DXF Walls",
+            name="CAD Walls",
         )
     )
 
@@ -300,15 +301,21 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
 
 
 if uploaded_file is not None:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_file:
+    file_ext = "." + uploaded_file.name.split(".")[-1].lower()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
-    with st.spinner("Parsing DXF wall geometry and building enclosed spatial zones..."):
-        wall_lines = extract_dxf_walls(tmp_path)
-        st.session_state["wall_lines"] = wall_lines
-        strtree = STRtree(wall_lines)
-        enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
+    with st.spinner("Parsing CAD wall geometry and building enclosed spatial zones..."):
+        try:
+            wall_lines = process_cad_file(tmp_path)
+            st.session_state["wall_lines"] = wall_lines
+            strtree = STRtree(wall_lines)
+            enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
+        except Exception as e:
+            st.error(f"❌ Error parsing CAD file: {e}")
+            st.stop()
 
     st.success(
         f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones."
