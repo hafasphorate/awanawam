@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, LineString, MultiLineString
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
@@ -20,7 +20,7 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, click directly inside any room zone to highlight it in green, and run spatial metrics strictly for selected areas."
+    "Upload a DXF floorplan, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
 )
 
 # Sidebar Settings
@@ -32,14 +32,35 @@ ray_step = st.sidebar.slider(
     "Ray Angle Step (Degrees)", min_value=1.0, max_value=15.0, value=2.0, step=0.5
 )
 ray_count = int(360 / ray_step)
+door_snap_dist = st.sidebar.slider(
+    "Doorway/Corridor Auto-Close Gap (mm)", min_value=100, max_value=3000, value=1200, step=100
+)
 
 uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 
 @st.cache_data
-def extract_enclosed_rooms(_wall_lines):
-    """Reconstructs enclosed room polygons from DXF line segments using Shapely polygonize."""
-    merged_walls = unary_union(_wall_lines)
+def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
+    """Reconstructs enclosed room polygons AND closes corridor/door gaps using snap lines."""
+    lines = list(_wall_lines)
+    
+    # Extract end points of wall lines to snap small gaps (corridors & open doors)
+    endpoints = []
+    for l in lines:
+        coords = list(l.coords)
+        endpoints.append(Point(coords[0]))
+        endpoints.append(Point(coords[-1]))
+
+    # Connect endpoints that are within snap_distance to close open corridors
+    closing_lines = []
+    for i in range(len(endpoints)):
+        for j in range(i + 1, len(endpoints)):
+            p1, p2 = endpoints[i], endpoints[j]
+            dist = p1.distance(p2)
+            if 10.0 < dist <= snap_distance:
+                closing_lines.append(LineString([p1, p2]))
+
+    merged_walls = unary_union(lines + closing_lines)
     enclosed_polygons = list(polygonize(merged_walls))
     return enclosed_polygons
 
@@ -156,8 +177,8 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    # 3. Add Dense Click Sensor Points across Map
-    grid_step = max(300, (maxx - minx) / 50)
+    # 3. Dense Sensor Grid for Click Detection
+    grid_step = max(200, (maxx - minx) / 60)
     gx = np.arange(minx, maxx, grid_step)
     gy = np.arange(miny, maxy, grid_step)
     g_xx, g_yy = np.meshgrid(gx, gy)
@@ -167,7 +188,7 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
             x=g_xx.flatten(),
             y=g_yy.flatten(),
             mode="markers",
-            marker=dict(size=14, color="rgba(0, 255, 128, 0.05)", symbol="circle"),
+            marker=dict(size=12, color="rgba(0, 0, 0, 0.001)"),
             hoverinfo="none",
             showlegend=False,
             name="sensor_grid",
@@ -200,10 +221,10 @@ if uploaded_file is not None:
     with st.spinner("Parsing DXF wall geometry and building enclosed spatial zones..."):
         wall_lines = extract_dxf_walls(tmp_path)
         strtree = STRtree(wall_lines)
-        enclosed_rooms = extract_enclosed_rooms(wall_lines)
+        enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
 
     st.success(
-        f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} enclosed spatial zones."
+        f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones (including corridor spaces)."
     )
 
     all_bounds = [w.bounds for w in wall_lines]
@@ -215,7 +236,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Single Click Selection Active:** Click anywhere inside a room zone to select it. Click additional rooms to combine multiple areas! Click 'Reset' to clear."
+        "💡 **Single Click Selection:** Click directly on a room or corridor to select it. Click 'Reset' to clear your selections."
     )
 
     selection_mode_option = st.radio(
@@ -244,27 +265,32 @@ if uploaded_file is not None:
             fig_plan,
             use_container_width=True,
             on_select="rerun",
-            selection_mode=["points", "box"],
+            selection_mode="points",
             key="floorplan_selector",
         )
 
         if chart_events and "selection" in chart_events:
             pts = chart_events["selection"].get("points", [])
             if pts:
+                # Capture cursor coordinate
                 click_x = pts[0]["x"]
                 click_y = pts[0]["y"]
                 click_point = Point(click_x, click_y)
 
                 matched_room = None
-                # Check direct containment
+                # 1. Direct containment check
                 for room in enclosed_rooms:
                     if room.contains(click_point):
                         matched_room = room
                         break
 
-                # Fallback to nearest centroid distance if click lands on boundary edge
-                if not matched_room and enclosed_rooms:
-                    matched_room = min(enclosed_rooms, key=lambda r: r.distance(click_point))
+                # 2. Strict buffer check (50mm tolerance) for clicks near inner edges
+                if not matched_room:
+                    buffered_click = click_point.buffer(50)
+                    for room in enclosed_rooms:
+                        if room.intersects(buffered_click):
+                            matched_room = room
+                            break
 
                 if matched_room:
                     if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
