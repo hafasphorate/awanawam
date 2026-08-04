@@ -1,17 +1,13 @@
-import base64
-import io
 import tempfile
 import time
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
 import plotly.express as px
+import plotly.graph_objects as go
 from shapely.geometry import Point, Polygon
 from shapely.strtree import STRtree
 import streamlit as st
-from streamlit_drawable_canvas import st_canvas
 
 from utils.vga_engine import (
     compute_graph_vga_metrics,
@@ -24,7 +20,8 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, select public analysis zones directly on the plan preview, and compute spatial metrics."
+    "Upload a DXF floorplan, select analysis zones on the interactive plot, and"
+    " compute spatial metrics."
 )
 
 # Sidebar Settings
@@ -40,35 +37,44 @@ ray_count = int(360 / ray_step)
 uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 
-def create_floorplan_base64(wall_lines, width_px=700, height_px=500):
-  """Renders DXF wall segments to a Base64-encoded PNG string to force canvas rendering."""
-  fig, ax = plt.subplots(figsize=(7, 5), dpi=100)
-  fig.patch.set_facecolor("#1E1E1E")
-  ax.set_facecolor("#1E1E1E")
+def render_interactive_floorplan(wall_lines):
+  """Builds a native Plotly figure displaying DXF wall lines with polygon drawing controls enabled."""
+  fig = go.Figure()
 
+  # Plot wall line segments
   for line in wall_lines:
     x, y = line.xy
-    ax.plot(x, y, color="#FFFFFF", linewidth=1.2)
+    fig.add_trace(
+        go.Scatter(
+            x=list(x),
+            y=list(y),
+            mode="lines",
+            line=dict(color="#3388ff", width=1.5),
+            hoverinfo="none",
+            showlegend=False,
+        )
+    )
 
-  ax.axis("off")
-  ax.set_aspect("equal", adjustable="datalim")
-  plt.tight_layout(pad=0)
-
-  buf = io.BytesIO()
-  plt.savefig(
-      buf,
-      format="png",
-      facecolor=fig.get_facecolor(),
-      edgecolor="none",
-      bbox_inches="tight",
-      pad_inches=0,
+  fig.update_layout(
+      template="plotly_dark",
+      xaxis=dict(
+          title="X (mm)",
+          showgrid=True,
+          zeroline=False,
+          scaleanchor="y",
+          scaleratio=1,
+      ),
+      yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
+      height=600,
+      margin=dict(l=20, r=20, t=40, b=20),
+      # Enable drawing modes on Plotly toolbar
+      dragmode="drawclosedpath",
+      newshape=dict(
+          fillcolor="rgba(0, 255, 0, 0.25)",
+          line=dict(color="#00FF00", width=2),
+      ),
   )
-  plt.close(fig)
-  buf.seek(0)
-
-  # Encode directly to base64 Data URI
-  img_b64 = base64.b64encode(buf.getvalue()).decode()
-  return f"data:image/png;base64,{img_b64}", Image.open(buf)
+  return fig
 
 
 if uploaded_file is not None:
@@ -87,15 +93,14 @@ if uploaded_file is not None:
   miny = min(b[1] for b in all_bounds)
   maxx = max(b[2] for b in all_bounds)
   maxy = max(b[3] for b in all_bounds)
-  width, height = maxx - minx, maxy - miny
 
   st.subheader("Interactive Public Space Selection")
   st.info(
-      "Draw a polygon over the floorplan preview to define your public space"
-      " analysis zone (or choose 'Full Floorplan')."
+      "💡 **How to select an area:** Use the **Draw Closed Path** tool (pentagon"
+      " icon on top right toolbar) to draw your public space boundary on top of"
+      " the floorplan lines!"
   )
 
-  bg_b64, bg_pil = create_floorplan_base64(wall_lines)
   selection_mode = st.radio(
       "Selection Mode:",
       ["Full Floorplan", "Draw Polygon Boundary"],
@@ -105,30 +110,37 @@ if uploaded_file is not None:
   selected_polygons = []
 
   if selection_mode == "Draw Polygon Boundary":
-    # Pass PIL image to background_image AND base64 string to guarantee loading
-    canvas_result = st_canvas(
-        fill_color="rgba(0, 255, 0, 0.25)",
-        stroke_width=2,
-        stroke_color="#00FF00",
-        background_image=bg_pil,
-        height=500,
-        width=700,
-        drawing_mode="polygon",
-        key="canvas_floorplan_v2",
+    fig_plan = render_interactive_floorplan(wall_lines)
+
+    # Capture user interaction events directly from Streamlit Plotly Chart
+    chart_events = st.plotly_chart(
+        fig_plan,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="shapes",
     )
 
-    if canvas_result.json_data is not None:
-      for obj in canvas_result.json_data["objects"]:
-        if obj["type"] == "path":
-          pts = []
-          for p in obj["path"]:
-            if len(p) >= 3 and (p[0] == "M" or p[0] == "L"):
-              # Scale canvas coordinates to floorplan DXF world coordinates (mm)
-              scaled_x = minx + (p[1] / 700.0) * width
-              scaled_y = miny + ((500.0 - p[2]) / 500.0) * height
-              pts.append((scaled_x, scaled_y))
-          if len(pts) >= 3:
-            selected_polygons.append(Polygon(pts))
+    # Process drawn shapes from selection payload
+    if chart_events and "selection" in chart_events:
+      shapes = chart_events["selection"].get("shapes", [])
+      for shape in shapes:
+        if "path" in shape:
+          # Convert SVG path string into geometric polygon coordinates
+          raw_path = shape["path"]
+          coords = []
+          for sub in raw_path.replace("M", "").replace("Z", "").split("L"):
+            if sub.strip():
+              parts = sub.strip().split(",")
+              if len(parts) == 2:
+                coords.append((float(parts[0]), float(parts[1])))
+          if len(coords) >= 3:
+            selected_polygons.append(Polygon(coords))
+
+    if selected_polygons:
+      st.success(
+          f"Captured {len(selected_polygons)} drawn zone boundary"
+          " polygon(s)."
+      )
 
   if st.button("Run Visibility Analysis"):
     x_coords = np.arange(minx, maxx, grid_size)
@@ -148,7 +160,7 @@ if uploaded_file is not None:
 
     if total_points == 0:
       st.warning(
-          "No grid points generated. Adjust your boundary selection or grid"
+          "No grid points generated. Check your drawn polygon selection or grid"
           " size."
       )
     else:
