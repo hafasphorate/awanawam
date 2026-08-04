@@ -50,19 +50,17 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
     if num_nodes == 0:
         return vga_results
 
-    # Build adjacency matrix
     adj_matrix = np.zeros((num_nodes, num_nodes), dtype=bool)
     start_time = time.time()
 
     for i in range(num_nodes):
-        pt_i = Point(vga_results[i]["x"], vga_results[i]["y"])
         poly_i = isovist_polys[i]
 
         for j in range(i + 1, num_nodes):
             pt_j = Point(vga_results[j]["x"], vga_results[j]["y"])
             poly_j = isovist_polys[j]
+            pt_i = Point(vga_results[i]["x"], vga_results[i]["y"])
 
-            # Mutual visibility condition
             if poly_i.contains(pt_j) or poly_j.contains(pt_i):
                 adj_matrix[i, j] = True
                 adj_matrix[j, i] = True
@@ -81,7 +79,6 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
                 f"⌛ **Computing Graph Topology (Integration & Entropy)...** Node {completed}/{num_nodes} ({int(progress_ratio * 100)}%) | **Est. remaining:** `{time_str}`"
             )
 
-    # Calculate Mean Depth and Integration for each node
     for i in range(num_nodes):
         visited = {i: 0}
         queue = [i]
@@ -102,7 +99,6 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
 
         if reachable_nodes > 1:
             mean_depth = total_depth / (reachable_nodes - 1)
-            # Integration metric (inverse of Relative Asymmetry)
             integration = 1.0 / (2.0 * (mean_depth - 1.0) / max(1, reachable_nodes - 2)) if mean_depth > 1 else 0.0
         else:
             mean_depth = 0.0
@@ -115,10 +111,28 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
 
 
 def render_interactive_floorplan(wall_lines, selected_polys=None):
-    """Builds interactive Plotly figure highlighting all selected room zones in green."""
+    """Builds interactive Plotly figure highlighting all selected room zones in translucent green."""
     fig = go.Figure()
 
-    # Draw DXF Wall Lines
+    # 1. First Draw Selected Highlight Polygons (behind walls for clean borders)
+    if selected_polys:
+        for idx, poly in enumerate(selected_polys):
+            x_poly, y_poly = poly.exterior.xy
+            fig.add_trace(
+                go.Scatter(
+                    x=list(x_poly),
+                    y=list(y_poly),
+                    mode="lines",
+                    fill="toself",
+                    fillcolor="rgba(0, 230, 118, 0.45)",
+                    line=dict(color="#00FF66", width=2.5),
+                    name=f"Selected Zone {idx + 1}",
+                    hoverinfo="name",
+                    showlegend=True,
+                )
+            )
+
+    # 2. Draw DXF Wall Lines
     for line in wall_lines:
         x, y = line.xy
         fig.add_trace(
@@ -131,22 +145,6 @@ def render_interactive_floorplan(wall_lines, selected_polys=None):
                 showlegend=False,
             )
         )
-
-    # Highlight all selected room boundaries
-    if selected_polys:
-        for idx, poly in enumerate(selected_polys):
-            x_poly, y_poly = poly.exterior.xy
-            fig.add_trace(
-                go.Scatter(
-                    x=list(x_poly),
-                    y=list(y_poly),
-                    fill="toself",
-                    fillcolor="rgba(0, 255, 0, 0.35)",
-                    line=dict(color="#00FF00", width=2),
-                    name=f"Zone {idx + 1}",
-                    hoverinfo="name",
-                )
-            )
 
     fig.update_layout(
         template="plotly_dark",
@@ -188,7 +186,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Multi-Room Selection Active:** Click anywhere inside a room to select it. Click additional rooms to select multiple areas at once! Highlighted green areas will be analyzed."
+        "💡 **Multi-Room Selection:** Click inside any room. The detected zone will immediately highlight in green! You can click multiple rooms."
     )
 
     selection_mode_option = st.radio(
@@ -200,7 +198,6 @@ if uploaded_file is not None:
     if "selected_rooms" not in st.session_state:
         st.session_state["selected_rooms"] = []
 
-    # Reset Selection Control
     col1, col2 = st.columns([1, 4])
     with col1:
         if st.button("🔴 Reset Selected Regions"):
@@ -217,6 +214,7 @@ if uploaded_file is not None:
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
+            key="floorplan_selector",
         )
 
         if chart_events and "selection" in chart_events:
@@ -233,12 +231,11 @@ if uploaded_file is not None:
                         break
 
                 if matched_room:
-                    # Prevent duplicate additions
                     if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
                         st.session_state["selected_rooms"].append(matched_room)
                         st.rerun()
                 else:
-                    st.warning("Click fell outside valid room boundaries. Click inside an open room area.")
+                    st.warning("Click fell outside valid room boundaries. Click cleanly inside an open room zone.")
 
         if selected_polygons:
             total_area = sum(p.area for p in selected_polygons) / 1e6
@@ -247,7 +244,6 @@ if uploaded_file is not None:
             )
 
     if st.button("Run Visibility Analysis"):
-        # Optimization: Restrict grid bounds strictly to selected polygon bounding boxes
         if selected_polygons and selection_mode_option != "Full Floorplan":
             combined_bounds = unary_union(selected_polygons).bounds
             calc_minx, calc_miny, calc_maxx, calc_maxy = combined_bounds
@@ -309,7 +305,7 @@ if uploaded_file is not None:
                         f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
                     )
 
-            # Phase 2: Topology Metrics with Real-Time Progress Bar
+            # Phase 2: Topology Metrics with Progress Tracker
             if vga_results:
                 final_vga_results = compute_graph_topology_with_progress(
                     vga_results, isovist_polys, status_text, progress_bar
