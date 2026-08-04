@@ -8,27 +8,25 @@ from shapely.strtree import STRtree
 import os
 import aspose.cad as cad
 
+import os
+import tempfile
+
 def convert_dwg_to_dxf(dwg_path: str) -> str:
-    """Converts a .dwg file to .dxf in pure Python without external system binaries."""
+    """Converts a .dwg file to .dxf using lightweight dwg2dxf python bindings."""
     output_dxf_path = dwg_path.rsplit(".", 1)[0] + "_converted.dxf"
     
     try:
-        # Load the DWG file
-        image = cad.Image.load(dwg_path)
-        
-        # Save as DXF
-        cad_options = cad.imageoptions.CadRasterizationOptions()
-        dxf_options = cad.imageoptions.DxfOptions()
-        
-        image.save(output_dxf_path, dxf_options)
+        from dwg2dxf import dwg2dxf
+        dwg2dxf(dwg_path, output_dxf_path)
         
         if os.path.exists(output_dxf_path):
             return output_dxf_path
         else:
-            raise RuntimeError("DWG conversion failed: Output DXF file was not generated.")
-            
+            raise RuntimeError("DWG conversion failed: Output file missing.")
     except Exception as e:
-        raise RuntimeError(f"Failed to process DWG file: {e}") from e
+        raise RuntimeError(
+            f"DWG conversion failed: {e}. Please ensure the DWG file is valid or try converting it to DXF first."
+        ) from e
 
 
 def process_cad_file(file_path: str):

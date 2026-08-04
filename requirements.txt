@@ -4,4 +4,4 @@ shapely
 plotly
 pandas
 numpy
-aspose-cad
+dwg2dxf-py
