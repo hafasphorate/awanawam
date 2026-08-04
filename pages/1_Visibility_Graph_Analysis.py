@@ -14,10 +14,24 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown("Upload a floorplan DXF file, define grid resolution, and analyze spatial visibility metrics.")
 
-# Sidebar Configuration
+# Sidebar Configuration - Update Ray Density Slider
 st.sidebar.header("Analysis Settings")
-grid_size = st.sidebar.number_input("Grid Dimension (mm)", min_value=200, max_value=5000, value=1000, step=100)
-ray_count = st.sidebar.slider("Ray Density (Degrees / Ray)", min_value=36, max_value=360, value=72, step=18)
+grid_size = st.sidebar.number_input(
+    "Grid Dimension (mm)", min_value=200, max_value=5000, value=1000, step=100
+)
+
+# Set ray step in degrees (1° = High Precision / 360 rays, 5° = Balanced / 72 rays)
+ray_step = st.sidebar.slider(
+    "Ray Angle Step (Degrees)",
+    min_value=1.0,
+    max_value=15.0,
+    value=2.0,
+    step=0.5,
+    help="Smaller values cast more rays for higher visual accuracy (e.g., 1.0° casts 360 rays).",
+)
+
+# Convert degree step into total ray count for vga_engine
+ray_count = int(360 / ray_step)
 
 uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
