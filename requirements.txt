@@ -4,3 +4,4 @@ shapely
 plotly
 pandas
 numpy
+opencv-python-headless
