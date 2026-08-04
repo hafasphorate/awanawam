@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from shapely.geometry import Point, MultiLineString, Polygon
+from shapely.geometry import Point, Polygon
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
@@ -38,9 +38,9 @@ uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 
 @st.cache_data
-def extract_enclosed_rooms(wall_lines):
+def extract_enclosed_rooms(_wall_lines):
     """Reconstructs enclosed room polygons from DXF line segments using Shapely polygonize."""
-    merged_walls = unary_union(wall_lines)
+    merged_walls = unary_union(_wall_lines)
     enclosed_polygons = list(polygonize(merged_walls))
     return enclosed_polygons
 
@@ -129,11 +129,9 @@ if uploaded_file is not None:
     selected_polygon = None
 
     if selection_mode_option == "Click Inside Room to Select Zone":
-        # Check if we have a previously clicked room saved in session state
         active_poly = st.session_state.get("active_selected_room", None)
         fig_plan = render_interactive_floorplan(wall_lines, selected_poly=active_poly)
 
-        # Capture single-click events on the chart
         chart_events = st.plotly_chart(
             fig_plan,
             use_container_width=True,
@@ -148,7 +146,6 @@ if uploaded_file is not None:
                 click_y = pts[0]["y"]
                 click_point = Point(click_x, click_y)
 
-                # Search through auto-generated rooms to find which room contains the clicked point
                 matched_room = None
                 for room in enclosed_rooms:
                     if room.contains(click_point):
@@ -248,31 +245,31 @@ if uploaded_file is not None:
                     "Could not extract valid isovists. Points may be inside wall geometry."
                 )
 
-    if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
-        df = st.session_state["vga_df"]
+  if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
+      df = st.session_state["vga_df"]
 
-        st.subheader("VGA Heatmap Visualizer")
-        available_metrics = [c for c in df.columns if c not in ["x", "y"]]
+      st.subheader("VGA Heatmap Visualizer")
+      available_metrics = [c for c in df.columns if c not in ["x", "y"]]
 
-        if available_metrics:
-            selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
+      if available_metrics:
+          selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
 
-            if selected_metric in df.columns:
-                fig = px.scatter(
-                    df,
-                    x="x",
-                    y="y",
-                    color=selected_metric,
-                    color_continuous_scale="Viridis",
-                    title=f"Spatial Map: {selected_metric}",
-                )
-                fig.update_yaxes(scaleanchor="x", scaleratio=1)
-                st.plotly_chart(fig, use_container_width=True)
+          if selected_metric in df.columns:
+              fig = px.scatter(
+                  df,
+                  x="x",
+                  y="y",
+                  color=selected_metric,
+                  color_continuous_scale="Viridis",
+                  title=f"Spatial Map: {selected_metric}",
+              )
+              fig.update_yaxes(scaleanchor="x", scaleratio=1)
+              st.plotly_chart(fig, use_container_width=True)
 
-            json_data = df.to_json(orient="records")
-            st.download_button(
-                label="📥 Download Complete VGA Metrics JSON",
-                data=json_data,
-                file_name="vga_analysis_results.json",
-                mime="application/json",
-            )
+          json_data = df.to_json(orient="records")
+          st.download_button(
+              label="📥 Download Complete VGA Metrics JSON",
+              data=json_data,
+              file_name="vga_analysis_results.json",
+              mime="application/json",
+          )
