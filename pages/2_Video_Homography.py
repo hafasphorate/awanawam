@@ -3,8 +3,9 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 from PIL import Image
-from utils.tracking_engine import HomographyCalibrator
+from utils.tracking_engine import HomographyCalibrator, extract_frame_from_video
 from views.tracking_view import render_tracking_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
@@ -16,6 +17,8 @@ if "cad_points" not in st.session_state:
     st.session_state.cad_points = []
 if "homography_matrix" not in st.session_state:
     st.session_state.homography_matrix = None
+if "selected_frame_idx" not in st.session_state:
+    st.session_state.selected_frame_idx = 0
 
 st.title("📹 Module 2: Video Homography & Person Tracking")
 
@@ -34,7 +37,10 @@ with tab_calib:
 
     col_file, col_act = st.columns([2, 1])
     with col_file:
-        uploaded_frame = st.file_uploader("Upload Camera Reference Frame", type=["png", "jpg", "jpeg"])
+        uploaded_video = st.file_uploader(
+            "Upload Surveillance Video (.mp4, .avi, .mov)", 
+            type=["mp4", "avi", "mov"]
+        )
     with col_act:
         st.write("### Actions")
         if st.button("🗑️ Clear Calibration Points", use_container_width=True):
@@ -43,120 +49,199 @@ with tab_calib:
             st.session_state.homography_matrix = None
             st.rerun()
 
-    if not uploaded_frame:
-        st.info("👆 Upload a camera screenshot above to begin calibration.")
+    if not uploaded_video:
+        st.info("👆 Upload a surveillance video file above to begin calibration.")
     else:
-        camera_img = Image.open(uploaded_frame)
-        img_w, img_h = camera_img.size
-
-        col_cam, col_cad = st.columns(2)
-
-        # 1. Camera View Picker
-        with col_cam:
-            st.markdown("##### 1. Camera View (Head Level Pixels)")
-            fig_cam = go.Figure()
-            fig_cam.add_trace(go.Image(z=camera_img))
-
-            if st.session_state.img_points:
-                u_pts, v_pts = zip(*st.session_state.img_points)
-                fig_cam.add_trace(go.Scatter(
-                    x=u_pts, y=v_pts, mode="markers+text",
-                    marker=dict(color="red", size=12, symbol="cross"),
-                    text=[f"P{i+1}" for i in range(len(u_pts))],
-                    textposition="top right", name="Selected Heads"
-                ))
-
-            fig_cam.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0), height=420,
-                xaxis=dict(showgrid=False, range=[0, img_w]),
-                yaxis=dict(showgrid=False, range=[img_h, 0]),
-                clickmode="event+select"
+        # Frame extraction controller
+        col_frame_ctrl, col_frame_info = st.columns([3, 1])
+        with col_frame_ctrl:
+            frame_idx = st.slider(
+                "Select Frame for Calibration Target",
+                min_value=0,
+                max_value=1000,
+                value=st.session_state.selected_frame_idx,
+                step=5,
+                help="Slide to pick a clear frame where reference head-height landmarks are unobstructed."
             )
+            if frame_idx != st.session_state.selected_frame_idx:
+                st.session_state.selected_frame_idx = frame_idx
+                st.rerun()
 
-            cam_event = st.plotly_chart(
-                fig_cam, on_select="rerun", selection_mode="points",
-                use_container_width=True, key="plotly_cam"
-            )
+        camera_frame_rgb = extract_frame_from_video(
+            uploaded_video, 
+            frame_number=st.session_state.selected_frame_idx
+        )
 
-            if cam_event and "selection" in cam_event and cam_event["selection"]["points"]:
-                pt = cam_event["selection"]["points"][0]
-                nu, nv = round(pt["x"], 2), round(pt["y"], 2)
-                if not st.session_state.img_points or (nu, nv) != st.session_state.img_points[-1]:
-                    if len(st.session_state.img_points) == len(st.session_state.cad_points):
-                        st.session_state.img_points.append((nu, nv))
-                        st.rerun()
+        if camera_frame_rgb is None:
+            st.error("Failed to extract frame from video. Please try another frame index or video format.")
+        else:
+            img_h, img_w, _ = camera_frame_rgb.shape
 
-        # 2. DXF CAD Picker
-        with col_cad:
-            st.markdown("##### 2. CAD Floorplan (World X, Y)")
-            fig_cad = go.Figure()
+            col_cam, col_cad = st.columns(2)
+
+            # ----------------------------------------------------
+            # 1. Camera View Picker
+            # ----------------------------------------------------
+            with col_cam:
+                st.markdown("##### 1. Camera View (Head Level Pixels)")
+                
+                fig_cam = px.imshow(camera_frame_rgb)
+                
+                # Update layout for proper crosshair cursor and click behavior
+                fig_cam.update_layout(
+                    dragmode="drawcross",
+                    hovermode="closest",
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    height=450,
+                    xaxis=dict(showgrid=False, zeroline=False, range=[0, img_w]),
+                    yaxis=dict(showgrid=False, zeroline=False, range=[img_h, 0]),
+                    clickmode="event+select"
+                )
+
+                # Overlay selected camera points with distinct red crosshairs
+                if st.session_state.img_points:
+                    u_pts, v_pts = zip(*st.session_state.img_points)
+                    fig_cam.add_trace(go.Scatter(
+                        x=list(u_pts), 
+                        y=list(v_pts), 
+                        mode="markers+text",
+                        marker=dict(
+                            color="red", 
+                            size=14, 
+                            symbol="cross",
+                            line=dict(width=2, color="white")
+                        ),
+                        text=[f"P{i+1}" for i in range(len(u_pts))],
+                        textposition="top right", 
+                        name="Selected Camera Heads"
+                    ))
+
+                cam_event = st.plotly_chart(
+                    fig_cam, 
+                    on_select="rerun", 
+                    selection_mode="points",
+                    use_container_width=True, 
+                    key="plotly_cam"
+                )
+
+                # Process Camera Click Event
+                if cam_event and "selection" in cam_event and cam_event["selection"]["points"]:
+                    pt = cam_event["selection"]["points"][0]
+                    nu, nv = round(pt["x"], 2), round(pt["y"], 2)
+                    
+                    # Ensure alternating pick order (Camera -> CAD)
+                    if not st.session_state.img_points or len(st.session_state.img_points) == len(st.session_state.cad_points):
+                        if not st.session_state.img_points or (nu, nv) != st.session_state.img_points[-1]:
+                            st.session_state.img_points.append((nu, nv))
+                            st.rerun()
+
+                # Manual Point Entry Expander for Camera
+                with st.expander("➕ Manual Pixel Coordinate Input"):
+                    c_u, c_v = st.columns(2)
+                    manual_u = c_u.number_input("Pixel U (X)", min_value=0.0, max_value=float(img_w), value=0.0, key="manual_u")
+                    manual_v = c_v.number_input("Pixel V (Y)", min_value=0.0, max_value=float(img_h), value=0.0, key="manual_v")
+                    if st.button("Add Camera Point Manually"):
+                        if len(st.session_state.img_points) == len(st.session_state.cad_points):
+                            st.session_state.img_points.append((round(manual_u, 2), round(manual_v, 2)))
+                            st.rerun()
+
+            # ----------------------------------------------------
+            # 2. DXF CAD Picker
+            # ----------------------------------------------------
+            with col_cad:
+                st.markdown("##### 2. CAD Floorplan (World X, Y)")
+                fig_cad = go.Figure()
+                
+                dxf_walls = st.session_state.get("dxf_walls", [])
+                for wall in dxf_walls:
+                    wx, wy = wall.exterior.xy
+                    fig_cad.add_trace(go.Scatter(
+                        x=list(wx), y=list(wy), mode="lines", 
+                        line=dict(color="black", width=1.5), showlegend=False
+                    ))
+
+                if st.session_state.cad_points:
+                    cx_pts, cy_pts = zip(*st.session_state.cad_points)
+                    fig_cad.add_trace(go.Scatter(
+                        x=list(cx_pts), y=list(cy_pts), mode="markers+text",
+                        marker=dict(
+                            color="blue", 
+                            size=12, 
+                            symbol="circle",
+                            line=dict(width=1.5, color="white")
+                        ),
+                        text=[f"P{i+1}" for i in range(len(cx_pts))],
+                        textposition="top right", name="Selected CAD Points"
+                    ))
+
+                fig_cad.update_layout(
+                    dragmode="drawcross",
+                    hovermode="closest",
+                    margin=dict(l=0, r=0, t=10, b=0), 
+                    height=450,
+                    yaxis=dict(scaleanchor="x", scaleratio=1),
+                    clickmode="event+select"
+                )
+
+                cad_event = st.plotly_chart(
+                    fig_cad, 
+                    on_select="rerun", 
+                    selection_mode="points",
+                    use_container_width=True, 
+                    key="plotly_cad"
+                )
+
+                # Process CAD Click Event
+                if cad_event and "selection" in cad_event and cad_event["selection"]["points"]:
+                    pt = cad_event["selection"]["points"][0]
+                    nx, ny = round(pt["x"], 2), round(pt["y"], 2)
+                    if len(st.session_state.cad_points) < len(st.session_state.img_points):
+                        if not st.session_state.cad_points or (nx, ny) != st.session_state.cad_points[-1]:
+                            st.session_state.cad_points.append((nx, ny))
+                            st.rerun()
+
+                # Manual Point Entry Expander for CAD
+                with st.expander("➕ Manual CAD Coordinate Input"):
+                    c_x, c_y = st.columns(2)
+                    manual_x = c_x.number_input("CAD X (m)", value=0.0, key="manual_cad_x")
+                    manual_y = c_y.number_input("CAD Y (m)", value=0.0, key="manual_cad_y")
+                    if st.button("Add CAD Point Manually"):
+                        if len(st.session_state.cad_points) < len(st.session_state.img_points):
+                            st.session_state.cad_points.append((round(manual_x, 2), round(manual_y, 2)))
+                            st.rerun()
+
+            # ----------------------------------------------------
+            # Calibration Pair Table & Solver
+            # ----------------------------------------------------
+            st.markdown("---")
+            n_img, n_cad = len(st.session_state.img_points), len(st.session_state.cad_points)
             
-            dxf_walls = st.session_state.get("dxf_walls", [])
-            for wall in dxf_walls:
-                wx, wy = wall.exterior.xy
-                fig_cad.add_trace(go.Scatter(
-                    x=list(wx), y=list(wy), mode="lines", 
-                    line=dict(color="black", width=1.5), showlegend=False
-                ))
+            if n_img > n_cad:
+                st.warning(f"📍 Point P{n_img} clicked on Camera view. Now click the matching point on the CAD plan.")
+            elif n_img == n_cad and n_img < 4:
+                st.info(f"📍 Selected {n_img}/4 point pairs. Need at least {4 - n_img} more pair(s).")
+            elif n_img == n_cad and n_img >= 4:
+                st.success(f"✅ Ready! {n_img} head-height point pairs selected.")
 
-            if st.session_state.cad_points:
-                cx_pts, cy_pts = zip(*st.session_state.cad_points)
-                fig_cad.add_trace(go.Scatter(
-                    x=cx_pts, y=cy_pts, mode="markers+text",
-                    marker=dict(color="blue", size=12, symbol="circle"),
-                    text=[f"P{i+1}" for i in range(len(cx_pts))],
-                    textposition="top right", name="Selected CAD Points"
-                ))
+            if n_img > 0:
+                rows = []
+                for i in range(max(n_img, n_cad)):
+                    u, v = st.session_state.img_points[i] if i < n_img else ("-", "-")
+                    x, y = st.session_state.cad_points[i] if i < n_cad else ("-", "-")
+                    rows.append({"Point": f"P{i+1}", "Camera u (px)": u, "Camera v (px)": v, "CAD X (m)": x, "CAD Y (m)": y})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-            fig_cad.update_layout(
-                margin=dict(l=0, r=0, t=10, b=0), height=420,
-                yaxis=dict(scaleanchor="x", scaleratio=1),
-                clickmode="event+select"
-            )
-
-            cad_event = st.plotly_chart(
-                fig_cad, on_select="rerun", selection_mode="points",
-                use_container_width=True, key="plotly_cad"
-            )
-
-            if cad_event and "selection" in cad_event and cad_event["selection"]["points"]:
-                pt = cad_event["selection"]["points"][0]
-                nx, ny = round(pt["x"], 2), round(pt["y"], 2)
-                if len(st.session_state.cad_points) < len(st.session_state.img_points):
-                    if not st.session_state.cad_points or (nx, ny) != st.session_state.cad_points[-1]:
-                        st.session_state.cad_points.append((nx, ny))
-                        st.rerun()
-
-        # Calibration Pair Table
-        st.markdown("---")
-        n_img, n_cad = len(st.session_state.img_points), len(st.session_state.cad_points)
-        
-        if n_img > n_cad:
-            st.warning(f"📍 Point P{n_img} clicked on Camera view. Now click the matching point on the CAD plan.")
-        elif n_img == n_cad and n_img < 4:
-            st.info(f"📍 Selected {n_img}/4 point pairs. Need at least {4 - n_img} more pair(s).")
-        elif n_img == n_cad and n_img >= 4:
-            st.success(f"✅ Ready! {n_img} head-height point pairs selected.")
-
-        if n_img > 0:
-            rows = []
-            for i in range(max(n_img, n_cad)):
-                u, v = st.session_state.img_points[i] if i < n_img else ("-", "-")
-                x, y = st.session_state.cad_points[i] if i < n_cad else ("-", "-")
-                rows.append({"Point": f"P{i+1}", "Camera u": u, "Camera v": v, "CAD X": x, "CAD Y": y})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-        # Solve Matrix Button
-        if n_img >= 4 and n_img == n_cad:
-            if st.button("⚡ Solve Homography Matrix (H)", type="primary", use_container_width=True):
-                try:
-                    calibrator = HomographyCalibrator()
-                    H = calibrator.compute_homography(st.session_state.img_points, st.session_state.cad_points)
-                    st.session_state.homography_matrix = H
-                    st.success("Homography Matrix successfully computed and saved!")
-                    st.code(np.array2string(H, precision=4, suppress_small=True))
-                except Exception as e:
-                    st.error(f"Failed to calculate Homography Matrix: {e}")
+            # Solve Matrix Button
+            if n_img >= 4 and n_img == n_cad:
+                if st.button("⚡ Solve Homography Matrix (H)", type="primary", use_container_width=True):
+                    try:
+                        calibrator = HomographyCalibrator()
+                        H = calibrator.compute_homography(st.session_state.img_points, st.session_state.cad_points)
+                        st.session_state.homography_matrix = H
+                        st.success("Homography Matrix successfully computed and saved!")
+                        st.code(np.array2string(H, precision=4, suppress_small=True))
+                    except Exception as e:
+                        st.error(f"Failed to calculate Homography Matrix: {e}")
 
 # ==========================================
 # TAB 2: OCCUPANCY TRACKING VIEW
