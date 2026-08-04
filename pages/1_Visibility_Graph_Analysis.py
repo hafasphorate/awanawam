@@ -18,6 +18,21 @@ from utils.vga_engine import (
 
 st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
+# Force '+' crosshair cursor on interactive Plotly floorplan canvas
+st.markdown(
+    """
+    <style>
+    .js-plotly-plot .plotly .draglayer,
+    .js-plotly-plot .plotly .nsewdrag,
+    .js-plotly-plot .plotly .cursor-crosshair, 
+    .js-plotly-plot .plotly .drag {
+        cursor: crosshair !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
     "Upload a DXF floorplan, hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
@@ -44,7 +59,7 @@ def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     """Reconstructs enclosed room polygons, closes corridor gaps, and subtracts interior room holes from surrounding corridors."""
     lines = list(_wall_lines)
     
-    # Extract end points to snap open doorways and corridor ends
+    # Extract endpoints to snap open doorways and corridor gaps
     endpoints = []
     for l in lines:
         coords = list(l.coords)
@@ -65,21 +80,20 @@ def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     if not raw_polygons:
         return []
 
-    # Sort polygons by area (smallest first) so inner rooms are processed before surrounding corridors
+    # Sort polygons by area (smallest first) so inner rooms are processed before outer corridors
     raw_polygons.sort(key=lambda p: p.area)
 
     cleaned_polygons = []
     for i, poly in enumerate(raw_polygons):
-        # Find any smaller polygons completely contained within this polygon (interior holes/rooms)
+        # Find smaller polygons completely contained within this polygon (interior holes)
         holes = []
         for j in range(i):
             smaller_poly = raw_polygons[j]
-            # If smaller_poly is inside poly, treat it as a hole (cutout)
             if poly.contains(smaller_poly.centroid) and poly.area > smaller_poly.area:
                 holes.append(smaller_poly.exterior.coords)
 
         if holes:
-            # Construct polygon with interior holes cut out
+            # Construct polygon with interior room holes cut out
             donut_poly = Polygon(poly.exterior.coords, holes=holes)
             cleaned_polygons.append(donut_poly)
         else:
@@ -164,7 +178,7 @@ def poly_to_svg_path(poly):
         path += f"L {x},{y} "
     path += "Z "
 
-    # Cut out interior holes (for corridors surrounding rooms)
+    # Cut out interior holes (for corridors surrounding inner rooms)
     for interior in poly.interiors:
         ix, iy = interior.xy
         icoords = list(zip(ix, iy))
@@ -177,7 +191,7 @@ def poly_to_svg_path(poly):
 
 
 def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
-    """Builds interactive Plotly figure configured with crosshair cursor."""
+    """Builds interactive Plotly figure configured with custom crosshair cursor."""
     fig = go.Figure()
     minx, miny, maxx, maxy = bounds
 
@@ -229,7 +243,7 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    # Fix Cursor: Force 'crosshair' (+) cursor instead of 'pan' (four-arrow) cursor
+    # Valid Plotly dragmode setting
     fig.update_layout(
         template="plotly_dark",
         xaxis=dict(
@@ -243,7 +257,7 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
         clickmode="event+select",
-        dragmode="crosshair",  # Forces '+' cursor mode on canvas hover
+        dragmode=False,
         hovermode="closest",
     )
     return fig
@@ -272,7 +286,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor will now select strictly the corridor and skip enclosed interior rooms!"
+        "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor will select strictly the corridor and skip enclosed interior rooms!"
     )
 
     selection_mode_option = st.radio(
