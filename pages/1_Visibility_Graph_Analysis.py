@@ -9,7 +9,7 @@ from PIL import Image
 import io
 from shapely.geometry import Point, Polygon
 from shapely.strtree import STRtree
-from streamlit_drawable_canvas_fix import st_canvas
+from streamlit_drawable_canvas import st_canvas
 
 from utils.vga_engine import (
     extract_dxf_walls, 
@@ -21,7 +21,7 @@ from utils.vga_engine import (
 st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
-st.markdown("Upload a DXF floorplan, select analysis zones on the plan preview, and compute spatial metrics.")
+st.markdown("Upload a DXF floorplan, select public analysis zones directly on the plan preview, and compute spatial metrics.")
 
 # Sidebar Settings
 st.sidebar.header("Analysis Settings")
@@ -31,8 +31,8 @@ ray_count = int(360 / ray_step)
 
 uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
-def create_floorplan_image(wall_lines, width_px=700, height_px=500):
-    """Renders DXF wall segments to a PIL image for canvas background."""
+def create_floorplan_image(wall_lines):
+    """Renders DXF wall segments to a PIL RGB Image for canvas background."""
     fig, ax = plt.subplots(figsize=(7, 5), dpi=100)
     fig.patch.set_facecolor('#1E1E1E')
     ax.set_facecolor('#1E1E1E')
@@ -49,7 +49,8 @@ def create_floorplan_image(wall_lines, width_px=700, height_px=500):
     plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight', pad_inches=0)
     plt.close(fig)
     buf.seek(0)
-    return Image.open(buf)
+    img = Image.open(buf).convert("RGB")
+    return img
 
 
 if uploaded_file is not None:
@@ -71,7 +72,7 @@ if uploaded_file is not None:
     width, height = maxx - minx, maxy - miny
 
     st.subheader("Interactive Public Space Selection")
-    st.info("Click points on the floorplan to define public analysis zones (or select 'Full Floorplan' to analyze everything).")
+    st.info("Click points on the floorplan preview to define public analysis zones (or select 'Full Floorplan' to analyze the entire layout).")
 
     bg_image = create_floorplan_image(wall_lines)
     selection_mode = st.radio("Selection Mode:", ["Full Floorplan", "Click Points / Polygon Boundary"], horizontal=True)
@@ -119,7 +120,7 @@ if uploaded_file is not None:
         total_points = len(grid_points)
 
         if total_points == 0:
-            st.warning("No grid points generated. Check your selected zone or adjust grid size.")
+            st.warning("No grid points generated. Adjust your boundary selection or grid size.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -166,7 +167,7 @@ if uploaded_file is not None:
                 st.session_state["vga_df"] = df_results
             else:
                 progress_bar.empty()
-                st.error("Could not extract valid isovists. Points may be located inside solid wall geometry.")
+                st.error("Could not extract valid isovists. Points may be inside wall geometry.")
 
     if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
         df = st.session_state["vga_df"]

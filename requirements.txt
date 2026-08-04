@@ -1,11 +1,9 @@
-streamlit>=1.30.0
-streamlit-drawable-canvas-fix
-ezdxf
-shapely
-opencv-python-headless
-ultralytics
+streamlit
 pandas
 numpy
-scipy
+ezdxf
+shapely
 plotly
-supabase
+matplotlib
+Pillow
+streamlit-drawable-canvas
