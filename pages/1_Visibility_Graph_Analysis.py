@@ -20,8 +20,8 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, select analysis zones on the interactive plot, and"
-    " compute spatial metrics."
+    "Upload a DXF floorplan, select public analysis zones using the interactive"
+    " Box or Lasso tools, and compute spatial visibility metrics."
 )
 
 # Sidebar Settings
@@ -38,10 +38,9 @@ uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 
 def render_interactive_floorplan(wall_lines):
-  """Builds a native Plotly figure displaying DXF wall lines with polygon drawing controls enabled."""
+  """Builds a Plotly figure displaying DXF wall lines with Box and Lasso select enabled."""
   fig = go.Figure()
 
-  # Plot wall line segments
   for line in wall_lines:
     x, y = line.xy
     fig.add_trace(
@@ -49,7 +48,7 @@ def render_interactive_floorplan(wall_lines):
             x=list(x),
             y=list(y),
             mode="lines",
-            line=dict(color="#3388ff", width=1.5),
+            line=dict(color="#00ADB5", width=1.5),
             hoverinfo="none",
             showlegend=False,
         )
@@ -67,12 +66,7 @@ def render_interactive_floorplan(wall_lines):
       yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
       height=600,
       margin=dict(l=20, r=20, t=40, b=20),
-      # Enable drawing modes on Plotly toolbar
-      dragmode="drawclosedpath",
-      newshape=dict(
-          fillcolor="rgba(0, 255, 0, 0.25)",
-          line=dict(color="#00FF00", width=2),
-      ),
+      dragmode="lasso",  # Default tool active on plot
   )
   return fig
 
@@ -96,51 +90,56 @@ if uploaded_file is not None:
 
   st.subheader("Interactive Public Space Selection")
   st.info(
-      "💡 **How to select an area:** Use the **Draw Closed Path** tool (pentagon"
-      " icon on top right toolbar) to draw your public space boundary on top of"
-      " the floorplan lines!"
+      "💡 **How to select your space:** Use the **Box Select** or **Lasso"
+      " Select** tool from the Plotly toolbar (top right of the plot) to highlight"
+      " the public area to analyze."
   )
 
-  selection_mode = st.radio(
+  selection_mode_option = st.radio(
       "Selection Mode:",
-      ["Full Floorplan", "Draw Polygon Boundary"],
+      ["Full Floorplan", "Select Area on Plan (Box / Lasso)"],
       horizontal=True,
   )
 
-  selected_polygons = []
+  selected_polygon = None
 
-  if selection_mode == "Draw Polygon Boundary":
+  if selection_mode_option == "Select Area on Plan (Box / Lasso)":
     fig_plan = render_interactive_floorplan(wall_lines)
 
-    # Capture user interaction events directly from Streamlit Plotly Chart
+    # Use valid Streamlit selection modes: "box" and "lasso"
     chart_events = st.plotly_chart(
         fig_plan,
         use_container_width=True,
         on_select="rerun",
-        selection_mode="shapes",
+        selection_mode=["box", "lasso"],
     )
 
-    # Process drawn shapes from selection payload
+    # Process selections from user interaction
     if chart_events and "selection" in chart_events:
-      shapes = chart_events["selection"].get("shapes", [])
-      for shape in shapes:
-        if "path" in shape:
-          # Convert SVG path string into geometric polygon coordinates
-          raw_path = shape["path"]
-          coords = []
-          for sub in raw_path.replace("M", "").replace("Z", "").split("L"):
-            if sub.strip():
-              parts = sub.strip().split(",")
-              if len(parts) == 2:
-                coords.append((float(parts[0]), float(parts[1])))
-          if len(coords) >= 3:
-            selected_polygons.append(Polygon(coords))
+      selection_data = chart_events["selection"]
 
-    if selected_polygons:
-      st.success(
-          f"Captured {len(selected_polygons)} drawn zone boundary"
-          " polygon(s)."
-      )
+      # Handle Box selection
+      if "range" in selection_data and selection_data["range"]:
+        x_range = selection_data["range"].get("x", [])
+        y_range = selection_data["range"].get("y", [])
+        if len(x_range) == 2 and len(y_range) == 2:
+          bbox_pts = [
+              (x_range[0], y_range[0]),
+              (x_range[1], y_range[0]),
+              (x_range[1], y_range[1]),
+              (x_range[0], y_range[1]),
+          ]
+          selected_polygon = Polygon(bbox_pts)
+
+      # Handle Lasso selection points
+      elif "point_indices" in selection_data or "points" in selection_data:
+        points = selection_data.get("points", [])
+        coords = [(p["x"], p["y"]) for p in points if "x" in p and "y" in p]
+        if len(coords) >= 3:
+          selected_polygon = Polygon(coords)
+
+    if selected_polygon:
+      st.success("✅ Area selection captured successfully!")
 
   if st.button("Run Visibility Analysis"):
     x_coords = np.arange(minx, maxx, grid_size)
@@ -150,8 +149,11 @@ if uploaded_file is not None:
     for x in x_coords:
       for y in y_coords:
         pt = Point(x, y)
-        if selected_polygons and selection_mode != "Full Floorplan":
-          if any(poly.contains(pt) for poly in selected_polygons):
+        if (
+            selected_polygon
+            and selection_mode_option != "Full Floorplan"
+        ):
+          if selected_polygon.contains(pt):
             grid_points.append((x, y))
         else:
           grid_points.append((x, y))
@@ -160,7 +162,7 @@ if uploaded_file is not None:
 
     if total_points == 0:
       st.warning(
-          "No grid points generated. Check your drawn polygon selection or grid"
+          "No grid points generated. Adjust your Box/Lasso selection or grid"
           " size."
       )
     else:
@@ -222,8 +224,8 @@ if uploaded_file is not None:
       else:
         progress_bar.empty()
         st.error(
-            "Could not extract valid isovists. Points may be inside wall"
-            " geometry."
+            "Could not extract valid isovists. Selected points may be inside"
+            " solid walls."
         )
 
   if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
