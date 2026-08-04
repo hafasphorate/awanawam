@@ -87,9 +87,9 @@ with tab_calib:
                 
                 fig_cam = px.imshow(camera_frame_rgb)
                 
-                # Update layout for proper crosshair cursor and click behavior
+                # UPDATE THIS BLOCK IN pages/2_Video_Homography.py
                 fig_cam.update_layout(
-                    dragmode="drawcross",
+                    dragmode="select",  # <-- Changed from "drawcross" to "select"
                     hovermode="closest",
                     margin=dict(l=0, r=0, t=10, b=0),
                     height=450,
@@ -175,7 +175,7 @@ with tab_calib:
                     ))
 
                 fig_cad.update_layout(
-                    dragmode="drawcross",
+                    dragmode="select",  # <-- Changed from "drawcross" to "select"
                     hovermode="closest",
                     margin=dict(l=0, r=0, t=10, b=0), 
                     height=450,
