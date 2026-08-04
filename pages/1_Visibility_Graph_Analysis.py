@@ -6,6 +6,7 @@ import tempfile
 import json
 from shapely.geometry import Point, Polygon
 from shapely.strtree import STRtree
+import time
 
 from utils.vga_engine import extract_dxf_walls, generate_isovist_polygon, compute_isovist_metrics
 
@@ -57,25 +58,60 @@ if uploaded_file is not None:
     st.write(f"**Bounding Box Extents:** Width = {maxx - minx:.1f} mm, Height = {maxy - miny:.1f} mm")
 
     if st.button("Run Visibility Analysis"):
-        with st.spinner("Generating grid points & calculating Isovist metrics..."):
-            # Generate Grid
-            x_coords = np.arange(minx, maxx, grid_size)
-            y_coords = np.arange(miny, maxy, grid_size)
+    # Generate Grid Points
+    x_coords = np.arange(minx, maxx, grid_size)
+    y_coords = np.arange(miny, maxy, grid_size)
+    grid_points = [(x, y) for x in x_coords for y in y_coords]
+    total_points = len(grid_points)
 
-            vga_results = []
+    if total_points == 0:
+        st.warning("No grid points generated. Please check your floorplan boundaries or grid size.")
+    else:
+        # Create UI progress placeholders
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        vga_results = []
+        start_time = time.time()
 
-            for x in x_coords:
-                for y in y_coords:
-                    pt = (x, y)
-                    isovist = generate_isovist_polygon(pt, wall_lines, strtree, num_rays=ray_count)
-                    if isovist:
-                        metrics = compute_isovist_metrics(isovist, pt)
-                        metrics["x"] = x
-                        metrics["y"] = y
-                        vga_results.append(metrics)
+        for idx, pt in enumerate(grid_points):
+            # Calculate single point Isovist
+            isovist = generate_isovist_polygon(pt, wall_lines, strtree, num_rays=ray_count)
+            if isovist:
+                metrics = compute_isovist_metrics(isovist, pt)
+                metrics["x"] = pt[0]
+                metrics["y"] = pt[1]
+                vga_results.append(metrics)
 
-            df_results = pd.DataFrame(vga_results)
-            st.session_state["vga_df"] = df_results
+            # --- Progress & Time Estimation Calculation ---
+            completed = idx + 1
+            progress_ratio = completed / total_points
+            
+            # Estimate time remaining based on average time per point so far
+            elapsed_time = time.time() - start_time
+            avg_time_per_pt = elapsed_time / completed
+            remaining_pts = total_points - completed
+            estimated_remaining_seconds = remaining_pts * avg_time_per_pt
+
+            # Format remaining time (M:SS)
+            mins, secs = divmod(int(estimated_remaining_seconds), 60)
+            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+
+            # Update Streamlit UI every 5 points (or on final point) to reduce rendering overhead
+            if completed % 5 == 0 or completed == total_points:
+                progress_bar.progress(progress_ratio)
+                status_text.markdown(
+                    f"⌛ **Analyzing grid point {completed} of {total_points}** ({int(progress_ratio * 100)}%) | "
+                    f"**Est. time remaining:** `{time_str}`"
+                )
+
+        # Clear progress bar & text upon completion, display total elapsed time
+        progress_bar.empty()
+        total_time = round(time.time() - start_time, 2)
+        status_text.success(f"✅ Visibility Analysis complete in **{total_time} seconds** across **{total_points}** points!")
+
+        df_results = pd.DataFrame(vga_results)
+        st.session_state["vga_df"] = df_results
 
     if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
         df = st.session_state["vga_df"]
