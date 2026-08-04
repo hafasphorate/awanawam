@@ -110,41 +110,70 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
     return vga_results
 
 
-def render_interactive_floorplan(wall_lines, selected_polys=None):
-    """Builds interactive Plotly figure highlighting all selected room zones in translucent green."""
+def poly_to_svg_path(poly):
+    """Converts a Shapely Polygon exterior into an SVG path string for Plotly layout shapes."""
+    x_poly, y_poly = poly.exterior.xy
+    coords = list(zip(x_poly, y_poly))
+    path = f"M {coords[0][0]},{coords[0][1]} "
+    for x, y in coords[1:]:
+        path += f"L {x},{y} "
+    path += "Z"
+    return path
+
+
+def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
+    """Builds interactive Plotly figure with SVG shapes for highlights and clickable grid points."""
     fig = go.Figure()
 
-    # 1. First Draw Selected Highlight Polygons (behind walls for clean borders)
+    minx, miny, maxx, maxy = bounds
+
+    # 1. Draw Selected Highlights using SVG Layout Shapes (Rendered cleanly below lines)
     if selected_polys:
         for idx, poly in enumerate(selected_polys):
-            x_poly, y_poly = poly.exterior.xy
-            fig.add_trace(
-                go.Scatter(
-                    x=list(x_poly),
-                    y=list(y_poly),
-                    mode="lines",
-                    fill="toself",
-                    fillcolor="rgba(0, 230, 118, 0.45)",
-                    line=dict(color="#00FF66", width=2.5),
-                    name=f"Selected Zone {idx + 1}",
-                    hoverinfo="name",
-                    showlegend=True,
-                )
+            svg_path = poly_to_svg_path(poly)
+            fig.add_shape(
+                type="path",
+                path=svg_path,
+                fillcolor="rgba(0, 230, 118, 0.45)",
+                line=dict(color="#00FF66", width=2.5),
+                layer="below",
             )
 
     # 2. Draw DXF Wall Lines
+    wall_x, wall_y = [], []
     for line in wall_lines:
         x, y = line.xy
-        fig.add_trace(
-            go.Scatter(
-                x=list(x),
-                y=list(y),
-                mode="lines",
-                line=dict(color="#00ADB5", width=1.5),
-                hoverinfo="none",
-                showlegend=False,
-            )
+        wall_x.extend([x[0], x[1], None])
+        wall_y.extend([y[0], y[1], None])
+
+    fig.add_trace(
+        go.Scatter(
+            x=wall_x,
+            y=wall_y,
+            mode="lines",
+            line=dict(color="#00ADB5", width=1.5),
+            hoverinfo="none",
+            showlegend=False,
         )
+    )
+
+    # 3. Add Click Target Sensor Grid (Coarse 2D scatter grid enabling click captures anywhere)
+    grid_step = max(500, (maxx - minx) / 40)
+    gx = np.arange(minx, maxx, grid_step)
+    gy = np.arange(miny, maxy, grid_step)
+    g_xx, g_yy = np.meshgrid(gx, gy)
+
+    fig.add_trace(
+        go.Scatter(
+            x=g_xx.flatten(),
+            y=g_yy.flatten(),
+            mode="markers",
+            marker=dict(size=12, color="rgba(0,0,0,0.01)"),
+            hoverinfo="none",
+            showlegend=False,
+            name="click_targets",
+        )
+    )
 
     fig.update_layout(
         template="plotly_dark",
@@ -183,10 +212,11 @@ if uploaded_file is not None:
     miny = min(b[1] for b in all_bounds)
     maxx = max(b[2] for b in all_bounds)
     maxy = max(b[3] for b in all_bounds)
+    floorplan_bounds = (minx, miny, maxx, maxy)
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Multi-Room Selection:** Click inside any room. The detected zone will immediately highlight in green! You can click multiple rooms."
+        "💡 **Multi-Room Selection Active:** Click anywhere inside a room on the floorplan. The area will turn bright green once selected!"
     )
 
     selection_mode_option = st.radio(
@@ -207,7 +237,9 @@ if uploaded_file is not None:
     selected_polygons = st.session_state["selected_rooms"]
 
     if selection_mode_option == "Click Inside Rooms to Select Zones":
-        fig_plan = render_interactive_floorplan(wall_lines, selected_polys=selected_polygons)
+        fig_plan = render_interactive_floorplan(
+            wall_lines, floorplan_bounds, selected_polys=selected_polygons
+        )
 
         chart_events = st.plotly_chart(
             fig_plan,
@@ -235,7 +267,7 @@ if uploaded_file is not None:
                         st.session_state["selected_rooms"].append(matched_room)
                         st.rerun()
                 else:
-                    st.warning("Click fell outside valid room boundaries. Click cleanly inside an open room zone.")
+                    st.warning("Click fell outside valid room boundaries. Click inside an open room area.")
 
         if selected_polygons:
             total_area = sum(p.area for p in selected_polygons) / 1e6
