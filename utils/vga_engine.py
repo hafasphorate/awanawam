@@ -6,30 +6,29 @@ from shapely.geometry import Point, LineString, Polygon
 from shapely.strtree import STRtree
 
 import os
-import subprocess
+import aspose.cad as cad
 
 def convert_dwg_to_dxf(dwg_path: str) -> str:
-    """Converts an uploaded .dwg file to a temporary .dxf file using dwg2dxf."""
+    """Converts a .dwg file to .dxf in pure Python without external system binaries."""
     output_dxf_path = dwg_path.rsplit(".", 1)[0] + "_converted.dxf"
     
     try:
-        # Call the system CLI tool dwg2dxf
-        result = subprocess.run(
-            ["dwg2dxf", "-o", output_dxf_path, dwg_path],
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        # Load the DWG file
+        image = cad.Image.load(dwg_path)
+        
+        # Save as DXF
+        cad_options = cad.imageoptions.CadRasterizationOptions()
+        dxf_options = cad.imageoptions.DxfOptions()
+        
+        image.save(output_dxf_path, dxf_options)
+        
         if os.path.exists(output_dxf_path):
             return output_dxf_path
         else:
             raise RuntimeError("DWG conversion failed: Output DXF file was not generated.")
             
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        raise RuntimeError(
-            "DWG conversion tool 'dwg2dxf' (libreDWG) is not found or failed on this system. "
-            "Please verify 'libredwg-tools' is installed, or upload a native DXF file."
-        ) from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to process DWG file: {e}") from e
 
 
 def process_cad_file(file_path: str):

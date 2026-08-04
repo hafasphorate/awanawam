@@ -1,9 +1,7 @@
 streamlit
-pandas
-numpy
 ezdxf
 shapely
 plotly
-matplotlib
-Pillow
-streamlit-drawable-canvas
+pandas
+numpy
+aspose-cad
