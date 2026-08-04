@@ -46,7 +46,7 @@ def extract_enclosed_rooms(_wall_lines):
 
 
 def render_interactive_floorplan(wall_lines, selected_poly=None):
-    """Builds an interactive Plotly plot of wall lines with click-point tracking and room highlighting."""
+    """Builds an interactive Plotly plot configured specifically to capture point clicks."""
     fig = go.Figure()
 
     # Draw DXF Wall Lines
@@ -63,7 +63,7 @@ def render_interactive_floorplan(wall_lines, selected_poly=None):
             )
         )
 
-    # Highlight Selected Room Boundary if a click point matched
+    # Highlight Selected Room Boundary if matched
     if selected_poly:
         x_poly, y_poly = selected_poly.exterior.xy
         fig.add_trace(
@@ -90,7 +90,9 @@ def render_interactive_floorplan(wall_lines, selected_poly=None):
         yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
-        clickmode="event",
+        # Enables direct point-selection mode instead of pan mode
+        dragmode="select",
+        hovermode="closest",
     )
     return fig
 
@@ -117,7 +119,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Automatic Room Detection:** Choose 'Click Inside Room to Select Zone', then click anywhere inside a room or corridor on the map below. The app will automatically capture its exact walls!"
+        "💡 **Click Selection Active:** Click anywhere inside an enclosed room on the map. The app will capture the point coordinate and highlight its room boundaries!"
     )
 
     selection_mode_option = st.radio(
@@ -132,6 +134,7 @@ if uploaded_file is not None:
         active_poly = st.session_state.get("active_selected_room", None)
         fig_plan = render_interactive_floorplan(wall_lines, selected_poly=active_poly)
 
+        # Capture interactive selection events
         chart_events = st.plotly_chart(
             fig_plan,
             use_container_width=True,
@@ -157,7 +160,7 @@ if uploaded_file is not None:
                     st.rerun()
                 else:
                     st.warning(
-                        "Click fell outside valid room boundaries (or on a wall). Try clicking cleanly inside an open room area."
+                        "Click fell outside valid room boundaries (or on a wall line). Try clicking cleanly inside an open room area."
                     )
 
         if "active_selected_room" in st.session_state:
