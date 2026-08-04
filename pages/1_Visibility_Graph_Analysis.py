@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from shapely.geometry import Point, Polygon, LineString
+from shapely.geometry import Point, LineString
+from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
@@ -56,7 +57,7 @@ uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 @st.cache_data
 def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
-    """Reconstructs enclosed room polygons, closes corridor gaps, and subtracts interior room holes from surrounding corridors."""
+    """Reconstructs enclosed room polygons and corridor spaces with automatic interior hole detection."""
     lines = list(_wall_lines)
     
     # Extract endpoints to snap open doorways and corridor gaps
@@ -77,29 +78,10 @@ def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     merged_walls = unary_union(lines + closing_lines)
     raw_polygons = list(polygonize(merged_walls))
 
-    if not raw_polygons:
-        return []
+    # Filter out valid polygons and ignore micro-slivers (< 0.0001 m²)
+    valid_polygons = [p for p in raw_polygons if p.is_valid and p.area > 100.0]
 
-    # Sort polygons by area (smallest first) so inner rooms are processed before outer corridors
-    raw_polygons.sort(key=lambda p: p.area)
-
-    cleaned_polygons = []
-    for i, poly in enumerate(raw_polygons):
-        # Find smaller polygons completely contained within this polygon (interior holes)
-        holes = []
-        for j in range(i):
-            smaller_poly = raw_polygons[j]
-            if poly.contains(smaller_poly.centroid) and poly.area > smaller_poly.area:
-                holes.append(smaller_poly.exterior.coords)
-
-        if holes:
-            # Construct polygon with interior room holes cut out
-            donut_poly = Polygon(poly.exterior.coords, holes=holes)
-            cleaned_polygons.append(donut_poly)
-        else:
-            cleaned_polygons.append(poly)
-
-    return cleaned_polygons
+    return valid_polygons
 
 
 def compute_graph_topology_with_progress(vga_results, isovist_polys, status_container, progress_bar):
@@ -169,17 +151,20 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
 
 
 def poly_to_svg_path(poly):
-    """Converts a Shapely Polygon (including interior holes) into an SVG path string."""
+    """Converts a Shapely Polygon into a properly oriented SVG path string so interior holes remain transparent."""
+    # Enforce CCW exterior and CW interior rings
+    oriented_poly = orient(poly, sign=1.0)
+
     # Exterior boundary
-    x_poly, y_poly = poly.exterior.xy
+    x_poly, y_poly = oriented_poly.exterior.xy
     coords = list(zip(x_poly, y_poly))
     path = f"M {coords[0][0]},{coords[0][1]} "
     for x, y in coords[1:]:
         path += f"L {x},{y} "
     path += "Z "
 
-    # Cut out interior holes (for corridors surrounding inner rooms)
-    for interior in poly.interiors:
+    # Cut out interior holes (e.g. inner rooms surrounded by corridors)
+    for interior in oriented_poly.interiors:
         ix, iy = interior.xy
         icoords = list(zip(ix, iy))
         path += f"M {icoords[0][0]},{icoords[0][1]} "
@@ -195,7 +180,7 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
     fig = go.Figure()
     minx, miny, maxx, maxy = bounds
 
-    # 1. Draw Selected Room / Corridor Highlights as SVG Fills (with holes cut out)
+    # 1. Draw Selected Room / Corridor Highlights as SVG Fills (with transparent interior room holes)
     if selected_polys:
         for idx, poly in enumerate(selected_polys):
             svg_path = poly_to_svg_path(poly)
@@ -243,7 +228,6 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    # Valid Plotly dragmode setting
     fig.update_layout(
         template="plotly_dark",
         xaxis=dict(
@@ -274,7 +258,7 @@ if uploaded_file is not None:
         enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
 
     st.success(
-        f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones (including corridor spaces with interior room cutouts)."
+        f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones."
     )
 
     all_bounds = [w.bounds for w in wall_lines]
@@ -286,7 +270,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor will select strictly the corridor and skip enclosed interior rooms!"
+        "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
     )
 
     selection_mode_option = st.radio(
@@ -328,11 +312,11 @@ if uploaded_file is not None:
 
                 matched_room = None
                 
-                # Check smaller room polygons first before surrounding corridor polygons
+                # Check candidate polygons containing click point
                 candidate_rooms = [r for r in enclosed_rooms if r.contains(click_point)]
                 if candidate_rooms:
-                    # Pick smallest containing polygon (e.g. inner room instead of outer surrounding corridor)
-                    matched_room = min(candidate_rooms, key=lambda r: r.area)
+                    # Select the exact matching zone (if inside inner room, selects room; if in corridor, selects corridor)
+                    matched_room = candidate_rooms[0]
 
                 if matched_room:
                     if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
