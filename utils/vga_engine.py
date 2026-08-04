@@ -6,9 +6,6 @@ from shapely.geometry import Point, LineString, Polygon
 from shapely.strtree import STRtree
 
 import os
-import aspose.cad as cad
-
-import os
 import shutil
 import subprocess
 
