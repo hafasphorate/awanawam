@@ -245,31 +245,31 @@ if uploaded_file is not None:
                     "Could not extract valid isovists. Points may be inside wall geometry."
                 )
 
-  if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
-      df = st.session_state["vga_df"]
+    if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
+        df = st.session_state["vga_df"]
 
-      st.subheader("VGA Heatmap Visualizer")
-      available_metrics = [c for c in df.columns if c not in ["x", "y"]]
+        st.subheader("VGA Heatmap Visualizer")
+        available_metrics = [c for c in df.columns if c not in ["x", "y"]]
 
-      if available_metrics:
-          selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
+        if available_metrics:
+            selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
 
-          if selected_metric in df.columns:
-              fig = px.scatter(
-                  df,
-                  x="x",
-                  y="y",
-                  color=selected_metric,
-                  color_continuous_scale="Viridis",
-                  title=f"Spatial Map: {selected_metric}",
-              )
-              fig.update_yaxes(scaleanchor="x", scaleratio=1)
-              st.plotly_chart(fig, use_container_width=True)
+            if selected_metric in df.columns:
+                fig = px.scatter(
+                    df,
+                    x="x",
+                    y="y",
+                    color=selected_metric,
+                    color_continuous_scale="Viridis",
+                    title=f"Spatial Map: {selected_metric}",
+                )
+                fig.update_yaxes(scaleanchor="x", scaleratio=1)
+                st.plotly_chart(fig, use_container_width=True)
 
-          json_data = df.to_json(orient="records")
-          st.download_button(
-              label="📥 Download Complete VGA Metrics JSON",
-              data=json_data,
-              file_name="vga_analysis_results.json",
-              mime="application/json",
-          )
+            json_data = df.to_json(orient="records")
+            st.download_button(
+                label="📥 Download Complete VGA Metrics JSON",
+                data=json_data,
+                file_name="vga_analysis_results.json",
+                mime="application/json",
+            )
