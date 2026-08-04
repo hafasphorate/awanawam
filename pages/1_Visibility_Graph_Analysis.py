@@ -60,7 +60,6 @@ def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     """Reconstructs enclosed room polygons and corridor spaces with automatic interior hole detection."""
     lines = list(_wall_lines)
     
-    # Extract endpoints to snap open doorways and corridor gaps
     endpoints = []
     for l in lines:
         coords = list(l.coords)
@@ -78,9 +77,7 @@ def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     merged_walls = unary_union(lines + closing_lines)
     raw_polygons = list(polygonize(merged_walls))
 
-    # Filter out valid polygons and ignore micro-slivers (< 0.0001 m²)
     valid_polygons = [p for p in raw_polygons if p.is_valid and p.area > 100.0]
-
     return valid_polygons
 
 
@@ -152,10 +149,8 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
 
 def poly_to_svg_path(poly):
     """Converts a Shapely Polygon into a properly oriented SVG path string so interior holes remain transparent."""
-    # Enforce CCW exterior and CW interior rings
     oriented_poly = orient(poly, sign=1.0)
 
-    # Exterior boundary
     x_poly, y_poly = oriented_poly.exterior.xy
     coords = list(zip(x_poly, y_poly))
     path = f"M {coords[0][0]},{coords[0][1]} "
@@ -163,7 +158,6 @@ def poly_to_svg_path(poly):
         path += f"L {x},{y} "
     path += "Z "
 
-    # Cut out interior holes (e.g. inner rooms surrounded by corridors)
     for interior in oriented_poly.interiors:
         ix, iy = interior.xy
         icoords = list(zip(ix, iy))
@@ -180,7 +174,6 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
     fig = go.Figure()
     minx, miny, maxx, maxy = bounds
 
-    # 1. Draw Selected Room / Corridor Highlights as SVG Fills (with transparent interior room holes)
     if selected_polys:
         for idx, poly in enumerate(selected_polys):
             svg_path = poly_to_svg_path(poly)
@@ -192,7 +185,6 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
                 layer="below",
             )
 
-    # 2. Draw DXF Wall Line Traces
     wall_x, wall_y = [], []
     for line in wall_lines:
         x, y = line.xy
@@ -210,7 +202,6 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    # 3. Dense Sensor Grid for Click Detection
     grid_step = max(200, (maxx - minx) / 60)
     gx = np.arange(minx, maxx, grid_step)
     gy = np.arange(miny, maxy, grid_step)
@@ -247,6 +238,67 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
     return fig
 
 
+def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
+    """Renders VGA metric heatmap with original DXF floorplan wall lines underlaid."""
+    fig = go.Figure()
+
+    # 1. Underlay DXF Wall Lines
+    wall_x, wall_y = [], []
+    for line in wall_lines:
+        x, y = line.xy
+        wall_x.extend([x[0], x[1], None])
+        wall_y.extend([y[0], y[1], None])
+
+    fig.add_trace(
+        go.Scatter(
+            x=wall_x,
+            y=wall_y,
+            mode="lines",
+            line=dict(color="#666666", width=1.5),
+            hoverinfo="none",
+            showlegend=False,
+            name="DXF Walls",
+        )
+    )
+
+    # 2. Heatmap Points Overlay
+    fig.add_trace(
+        go.Scatter(
+            x=df["x"],
+            y=df["y"],
+            mode="markers",
+            marker=dict(
+                size=8,
+                color=df[metric_column],
+                colorscale="Viridis",
+                showscale=True,
+                colorbar=dict(title=metric_column),
+                opacity=0.9,
+            ),
+            text=[f"{metric_column}: {v}" for v in df[metric_column]],
+            hoverinfo="x+y+text",
+            name="VGA Data",
+        )
+    )
+
+    fig.update_layout(
+        title=dict(text=f"Spatial Map: {metric_column}", x=0.01),
+        template="plotly_dark",
+        xaxis=dict(
+            title="X (mm)",
+            showgrid=True,
+            zeroline=False,
+            scaleanchor="y",
+            scaleratio=1,
+        ),
+        yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
+        height=650,
+        margin=dict(l=20, r=20, t=50, b=20),
+    )
+
+    return fig
+
+
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
@@ -254,6 +306,7 @@ if uploaded_file is not None:
 
     with st.spinner("Parsing DXF wall geometry and building enclosed spatial zones..."):
         wall_lines = extract_dxf_walls(tmp_path)
+        st.session_state["wall_lines"] = wall_lines
         strtree = STRtree(wall_lines)
         enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
 
@@ -310,15 +363,10 @@ if uploaded_file is not None:
                 click_y = pts[0]["y"]
                 click_point = Point(click_x, click_y)
 
-                matched_room = None
-                
-                # Check candidate polygons containing click point
                 candidate_rooms = [r for r in enclosed_rooms if r.contains(click_point)]
                 if candidate_rooms:
-                    # Select the exact matching zone (if inside inner room, selects room; if in corridor, selects corridor)
                     matched_room = candidate_rooms[0]
 
-                if matched_room:
                     if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
                         st.session_state["selected_rooms"].append(matched_room)
                         st.rerun()
@@ -361,7 +409,6 @@ if uploaded_file is not None:
             isovist_polys = []
             start_time = time.time()
 
-            # Phase 1: Isovist Field Calculations
             for idx, pt in enumerate(grid_points):
                 isovist, occluded_count = generate_isovist_polygon(
                     pt, wall_lines, strtree, num_rays=ray_count
@@ -391,7 +438,6 @@ if uploaded_file is not None:
                         f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
                     )
 
-            # Phase 2: Topology Metrics with Progress Tracker
             if vga_results:
                 final_vga_results = compute_graph_topology_with_progress(
                     vga_results, isovist_polys, status_text, progress_bar
@@ -418,17 +464,11 @@ if uploaded_file is not None:
         if available_metrics:
             selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
 
-            if selected_metric in df.columns:
-                fig = px.scatter(
-                    df,
-                    x="x",
-                    y="y",
-                    color=selected_metric,
-                    color_continuous_scale="Viridis",
-                    title=f"Spatial Map: {selected_metric}",
+            if selected_metric in df.columns and "wall_lines" in st.session_state:
+                fig_heatmap = render_vga_heatmap_with_underlay(
+                    df, selected_metric, st.session_state["wall_lines"]
                 )
-                fig.update_yaxes(scaleanchor="x", scaleratio=1)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig_heatmap, use_container_width=True)
 
             json_data = df.to_json(orient="records")
             st.download_button(
