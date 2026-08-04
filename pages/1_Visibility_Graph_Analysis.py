@@ -1,4 +1,90 @@
 import streamlit as st
-st.set_page_config(page_title="VGA Engine", layout="wide")
-st.header("1. Visibility Graph Analysis")
-st.info("Upload DXF/DWG floorplan files below to begin grid-based visual analysis.")
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import tempfile
+import json
+from shapely.geometry import Point, Polygon
+from shapely.strtree import STRtree
+
+from utils.vga_engine import extract_dxf_walls, generate_isovist_polygon, compute_isovist_metrics
+
+st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
+
+st.title("1. Visibility Graph Analysis (VGA)")
+st.markdown("Upload a floorplan DXF file, define grid resolution, and analyze spatial visibility metrics.")
+
+# Sidebar Configuration
+st.sidebar.header("Analysis Settings")
+grid_size = st.sidebar.number_input("Grid Dimension (mm)", min_value=200, max_value=5000, value=1000, step=100)
+ray_count = st.sidebar.slider("Ray Density (Degrees / Ray)", min_value=36, max_value=360, value=72, step=18)
+
+uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
+
+if uploaded_file is not None:
+    # Save DXF temporarily to parse with ezdxf
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
+
+    with st.spinner("Parsing DXF wall geometry..."):
+        wall_lines = extract_dxf_walls(tmp_path)
+        strtree = STRtree(wall_lines)
+
+    st.success(f"Extracted {len(wall_lines)} wall boundary segments.")
+
+    # Get Floorplan Bounds
+    all_bounds = [w.bounds for w in wall_lines]
+    minx = min(b[0] for b in all_bounds)
+    miny = min(b[1] for b in all_bounds)
+    maxx = max(b[2] for b in all_bounds)
+    maxy = max(b[3] for b in all_bounds)
+
+    st.write(f"**Bounding Box Extents:** Width = {maxx - minx:.1f} mm, Height = {maxy - miny:.1f} mm")
+
+    if st.button("Run Visibility Analysis"):
+        with st.spinner("Generating grid points & calculating Isovist metrics..."):
+            # Generate Grid
+            x_coords = np.arange(minx, maxx, grid_size)
+            y_coords = np.arange(miny, maxy, grid_size)
+
+            vga_results = []
+
+            for x in x_coords:
+                for y in y_coords:
+                    pt = (x, y)
+                    isovist = generate_isovist_polygon(pt, wall_lines, strtree, num_rays=ray_count)
+                    if isovist:
+                        metrics = compute_isovist_metrics(isovist, pt)
+                        metrics["x"] = x
+                        metrics["y"] = y
+                        vga_results.append(metrics)
+
+            df_results = pd.DataFrame(vga_results)
+            st.session_state["vga_df"] = df_results
+
+    if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
+        df = st.session_state["vga_df"]
+
+        st.subheader("VGA Heatmap Visualizer")
+        selected_metric = st.selectbox(
+            "Select Metric to Render:",
+            ["isovist_area", "isovist_compactness", "isovist_drift_magnitude", "isovist_perimeter"]
+        )
+
+        fig = px.scatter(
+            df, x="x", y="y", color=selected_metric,
+            color_continuous_scale="Viridis",
+            title=f"Spatial Map: {selected_metric}"
+        )
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # JSON Export Button
+        json_data = df.to_json(orient="records")
+        st.download_button(
+            label="📥 Download VGA Metrics as JSON",
+            data=json_data,
+            file_name="vga_analysis_results.json",
+            mime="application/json"
+        )
