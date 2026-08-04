@@ -3,8 +3,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
-from PIL import Image
 from utils.tracking_engine import HomographyCalibrator, extract_frame_from_video
 from views.tracking_view import render_tracking_view
 
@@ -53,7 +51,7 @@ with tab_calib:
         st.info("👆 Upload a surveillance video file above to begin calibration.")
     else:
         # Frame extraction controller
-        col_frame_ctrl, col_frame_info = st.columns([3, 1])
+        col_frame_ctrl, _ = st.columns([3, 1])
         with col_frame_ctrl:
             frame_idx = st.slider(
                 "Select Frame for Calibration Target",
@@ -85,36 +83,50 @@ with tab_calib:
             with col_cam:
                 st.markdown("##### 1. Camera View (Head Level Pixels)")
                 
-                fig_cam = px.imshow(camera_frame_rgb)
-                
-                # UPDATE THIS BLOCK IN pages/2_Video_Homography.py
+                # Base Plotly Figure with Explicit Z-Ordering
+                fig_cam = go.Figure()
+                fig_cam.add_trace(go.Image(z=camera_frame_rgb))
+
+                # Overlay Selected Camera Points & Closed Polygon Wireframe
+                if st.session_state.img_points:
+                    u_pts, v_pts = zip(*st.session_state.img_points)
+                    
+                    # Create closed wireframe loop if 3+ points are selected
+                    poly_u = list(u_pts)
+                    poly_v = list(v_pts)
+                    if len(poly_u) >= 3:
+                        poly_u.append(poly_u[0])
+                        poly_v.append(poly_v[0])
+
+                    fig_cam.add_trace(go.Scatter(
+                        x=poly_u, 
+                        y=poly_v, 
+                        mode="markers+text+lines",
+                        marker=dict(
+                            color="#FF0000", 
+                            size=16, 
+                            symbol="cross",
+                            line=dict(width=2, color="#FFFFFF")
+                        ),
+                        line=dict(color="#FF0000", width=2, dash="dash"),
+                        text=[f"P{i+1}" for i in range(len(u_pts))],
+                        textposition="top right",
+                        textfont=dict(color="red", size=14, family="Arial Black"),
+                        name="Selected Camera Region",
+                        hoverinfo="x+y+text"
+                    ))
+
+                # Layout Config for Strict Pointer Behavior & Inverted Y Pixel Coordinates
                 fig_cam.update_layout(
-                    dragmode="select",  # <-- Changed from "drawcross" to "select"
+                    dragmode="select",
                     hovermode="closest",
                     margin=dict(l=0, r=0, t=10, b=0),
                     height=450,
-                    xaxis=dict(showgrid=False, zeroline=False, range=[0, img_w]),
-                    yaxis=dict(showgrid=False, zeroline=False, range=[img_h, 0]),
-                    clickmode="event+select"
+                    xaxis=dict(showgrid=False, zeroline=False, range=[0, img_w], autorange=False),
+                    yaxis=dict(showgrid=False, zeroline=False, range=[img_h, 0], autorange=False),
+                    clickmode="event+select",
+                    showlegend=False
                 )
-
-                # Overlay selected camera points with distinct red crosshairs
-                if st.session_state.img_points:
-                    u_pts, v_pts = zip(*st.session_state.img_points)
-                    fig_cam.add_trace(go.Scatter(
-                        x=list(u_pts), 
-                        y=list(v_pts), 
-                        mode="markers+text",
-                        marker=dict(
-                            color="red", 
-                            size=14, 
-                            symbol="cross",
-                            line=dict(width=2, color="white")
-                        ),
-                        text=[f"P{i+1}" for i in range(len(u_pts))],
-                        textposition="top right", 
-                        name="Selected Camera Heads"
-                    ))
 
                 cam_event = st.plotly_chart(
                     fig_cam, 
@@ -129,7 +141,7 @@ with tab_calib:
                     pt = cam_event["selection"]["points"][0]
                     nu, nv = round(pt["x"], 2), round(pt["y"], 2)
                     
-                    # Ensure alternating pick order (Camera -> CAD)
+                    # Alternating pick logic: Camera Point -> CAD Point
                     if not st.session_state.img_points or len(st.session_state.img_points) == len(st.session_state.cad_points):
                         if not st.session_state.img_points or (nu, nv) != st.session_state.img_points[-1]:
                             st.session_state.img_points.append((nu, nv))
@@ -152,6 +164,7 @@ with tab_calib:
                 st.markdown("##### 2. CAD Floorplan (World X, Y)")
                 fig_cad = go.Figure()
                 
+                # Render Wall Polylines
                 dxf_walls = st.session_state.get("dxf_walls", [])
                 for wall in dxf_walls:
                     wx, wy = wall.exterior.xy
@@ -160,27 +173,41 @@ with tab_calib:
                         line=dict(color="black", width=1.5), showlegend=False
                     ))
 
+                # Overlay Selected CAD Points & Closed Polygon Wireframe
                 if st.session_state.cad_points:
                     cx_pts, cy_pts = zip(*st.session_state.cad_points)
+                    
+                    poly_cx = list(cx_pts)
+                    poly_cy = list(cy_pts)
+                    if len(poly_cx) >= 3:
+                        poly_cx.append(poly_cx[0])
+                        poly_cy.append(poly_cy[0])
+
                     fig_cad.add_trace(go.Scatter(
-                        x=list(cx_pts), y=list(cy_pts), mode="markers+text",
+                        x=poly_cx, 
+                        y=poly_cy, 
+                        mode="markers+text+lines",
                         marker=dict(
-                            color="blue", 
-                            size=12, 
+                            color="#0000FF", 
+                            size=14, 
                             symbol="circle",
-                            line=dict(width=1.5, color="white")
+                            line=dict(width=1.5, color="#FFFFFF")
                         ),
+                        line=dict(color="#0000FF", width=2, dash="dash"),
                         text=[f"P{i+1}" for i in range(len(cx_pts))],
-                        textposition="top right", name="Selected CAD Points"
+                        textposition="top right", 
+                        textfont=dict(color="blue", size=14, family="Arial Black"),
+                        name="Selected CAD Region"
                     ))
 
                 fig_cad.update_layout(
-                    dragmode="select",  # <-- Changed from "drawcross" to "select"
+                    dragmode="select",
                     hovermode="closest",
                     margin=dict(l=0, r=0, t=10, b=0), 
                     height=450,
                     yaxis=dict(scaleanchor="x", scaleratio=1),
-                    clickmode="event+select"
+                    clickmode="event+select",
+                    showlegend=False
                 )
 
                 cad_event = st.plotly_chart(
