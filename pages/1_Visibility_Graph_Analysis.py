@@ -11,7 +11,6 @@ from shapely.strtree import STRtree
 import streamlit as st
 
 from utils.vga_engine import (
-    compute_graph_vga_metrics,
     compute_isovist_metrics,
     extract_dxf_walls,
     generate_isovist_polygon,
@@ -21,7 +20,7 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, click directly inside any room to auto-detect its enclosed boundary, and compute spatial metrics."
+    "Upload a DXF floorplan, click inside one or more rooms to auto-detect and highlight their enclosed boundaries, and compute spatial metrics."
 )
 
 # Sidebar Settings
@@ -45,8 +44,78 @@ def extract_enclosed_rooms(_wall_lines):
     return enclosed_polygons
 
 
-def render_interactive_floorplan(wall_lines, selected_poly=None):
-    """Builds an interactive Plotly plot configured specifically to capture point clicks."""
+def compute_graph_topology_with_progress(vga_results, isovist_polys, status_container, progress_bar):
+    """Computes inter-isovist graph integration and entropy with active progress tracking."""
+    num_nodes = len(vga_results)
+    if num_nodes == 0:
+        return vga_results
+
+    # Build adjacency matrix
+    adj_matrix = np.zeros((num_nodes, num_nodes), dtype=bool)
+    start_time = time.time()
+
+    for i in range(num_nodes):
+        pt_i = Point(vga_results[i]["x"], vga_results[i]["y"])
+        poly_i = isovist_polys[i]
+
+        for j in range(i + 1, num_nodes):
+            pt_j = Point(vga_results[j]["x"], vga_results[j]["y"])
+            poly_j = isovist_polys[j]
+
+            # Mutual visibility condition
+            if poly_i.contains(pt_j) or poly_j.contains(pt_i):
+                adj_matrix[i, j] = True
+                adj_matrix[j, i] = True
+
+        completed = i + 1
+        progress_ratio = completed / num_nodes
+        elapsed = time.time() - start_time
+        avg_per_node = elapsed / completed
+        remaining_secs = int((num_nodes - completed) * avg_per_node)
+        mins, secs = divmod(remaining_secs, 60)
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+
+        if completed % 5 == 0 or completed == num_nodes:
+            progress_bar.progress(progress_ratio)
+            status_container.markdown(
+                f"⌛ **Computing Graph Topology (Integration & Entropy)...** Node {completed}/{num_nodes} ({int(progress_ratio * 100)}%) | **Est. remaining:** `{time_str}`"
+            )
+
+    # Calculate Mean Depth and Integration for each node
+    for i in range(num_nodes):
+        visited = {i: 0}
+        queue = [i]
+
+        while queue:
+            curr = queue.pop(0)
+            curr_depth = visited[curr]
+
+            neighbors = np.where(adj_matrix[curr])[0]
+            for nxt in neighbors:
+                if nxt not in visited:
+                    visited[nxt] = curr_depth + 1
+                    queue.append(nxt)
+
+        depths = list(visited.values())
+        total_depth = sum(depths)
+        reachable_nodes = len(depths)
+
+        if reachable_nodes > 1:
+            mean_depth = total_depth / (reachable_nodes - 1)
+            # Integration metric (inverse of Relative Asymmetry)
+            integration = 1.0 / (2.0 * (mean_depth - 1.0) / max(1, reachable_nodes - 2)) if mean_depth > 1 else 0.0
+        else:
+            mean_depth = 0.0
+            integration = 0.0
+
+        vga_results[i]["mean_depth"] = round(mean_depth, 3)
+        vga_results[i]["integration"] = round(integration, 3)
+
+    return vga_results
+
+
+def render_interactive_floorplan(wall_lines, selected_polys=None):
+    """Builds interactive Plotly figure highlighting all selected room zones in green."""
     fig = go.Figure()
 
     # Draw DXF Wall Lines
@@ -63,20 +132,21 @@ def render_interactive_floorplan(wall_lines, selected_poly=None):
             )
         )
 
-    # Highlight Selected Room Boundary if matched
-    if selected_poly:
-        x_poly, y_poly = selected_poly.exterior.xy
-        fig.add_trace(
-            go.Scatter(
-                x=list(x_poly),
-                y=list(y_poly),
-                fill="toself",
-                fillcolor="rgba(0, 255, 0, 0.35)",
-                line=dict(color="#00FF00", width=2.5),
-                name="Selected Room Zone",
-                hoverinfo="name",
+    # Highlight all selected room boundaries
+    if selected_polys:
+        for idx, poly in enumerate(selected_polys):
+            x_poly, y_poly = poly.exterior.xy
+            fig.add_trace(
+                go.Scatter(
+                    x=list(x_poly),
+                    y=list(y_poly),
+                    fill="toself",
+                    fillcolor="rgba(0, 255, 0, 0.35)",
+                    line=dict(color="#00FF00", width=2),
+                    name=f"Zone {idx + 1}",
+                    hoverinfo="name",
+                )
             )
-        )
 
     fig.update_layout(
         template="plotly_dark",
@@ -90,7 +160,6 @@ def render_interactive_floorplan(wall_lines, selected_poly=None):
         yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
-        # Enables direct point-selection mode instead of pan mode
         dragmode="select",
         hovermode="closest",
     )
@@ -119,22 +188,30 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Click Selection Active:** Click anywhere inside an enclosed room on the map. The app will capture the point coordinate and highlight its room boundaries!"
+        "💡 **Multi-Room Selection Active:** Click anywhere inside a room to select it. Click additional rooms to select multiple areas at once! Highlighted green areas will be analyzed."
     )
 
     selection_mode_option = st.radio(
         "Selection Mode:",
-        ["Full Floorplan", "Click Inside Room to Select Zone"],
+        ["Full Floorplan", "Click Inside Rooms to Select Zones"],
         horizontal=True,
     )
 
-    selected_polygon = None
+    if "selected_rooms" not in st.session_state:
+        st.session_state["selected_rooms"] = []
 
-    if selection_mode_option == "Click Inside Room to Select Zone":
-        active_poly = st.session_state.get("active_selected_room", None)
-        fig_plan = render_interactive_floorplan(wall_lines, selected_poly=active_poly)
+    # Reset Selection Control
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔴 Reset Selected Regions"):
+            st.session_state["selected_rooms"] = []
+            st.rerun()
 
-        # Capture interactive selection events
+    selected_polygons = st.session_state["selected_rooms"]
+
+    if selection_mode_option == "Click Inside Rooms to Select Zones":
+        fig_plan = render_interactive_floorplan(wall_lines, selected_polys=selected_polygons)
+
         chart_events = st.plotly_chart(
             fig_plan,
             use_container_width=True,
@@ -156,29 +233,36 @@ if uploaded_file is not None:
                         break
 
                 if matched_room:
-                    st.session_state["active_selected_room"] = matched_room
-                    st.rerun()
+                    # Prevent duplicate additions
+                    if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
+                        st.session_state["selected_rooms"].append(matched_room)
+                        st.rerun()
                 else:
-                    st.warning(
-                        "Click fell outside valid room boundaries (or on a wall line). Try clicking cleanly inside an open room area."
-                    )
+                    st.warning("Click fell outside valid room boundaries. Click inside an open room area.")
 
-        if "active_selected_room" in st.session_state:
-            selected_polygon = st.session_state["active_selected_room"]
+        if selected_polygons:
+            total_area = sum(p.area for p in selected_polygons) / 1e6
             st.success(
-                f"✅ **Room boundary detected and locked!** Area: `{round(selected_polygon.area / 1e6, 2)} m²`"
+                f"✅ **{len(selected_polygons)} Zone(s) Selected & Highlighted!** Combined Area: `{round(total_area, 2)} m²`"
             )
 
     if st.button("Run Visibility Analysis"):
-        x_coords = np.arange(minx, maxx, grid_size)
-        y_coords = np.arange(miny, maxy, grid_size)
+        # Optimization: Restrict grid bounds strictly to selected polygon bounding boxes
+        if selected_polygons and selection_mode_option != "Full Floorplan":
+            combined_bounds = unary_union(selected_polygons).bounds
+            calc_minx, calc_miny, calc_maxx, calc_maxy = combined_bounds
+        else:
+            calc_minx, calc_miny, calc_maxx, calc_maxy = minx, miny, maxx, maxy
+
+        x_coords = np.arange(calc_minx, calc_maxx, grid_size)
+        y_coords = np.arange(calc_miny, calc_maxy, grid_size)
 
         grid_points = []
         for x in x_coords:
             for y in y_coords:
                 pt = Point(x, y)
-                if selected_polygon and selection_mode_option != "Full Floorplan":
-                    if selected_polygon.contains(pt):
+                if selected_polygons and selection_mode_option != "Full Floorplan":
+                    if any(poly.contains(pt) for poly in selected_polygons):
                         grid_points.append((x, y))
                 else:
                     grid_points.append((x, y))
@@ -186,9 +270,7 @@ if uploaded_file is not None:
         total_points = len(grid_points)
 
         if total_points == 0:
-            st.warning(
-                "No grid points generated inside the selected zone. Try a smaller grid dimension or re-select a room."
-            )
+            st.warning("No grid points generated in selected zone. Try a smaller grid dimension or select a room.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -197,6 +279,7 @@ if uploaded_file is not None:
             isovist_polys = []
             start_time = time.time()
 
+            # Phase 1: Isovist Field Calculations
             for idx, pt in enumerate(grid_points):
                 isovist, occluded_count = generate_isovist_polygon(
                     pt, wall_lines, strtree, num_rays=ray_count
@@ -223,15 +306,13 @@ if uploaded_file is not None:
                 if completed % 5 == 0 or completed == total_points:
                     progress_bar.progress(progress_ratio)
                     status_text.markdown(
-                        f"⌛ **Analyzing grid point {completed} of {total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
+                        f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
                     )
 
+            # Phase 2: Topology Metrics with Real-Time Progress Bar
             if vga_results:
-                status_text.markdown(
-                    "⌛ **Computing graph topology metrics (Integration & Entropy)...**"
-                )
-                final_vga_results = compute_graph_vga_metrics(
-                    vga_results, isovist_polys
+                final_vga_results = compute_graph_topology_with_progress(
+                    vga_results, isovist_polys, status_text, progress_bar
                 )
 
                 progress_bar.empty()
@@ -244,9 +325,7 @@ if uploaded_file is not None:
                 st.session_state["vga_df"] = df_results
             else:
                 progress_bar.empty()
-                st.error(
-                    "Could not extract valid isovists. Points may be inside wall geometry."
-                )
+                st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")
 
     if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
         df = st.session_state["vga_df"]
