@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-from streamlit_drawable_canvas import st_canvas
 import tempfile
 import time
 import matplotlib.pyplot as plt
@@ -11,6 +9,7 @@ from PIL import Image
 import io
 from shapely.geometry import Point, Polygon
 from shapely.strtree import STRtree
+from streamlit_drawable_canvas_fix import st_canvas
 
 from utils.vga_engine import (
     extract_dxf_walls, 
@@ -33,7 +32,7 @@ ray_count = int(360 / ray_step)
 uploaded_file = st.file_uploader("Upload DXF Floorplan", type=["dxf"])
 
 def create_floorplan_image(wall_lines, width_px=700, height_px=500):
-    """Renders DXF wall segments to a PIL image to use as a canvas background."""
+    """Renders DXF wall segments to a PIL image for canvas background."""
     fig, ax = plt.subplots(figsize=(7, 5), dpi=100)
     fig.patch.set_facecolor('#1E1E1E')
     ax.set_facecolor('#1E1E1E')
@@ -72,11 +71,9 @@ if uploaded_file is not None:
     width, height = maxx - minx, maxy - miny
 
     st.subheader("Interactive Public Space Selection")
-    st.info("Click points on the floorplan to define public analysis zones (or leave blank to evaluate the full floorplan).")
+    st.info("Click points on the floorplan to define public analysis zones (or select 'Full Floorplan' to analyze everything).")
 
-    # Render DXF floorplan background image
     bg_image = create_floorplan_image(wall_lines)
-
     selection_mode = st.radio("Selection Mode:", ["Full Floorplan", "Click Points / Polygon Boundary"], horizontal=True)
 
     selected_polygons = []
@@ -175,8 +172,6 @@ if uploaded_file is not None:
         df = st.session_state["vga_df"]
 
         st.subheader("VGA Heatmap Visualizer")
-
-        # Dynamically list only metrics that exist in the calculated DataFrame
         available_metrics = [c for c in df.columns if c not in ["x", "y"]]
         
         if available_metrics:
