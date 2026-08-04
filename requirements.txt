@@ -4,4 +4,3 @@ shapely
 plotly
 pandas
 numpy
-dwg2dxf-py

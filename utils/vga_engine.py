@@ -9,24 +9,35 @@ import os
 import aspose.cad as cad
 
 import os
-import tempfile
+import shutil
+import subprocess
 
 def convert_dwg_to_dxf(dwg_path: str) -> str:
-    """Converts a .dwg file to .dxf using lightweight dwg2dxf python bindings."""
+    """Attempts to convert DWG to DXF using available system converters (dwg2dxf or oda-file-converter)."""
     output_dxf_path = dwg_path.rsplit(".", 1)[0] + "_converted.dxf"
+
+    # Check for dwg2dxf executable
+    dwg_bin = shutil.which("dwg2dxf") or shutil.which("ODAFileConverter")
     
+    if not dwg_bin:
+        raise RuntimeError(
+            "DWG conversion is not enabled on this cloud instance because a native DWG converter binary is not installed.\n\n"
+            "👉 **Solution:** Please upload your floorplan directly as a **.dxf** file (Export as DXF in AutoCAD/Revit)."
+        )
+
     try:
-        from dwg2dxf import dwg2dxf
-        dwg2dxf(dwg_path, output_dxf_path)
-        
+        subprocess.run(
+            [dwg_bin, "-o", output_dxf_path, dwg_path],
+            check=True,
+            capture_output=True,
+            text=True
+        )
         if os.path.exists(output_dxf_path):
             return output_dxf_path
         else:
             raise RuntimeError("DWG conversion failed: Output file missing.")
     except Exception as e:
-        raise RuntimeError(
-            f"DWG conversion failed: {e}. Please ensure the DWG file is valid or try converting it to DXF first."
-        ) from e
+        raise RuntimeError(f"DWG conversion failed: {e}") from e
 
 
 def process_cad_file(file_path: str):
@@ -36,7 +47,6 @@ def process_cad_file(file_path: str):
     else:
         dxf_path = file_path
 
-    # Uses your existing ezdxf extraction function
     return extract_dxf_walls(dxf_path)
 
 def extract_dxf_walls(dxf_file_path):
