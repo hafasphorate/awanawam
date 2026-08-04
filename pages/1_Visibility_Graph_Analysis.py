@@ -20,7 +20,7 @@ st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a DXF floorplan, click inside one or more rooms to auto-detect and highlight their enclosed boundaries, and compute spatial metrics."
+    "Upload a DXF floorplan, click directly inside any room zone to highlight it in green, and run spatial metrics strictly for selected areas."
 )
 
 # Sidebar Settings
@@ -122,12 +122,11 @@ def poly_to_svg_path(poly):
 
 
 def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
-    """Builds interactive Plotly figure with SVG shapes for highlights and clickable grid points."""
+    """Builds interactive Plotly figure with interactive room region fills."""
     fig = go.Figure()
-
     minx, miny, maxx, maxy = bounds
 
-    # 1. Draw Selected Highlights using SVG Layout Shapes (Rendered cleanly below lines)
+    # 1. Draw Selected Room Highlights as SVG Fills
     if selected_polys:
         for idx, poly in enumerate(selected_polys):
             svg_path = poly_to_svg_path(poly)
@@ -135,11 +134,11 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
                 type="path",
                 path=svg_path,
                 fillcolor="rgba(0, 230, 118, 0.45)",
-                line=dict(color="#00FF66", width=2.5),
+                line=dict(color="#00FF66", width=3),
                 layer="below",
             )
 
-    # 2. Draw DXF Wall Lines
+    # 2. Draw DXF Wall Line Traces
     wall_x, wall_y = [], []
     for line in wall_lines:
         x, y = line.xy
@@ -157,8 +156,8 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    # 3. Add Click Target Sensor Grid (Coarse 2D scatter grid enabling click captures anywhere)
-    grid_step = max(500, (maxx - minx) / 40)
+    # 3. Add Dense Click Sensor Points across Map
+    grid_step = max(300, (maxx - minx) / 50)
     gx = np.arange(minx, maxx, grid_step)
     gy = np.arange(miny, maxy, grid_step)
     g_xx, g_yy = np.meshgrid(gx, gy)
@@ -168,10 +167,10 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
             x=g_xx.flatten(),
             y=g_yy.flatten(),
             mode="markers",
-            marker=dict(size=12, color="rgba(0,0,0,0.01)"),
+            marker=dict(size=14, color="rgba(0, 255, 128, 0.05)", symbol="circle"),
             hoverinfo="none",
             showlegend=False,
-            name="click_targets",
+            name="sensor_grid",
         )
     )
 
@@ -187,8 +186,8 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         yaxis=dict(title="Y (mm)", showgrid=True, zeroline=False),
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
-        dragmode="select",
-        hovermode="closest",
+        clickmode="event+select",
+        dragmode=False,
     )
     return fig
 
@@ -216,7 +215,7 @@ if uploaded_file is not None:
 
     st.subheader("Interactive Public Space Selection")
     st.info(
-        "💡 **Multi-Room Selection Active:** Click anywhere inside a room on the floorplan. The area will turn bright green once selected!"
+        "💡 **Single Click Selection Active:** Click anywhere inside a room zone to select it. Click additional rooms to combine multiple areas! Click 'Reset' to clear."
     )
 
     selection_mode_option = st.radio(
@@ -245,7 +244,7 @@ if uploaded_file is not None:
             fig_plan,
             use_container_width=True,
             on_select="rerun",
-            selection_mode="points",
+            selection_mode=["points", "box"],
             key="floorplan_selector",
         )
 
@@ -257,17 +256,20 @@ if uploaded_file is not None:
                 click_point = Point(click_x, click_y)
 
                 matched_room = None
+                # Check direct containment
                 for room in enclosed_rooms:
                     if room.contains(click_point):
                         matched_room = room
                         break
 
+                # Fallback to nearest centroid distance if click lands on boundary edge
+                if not matched_room and enclosed_rooms:
+                    matched_room = min(enclosed_rooms, key=lambda r: r.distance(click_point))
+
                 if matched_room:
                     if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
                         st.session_state["selected_rooms"].append(matched_room)
                         st.rerun()
-                else:
-                    st.warning("Click fell outside valid room boundaries. Click inside an open room area.")
 
         if selected_polygons:
             total_area = sum(p.area for p in selected_polygons) / 1e6
