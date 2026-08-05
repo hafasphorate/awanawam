@@ -162,13 +162,13 @@ with tab_import:
             )
 
 # ==========================================
-# TAB 2: REGION SELECTION & EDITING (4-CORNER CLICK)
+# TAB 2: REGION SELECTION & EDITING (4-CORNER CLICK FIX)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
     st.info(
-        "💡 **4-Point Click Selection:** Click **4 points** on the floorplan to define the 4 corners of your camera's field of view. "
-        "The quadrilateral will automatically draw and highlight in real-time."
+        "💡 **4-Point Click Selection:** Click **4 points** anywhere on the floorplan canvas to define "
+        "the 4 corners of your camera's ground field of view. The shape will fill in real-time."
     )
 
     if "four_corners" not in st.session_state:
@@ -196,21 +196,21 @@ with tab_region:
                     ]
                     st.rerun()
 
-        # Display Selected Points Status
+        # Display Selection Progress Status
         num_pts = len(st.session_state.four_corners)
         if num_pts < 4:
             st.warning(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
         else:
             st.success("✅ All 4 Corners Selected!")
 
-        # Display formatted corner table
+        # Display Corner Coordinates Table
         corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
         formatted_table = []
         for idx, pt in enumerate(st.session_state.four_corners[:4]):
             formatted_table.append({
                 "Corner": corner_labels[idx] if idx < 4 else f"P{idx+1}",
-                "X Coordinate": round(pt[0], 2),
-                "Y Coordinate": round(pt[1], 2),
+                "X": round(pt[0], 2),
+                "Y": round(pt[1], 2),
             })
 
         if formatted_table:
@@ -246,13 +246,17 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Render DXF/DWG Wall Lines
+        # 1. Render DXF/DWG Wall Lines & Calculate Bounding Box
         wall_x, wall_y = [], []
+        all_x, all_y = [], []
+
         for line in st.session_state.get("dxf_walls", []):
             if hasattr(line, "xy"):
                 x, y = line.xy
                 wall_x.extend([x[0], x[1], None])
                 wall_y.extend([y[0], y[1], None])
+                all_x.extend(x)
+                all_y.extend(y)
 
         if wall_x:
             fig.add_trace(
@@ -267,16 +271,26 @@ with tab_region:
                 )
             )
 
-        # 2. Render VGA Nodes if loaded
-        if st.session_state.vga_grid_df is not None:
+        # 2. Add Click-Receiver Sensor Grid Across Floorplan Bounding Box
+        if all_x and all_y:
+            minx, maxx = min(all_x), max(all_x)
+            miny, maxy = min(all_y), max(all_y)
+            grid_step_x = (maxx - minx) / 50 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 50 if (maxy - miny) > 0 else 1.0
+
+            gx = np.arange(minx, maxx, grid_step_x)
+            gy = np.arange(miny, maxy, grid_step_y)
+            g_xx, g_yy = np.meshgrid(gx, gy)
+
             fig.add_trace(
                 go.Scatter(
-                    x=st.session_state.vga_grid_df["x"],
-                    y=st.session_state.vga_grid_df["y"],
+                    x=g_xx.flatten(),
+                    y=g_yy.flatten(),
                     mode="markers",
-                    marker=dict(size=4, color="rgba(200, 200, 200, 0.3)"),
-                    name="VGA Grid Nodes",
+                    marker=dict(size=14, color="rgba(0, 0, 0, 0.001)"), # Nearly invisible hit-box
                     hoverinfo="none",
+                    showlegend=False,
+                    name="click_sensor_grid",
                 )
             )
 
@@ -286,7 +300,6 @@ with tab_region:
             px = [p[0] for p in pts]
             py = [p[1] for p in pts]
 
-            # If 4 points are selected, close the loop
             if len(pts) == 4:
                 px_closed = px + [px[0]]
                 py_closed = py + [py[0]]
@@ -296,13 +309,12 @@ with tab_region:
                         y=py_closed,
                         mode="lines",
                         fill="toself",
-                        fillcolor="rgba(0, 230, 118, 0.3)",
+                        fillcolor="rgba(0, 230, 118, 0.35)",
                         line=dict(color="#00FF66", width=2.5),
                         name="Camera ROI Zone",
                     )
                 )
 
-            # Draw clicked markers and corner numbers P1, P2, P3, P4
             fig.add_trace(
                 go.Scatter(
                     x=px,
@@ -324,27 +336,27 @@ with tab_region:
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode=False,
+            hovermode="closest",
         )
 
-        # Streamlit Plotly Chart Event Handler
+        # Render Chart with dynamic key to ensure clean event updates
         chart_events = st.plotly_chart(
             fig,
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
-            key="four_corner_canvas",
+            key=f"four_corner_canvas_{len(st.session_state.four_corners)}",
         )
 
-        # Capture direct point clicks on the canvas
+        # Handle Selection Events
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
-                click_x = event_pts[0]["x"]
-                click_y = event_pts[0]["y"]
+                click_x = float(event_pts[0]["x"])
+                click_y = float(event_pts[0]["y"])
 
-                # Add point if less than 4 corners are selected
                 if len(st.session_state.four_corners) < 4:
-                    # Prevent duplicate accidental click inputs
+                    # Prevent rapid duplicate clicks
                     if not st.session_state.four_corners or (
                         st.session_state.four_corners[-1] != [click_x, click_y]
                     ):
@@ -353,7 +365,7 @@ with tab_region:
                             {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
                         ]
                         st.rerun()
-
+                        
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
 # ==========================================
