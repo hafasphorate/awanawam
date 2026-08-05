@@ -7,3 +7,6 @@ numpy
 opencv-python-headless
 matplotlib
 streamlit-plotly-events
+ultralytics
+torch
+torchvision
