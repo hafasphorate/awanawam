@@ -16,22 +16,20 @@ except ImportError:
 def render_playback_view(wall_lines=None, tracking_df=None):
     st.subheader("📊 2D Movement Playback & Crowd Metric Heatmaps")
 
-    # --- 1. SESSION STATE ALIGNMENT ---
+    # --- 1. SESSION STATE SYNCHRONIZATION ---
     if "wall_lines" not in st.session_state:
         st.session_state.wall_lines = []
     if "dxf_walls" not in st.session_state:
         st.session_state.dxf_walls = []
     if "tracking_results_df" not in st.session_state:
         st.session_state.tracking_results_df = None
-    if "is_playing" not in st.session_state:
-        st.session_state.is_playing = False
 
-    # Synchronize incoming arguments into session state
+    # Merge external/internal wall references so floorplans never vanish
     if wall_lines:
         st.session_state.wall_lines = wall_lines
         st.session_state.dxf_walls = wall_lines
-    active_walls = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
 
+    active_walls = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
     df = tracking_df if tracking_df is not None else st.session_state.get("tracking_results_df", None)
 
     # --- 2. UPLOAD INTERFACE ---
@@ -62,7 +60,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                         st.session_state.wall_lines = extracted_walls
                         st.session_state.dxf_walls = extracted_walls
                         active_walls = extracted_walls
-                        st.success(f"✅ Loaded JSON trajectories with embedded CAD floorplan!")
+                        st.success(f"✅ Loaded JSON trajectories and CAD floorplan!")
                     else:
                         st.success(f"✅ Loaded {len(parsed_df)} JSON tracking records!")
                 except Exception as e:
@@ -74,7 +72,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                 try:
                     parsed_df = pd.read_csv(uploaded_csv)
                     st.session_state.tracking_results_df = parsed_df
-                    st.session_state.wall_lines = []  # Clear CAD walls for pure CSV mode
+                    st.session_state.wall_lines = []  # Pure CSV mode
                     st.session_state.dxf_walls = []
                     active_walls = []
                     df = parsed_df
@@ -89,16 +87,14 @@ def render_playback_view(wall_lines=None, tracking_df=None):
             with col_dxf:
                 uploaded_dxf = st.file_uploader("📐 Upload CAD Layout (DXF)", type=["dxf"], key="tab4_dxf_combo")
 
-            # Parse DXF into wall_lines safely
             if uploaded_dxf:
                 parsed_walls = _parse_dxf_file(uploaded_dxf)
                 if parsed_walls:
                     st.session_state.wall_lines = parsed_walls
                     st.session_state.dxf_walls = parsed_walls
                     active_walls = parsed_walls
-                    st.success("✅ DXF Layout loaded!")
+                    st.success("✅ DXF Layout loaded successfully!")
 
-            # Parse CSV tracking independently
             if uploaded_csv:
                 try:
                     parsed_df = pd.read_csv(uploaded_csv)
@@ -118,10 +114,10 @@ def render_playback_view(wall_lines=None, tracking_df=None):
             st.rerun()
 
     if df is None or df.empty:
-        st.warning("⚠️ Please upload your dataset to launch playback.")
+        st.warning("⚠️ Please upload your tracking dataset above.")
         return
 
-    # --- 3. DATA VALIDATION & METRIC COMPUTATION ---
+    # --- 3. DATA CLEANING & COMPUTATION ---
     df.columns = [str(c).lower().strip() for c in df.columns]
     _map_column_aliases(df)
 
@@ -174,23 +170,21 @@ def render_playback_view(wall_lines=None, tracking_df=None):
     if "current_playback_frame" not in st.session_state:
         st.session_state.current_playback_frame = min_frame
 
-    # --- 5. ANIMATION & PLAYBACK CONTROLS ---
+    # Ensure frame stays in boundaries
+    st.session_state.current_playback_frame = max(min_frame, min(st.session_state.current_playback_frame, max_frame))
+
+    # --- 5. PLAYBACK ANIMATION CONTROLS ---
     col_p1, col_p2, col_p3, col_p4 = st.columns([1, 1, 1.5, 2.5])
 
     with col_p1:
-        play_clicked = st.button("▶️ Play", use_container_width=True)
+        play_btn = st.button("▶️ Play", use_container_width=True)
     with col_p2:
-        pause_clicked = st.button("⏸️ Pause", use_container_width=True)
+        pause_btn = st.button("⏸️ Pause", use_container_width=True)
     with col_p3:
         fps = st.select_slider("Speed (FPS)", options=[1, 2, 5, 10, 15, 24, 30], value=10)
 
-    if play_clicked:
-        st.session_state.is_playing = True
-    if pause_clicked:
-        st.session_state.is_playing = False
-
     with col_p4:
-        slider_frame = st.slider(
+        slider_val = st.slider(
             "Frame Slider",
             min_value=min_frame,
             max_value=max_frame,
@@ -198,23 +192,27 @@ def render_playback_view(wall_lines=None, tracking_df=None):
             step=1,
             key="playback_frame_slider"
         )
-        if not st.session_state.is_playing:
-            st.session_state.current_playback_frame = slider_frame
+        if not play_btn:
+            st.session_state.current_playback_frame = slider_val
 
-    # --- 6. RENDER INTERACTIVE PLAYBACK FIGURE ---
+    # --- 6. VIEWPORT CONTAINER & FIGURE BUILDER ---
     st.markdown("### 📽️ Interactive Playback View")
-    playback_container = st.empty()
+    viewport = st.empty()
 
-    def build_playback_figure(frame_idx):
+    def build_frame_figure(f_idx):
         fig = go.Figure()
+        
+        # 1. Draw CAD Floorplan
         _draw_cad_walls(fig, active_walls)
 
+        # 2. Add Heatmap
         if metric_choice != "None (Trajectory Only)":
-            active_heatmap_df = df if aggregation_mode == "Full Session Aggregated" else df[df["frame"] <= frame_idx]
+            active_heatmap_df = df if aggregation_mode == "Full Session Aggregated" else df[df["frame"] <= f_idx]
             _add_heatmap_layer(fig, active_heatmap_df, metric_choice)
 
-        start_frame = max(min_frame, frame_idx - trail_length)
-        frame_window_df = df[(df["frame"] >= start_frame) & (df["frame"] <= frame_idx)]
+        # 3. Add Agent Trails
+        start_frame = max(min_frame, f_idx - trail_length)
+        frame_window_df = df[(df["frame"] >= start_frame) & (df["frame"] <= f_idx)]
 
         for track_id, group in frame_window_df.groupby("track_id"):
             fig.add_trace(go.Scatter(
@@ -227,7 +225,8 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                 opacity=0.6
             ))
 
-        active_agents = df[df["frame"] == frame_idx]
+        # 4. Add Active Pedestrians
+        active_agents = df[df["frame"] == f_idx]
         if not active_agents.empty:
             fig.add_trace(go.Scatter(
                 x=active_agents["x"],
@@ -246,26 +245,21 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         _configure_layout(fig, df, active_walls)
         return fig
 
-    # Handle Playback Stream Loop
-    if st.session_state.is_playing:
-        for f in range(st.session_state.current_playback_frame, max_frame + 1):
-            if not st.session_state.is_playing:
-                break
-            st.session_state.current_playback_frame = f
-            fig = build_playback_figure(f)
-            playback_container.plotly_chart(fig, use_container_width=True, key=f"anim_frame_{f}")
+    # --- ANIMATION LOOP ---
+    if play_btn:
+        for frame in range(st.session_state.current_playback_frame, max_frame + 1):
+            st.session_state.current_playback_frame = frame
+            fig = build_frame_figure(frame)
+            viewport.plotly_chart(fig, use_container_width=True, key=f"dynamic_frame_{frame}")
             time.sleep(1.0 / fps)
-
-        st.session_state.is_playing = False
-        st.session_state.current_playback_frame = min_frame
     else:
-        fig = build_playback_figure(st.session_state.current_playback_frame)
-        playback_container.plotly_chart(fig, use_container_width=True)
+        fig = build_frame_figure(st.session_state.current_playback_frame)
+        viewport.plotly_chart(fig, use_container_width=True)
 
-    # --- 7. AGGREGATED HEATMAP & VECTOR FIELD AT BOTTOM ---
+    # --- 7. AGGREGATED HEATMAP AT BOTTOM ---
     st.markdown("---")
     st.markdown("### 📈 Aggregated Session Dynamics & Directional Vector Field")
-    st.caption("Spatial heatmaps and dynamic directional velocity arrows calculated across all frames.")
+    st.caption("Aggregated summary heatmap and directional velocity arrows across all frames.")
 
     col_v1, col_v2, col_v3 = st.columns([1, 1, 2])
     with col_v1:
@@ -293,7 +287,6 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 # --- HELPER FUNCTIONS ---
 
 def _map_column_aliases(df):
-    """Normalizes column headers across different CSV/JSON formats."""
     mappings = {
         "frame": ["frame_idx", "frame_id", "frames", "frame_num", "step", "timestamp"],
         "track_id": ["track_id", "id", "pedestrian_id", "agent_id", "track_idx", "person_id"],
@@ -309,7 +302,6 @@ def _map_column_aliases(df):
 
 
 def _calculate_derived_metrics(df):
-    """Computes velocities, speeds, and polar directional angles."""
     df.sort_values(by=["track_id", "frame"], inplace=True)
     df["dx"] = df.groupby("track_id")["x"].diff().fillna(0)
     df["dy"] = df.groupby("track_id")["y"].diff().fillna(0)
@@ -322,7 +314,6 @@ def _calculate_derived_metrics(df):
 
 
 def _draw_cad_walls(fig, wall_lines):
-    """Extracts and renders wall geometries onto Plotly figures."""
     if not wall_lines:
         return
 
@@ -335,13 +326,12 @@ def _draw_cad_walls(fig, wall_lines):
         elif isinstance(line, (list, tuple)):
             for i in range(len(line) - 1):
                 p1, p2 = line[i], line[i+1]
-                if isinstance(p1, (list, tuple, dict)) and isinstance(p2, (list, tuple, dict)):
-                    x1 = p1["x"] if isinstance(p1, dict) else p1[0]
-                    y1 = p1["y"] if isinstance(p1, dict) else p1[1]
-                    x2 = p2["x"] if isinstance(p2, dict) else p2[0]
-                    y2 = p2["y"] if isinstance(p2, dict) else p2[1]
-                    wall_x.extend([x1, x2, None])
-                    wall_y.extend([y1, y2, None])
+                x1 = p1["x"] if isinstance(p1, dict) else (p1["X (m)"] if isinstance(p1, dict) and "X (m)" in p1 else p1[0])
+                y1 = p1["y"] if isinstance(p1, dict) else (p1["Y (m)"] if isinstance(p1, dict) and "Y (m)" in p1 else p1[1])
+                x2 = p2["x"] if isinstance(p2, dict) else (p2["X (m)"] if isinstance(p2, dict) and "X (m)" in p2 else p2[0])
+                y2 = p2["y"] if isinstance(p2, dict) else (p2["Y (m)"] if isinstance(p2, dict) and "Y (m)" in p2 else p2[1])
+                wall_x.extend([x1, x2, None])
+                wall_y.extend([y1, y2, None])
 
     if wall_x:
         fig.add_trace(go.Scatter(
@@ -442,7 +432,7 @@ def _add_vector_field(fig, df, grid_bins=15, scale_multiplier=2.0):
         end_x = cx + norm_dx
         end_y = cy + norm_dy
 
-        # Main shaft
+        # Arrow line shaft
         arrow_x.extend([cx, end_x, None])
         arrow_y.extend([cy, end_y, None])
 
@@ -465,7 +455,7 @@ def _add_vector_field(fig, df, grid_bins=15, scale_multiplier=2.0):
             y=arrow_y,
             mode="lines",
             line=dict(color="#00FFFF", width=2.2),
-            name="Flow Field Vectors",
+            name="Flow Vectors",
             hoverinfo="none",
             showlegend=True
         ))
@@ -484,8 +474,8 @@ def _configure_layout(fig, df, wall_lines):
                 y_min, y_max = min(y_min, min(y)), max(y_max, max(y))
             elif isinstance(line, (list, tuple)):
                 for p in line:
-                    px = p["x"] if isinstance(p, dict) else (p[0] if isinstance(p, (list, tuple)) else None)
-                    py = p["y"] if isinstance(p, dict) else (p[1] if isinstance(p, (list, tuple)) else None)
+                    px = p["x"] if isinstance(p, dict) else (p["X (m)"] if isinstance(p, dict) and "X (m)" in p else (p[0] if isinstance(p, (list, tuple)) else None))
+                    py = p["y"] if isinstance(p, dict) else (p["Y (m)"] if isinstance(p, dict) and "Y (m)" in p else (p[1] if isinstance(p, (list, tuple)) else None))
                     if px is not None and py is not None:
                         x_min, x_max = min(x_min, px), max(x_max, px)
                         y_min, y_max = min(y_min, py), max(y_max, py)
@@ -501,20 +491,20 @@ def _configure_layout(fig, df, wall_lines):
 
 
 def _parse_tracking_json(uploaded_json):
-    """Extracts tracking trajectories AND embedded CAD wall lines from JSON."""
+    """Extracts tracking trajectories AND embedded floorplans from JSON."""
     content = json.load(uploaded_json)
     extracted_df = None
     extracted_walls = []
 
     if isinstance(content, dict):
-        # Look for trajectory lists
+        # Extract Trajectory Data
         for key in ["tracks", "data", "records", "results", "detections", "trajectories"]:
             if key in content and isinstance(content[key], list):
                 extracted_df = pd.DataFrame(content[key])
                 break
 
-        # Check for wall geometries embedded in JSON
-        for wall_key in ["walls", "wall_lines", "layout", "polygons", "cad"]:
+        # Extract Embedded CAD/Floorplan Geometry
+        for wall_key in ["walls", "wall_lines", "layout", "polygons", "cad", "floorplan"]:
             if wall_key in content and isinstance(content[wall_key], list):
                 extracted_walls = content[wall_key]
                 break
@@ -522,7 +512,7 @@ def _parse_tracking_json(uploaded_json):
         if extracted_df is None:
             flattened = []
             for k, v in content.items():
-                if isinstance(v, list) and k not in ["walls", "wall_lines"]:
+                if isinstance(v, list) and k not in ["walls", "wall_lines", "layout"]:
                     for item in v:
                         if isinstance(item, dict):
                             if "track_id" not in item:
@@ -538,9 +528,9 @@ def _parse_tracking_json(uploaded_json):
 
 
 def _parse_dxf_file(uploaded_dxf):
-    """Parses binary/string DXF byte content robustly into line segments."""
+    """Parses DXF files safely using ezdxf."""
     if ezdxf is None:
-        st.warning("⚠️ `ezdxf` library is not installed. Run `pip install ezdxf` to enable DXF parsing.")
+        st.warning("⚠️ `ezdxf` library is missing. Install with `pip install ezdxf`.")
         return []
 
     try:
@@ -562,7 +552,7 @@ def _parse_dxf_file(uploaded_dxf):
                 lines.append(points)
         return lines
     except Exception as e:
-        st.error(f"Error reading DXF structure: {e}")
+        st.error(f"Error parsing DXF file: {e}")
         return []
 
 
