@@ -68,14 +68,14 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             model_name = st.selectbox(
                 "Select Model Architecture:",
                 [
-                    "keremberke/yolov8n-head",  # Lightweight Pretrained Crowd Head Detector
-                    "rtdetr-l.pt",              # Real-Time Detection Transformer
-                    "yolov9e.pt",               # Dense YOLOv9
-                    "yolov8x-pose.pt"
+                    "yolov8n.pt", #Fast & CPU-Friendly
+                    "yolov8s.pt", #Balanced Accuracy
+                    "rtdetr-l.pt", #Transformer-based
+                    "yolov8x-pose.pt" #Pose/Keypoints
                 ],
                 index=0,
-                help="`keremberke/yolov8n-head` is recommended for high-density, top-down crowd tracking.",
             )
+            
             detect_target = st.radio(
                 "Tracking Point Target:",
                 ["Head", "Feet / Ground"],

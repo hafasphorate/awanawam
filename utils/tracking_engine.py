@@ -14,17 +14,31 @@ except ImportError:
 
 from utils.homography_engine import project_points
 
+# Map UI names to official Ultralytics models that auto-download seamlessly
+MODEL_MAPPING = {
+    "yolov8n.pt": "yolov8n.pt",
+    "keremberke/yolov8n-head": "yolov8n.pt",  # Fallback to lightweight standard YOLOv8n
+    "yolov8s.pt": "yolov8s.pt",
+    "rtdetr-l.pt": "rtdetr-l.pt",
+    "yolov9e.pt": "yolov9e.pt",
+    "yolov8x-pose.pt": "yolov8x-pose.pt",
+}
+
 
 @st.cache_resource
-def load_detection_model(model_name: str = "keremberke/yolov8n-head"):
+def load_detection_model(model_name: str = "yolov8n.pt"):
     """Loads and caches standard YOLO, Head Detectors, or RT-DETR models."""
     if not YOLO_AVAILABLE:
         return None
+    
+    # Resolve model file name
+    actual_model_path = MODEL_MAPPING.get(model_name, "yolov8n.pt")
+    
     try:
-        if "rtdetr" in model_name.lower():
-            model = RTDETR(model_name)
+        if "rtdetr" in actual_model_path.lower():
+            model = RTDETR(actual_model_path)
         else:
-            model = YOLO(model_name)
+            model = YOLO(actual_model_path)
         return model
     except Exception as e:
         st.error(f"Error loading model ({model_name}): {e}")
@@ -91,9 +105,9 @@ def process_video_frame(
     iou_threshold: float = 0.45,
     inference_size: int = 640,
     detect_target: str = "Head",
-    model_name: str = "keremberke/yolov8n-head",
+    model_name: str = "yolov8n.pt",
 ) -> tuple:
-    """Detects people using dedicated Head/Crowd detection models or YOLO pose."""
+    """Detects people using YOLO / RT-DETR and maps detection coordinates."""
     if frame_rgb is None:
         return None, pd.DataFrame()
 
@@ -122,11 +136,10 @@ def process_video_frame(
             if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
                 keypoints_data = res.keypoints.xy.cpu().numpy()
                 for idx, kpts in enumerate(keypoints_data):
-                    # Select head keypoints vs foot keypoints
                     if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
-                        valid_pts = [pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0] # Ankle keypoints
+                        valid_pts = [pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0]  # Ankle keypoints
                     else:
-                        valid_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]  # Nose/eyes/ears keypoints
+                        valid_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]   # Nose/eyes/ears keypoints
 
                     if len(valid_pts) > 0:
                         target_x = float(np.mean([pt[0] for pt in valid_pts]))
@@ -135,27 +148,32 @@ def process_video_frame(
                         cv2.circle(annotated_frame, (int(target_x), int(target_y)), 5, (255, 0, 128), -1)
                         detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
 
-            # 2. Bounding Box Models (Head Detectors / RT-DETR / Standard YOLO)
+            # 2. Bounding Box Models (Filter Person Class = 0)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
+                    cls_id = int(box.cls[0].cpu().numpy()) if hasattr(box, "cls") else 0
+                    
+                    # Filter for Person class (0) in COCO dataset models
+                    if cls_id != 0:
+                        continue
+
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = xyxy
 
                     target_x = float((x1 + x2) / 2.0)
                     
-                    # Choose point based on target (Top/Head vs Bottom/Feet)
                     if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
-                        target_y = float(y2)
+                        target_y = float(y2)  # Bottom center for feet ground contact
                     else:
-                        target_y = float((y1 + y2) / 2.0)
+                        target_y = float(y1)  # Top center for head target
 
                     pixel_points.append([target_x, target_y])
 
                     cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 128), 2)
                     cv2.circle(annotated_frame, (int(target_x), int(target_y)), 4, (255, 0, 128), -1)
 
-                    detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
+                    detection_list.append({"track_id": len(detection_list) + 1, "img_x": target_x, "img_y": target_y})
 
     # Project pixel points into 2D Floorplan Coordinates
     if H_matrix is not None and len(pixel_points) > 0:
