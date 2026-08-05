@@ -37,8 +37,6 @@ if "four_corners" not in st.session_state:
     st.session_state.four_corners = []
 if "editing_point_idx" not in st.session_state:
     st.session_state.editing_point_idx = None
-if "zoom_initialized" not in st.session_state:
-    st.session_state.zoom_initialized = False
 if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
 
@@ -108,7 +106,6 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
-                    st.session_state.zoom_initialized = False  # Reset view bounding box for new file
                     st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
@@ -133,7 +130,6 @@ with tab_import:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = wall_lines
-                    st.session_state.zoom_initialized = False  # Reset view bounding box for new file
                     st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
@@ -194,7 +190,6 @@ with tab_region:
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
-                st.session_state.zoom_initialized = False  # Re-center view on reset
                 st.session_state.processed_click_sig = None
                 st.rerun()
 
@@ -298,22 +293,24 @@ with tab_region:
                 )
             )
 
-        # Calculate bounding box for initial framing
+        # 2. Add Dense Click Target Grid & Fixed Boundary Anchors
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
-            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
-            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
-            init_x_range = [minx - pad_x, maxx + pad_x]
-            init_y_range = [miny - pad_y, maxy + pad_y]
-        else:
-            minx, maxx = -1, 10
-            miny, maxy = -1, 10
-            init_x_range = [-1, 10]
-            init_y_range = [-1, 10]
 
-        # 2. Add Dense Click Target Grid
-        if all_x and all_y:
+            # Invisible Fixed Corner Anchors so total canvas frame stays 100% constant
+            fig.add_trace(
+                go.Scatter(
+                    x=[minx, minx, maxx, maxx],
+                    y=[miny, maxy, miny, maxy],
+                    mode="markers",
+                    marker=dict(size=1, color="rgba(0,0,0,0)"),
+                    hoverinfo="none",
+                    showlegend=False,
+                    name="anchor_bounds",
+                )
+            )
+
             grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
             grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
 
@@ -372,33 +369,27 @@ with tab_region:
                 )
             )
 
-        # Build Axis Dicts: Apply explicit range ONLY on initial view frame load
-        xaxis_config = dict(
-            title="X Coordinate",
-            scaleanchor="y",
-            scaleratio=1,
-            showgrid=True,
-        )
-        yaxis_config = dict(
-            title="Y Coordinate",
-            showgrid=True,
-        )
-
-        if not st.session_state.zoom_initialized:
-            xaxis_config["range"] = init_x_range
-            yaxis_config["range"] = init_y_range
-            st.session_state.zoom_initialized = True
-
+        # Apply strict uirevision lock without overriding ranges
         fig.update_layout(
             template="plotly_dark",
             height=620,
-            xaxis=xaxis_config,
-            yaxis=yaxis_config,
+            xaxis=dict(
+                title="X Coordinate",
+                scaleanchor="y",
+                scaleratio=1,
+                showgrid=True,
+                autorange=True,
+            ),
+            yaxis=dict(
+                title="Y Coordinate",
+                showgrid=True,
+                autorange=True,
+            ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="persist_viewport_lock",  # Keeps client zoom locked when range is omitted
+            uirevision="PERMANENT_CANVAS_LOCK",  # Critical: Prevents layout reset across reruns
         )
 
         chart_events = st.plotly_chart(
