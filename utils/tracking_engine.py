@@ -35,7 +35,6 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
         return None
 
     try:
-        # Reset stream pointer to beginning
         video_file.seek(0)
         video_bytes = video_file.read()
         video_file.seek(0)
@@ -43,27 +42,23 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
         if not video_bytes:
             return None
 
-        # Create a named temp file and explicitly close it so OpenCV can open it cleanly
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
             tmp_v.write(video_bytes)
             tmp_path = tmp_v.name
 
         cap = cv2.VideoCapture(tmp_path)
-        
+
         if not cap.isOpened():
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
             return None
 
-        # Get total frames to prevent out-of-bounds frame seeking
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         target_frame = min(max(0, frame_number), max(0, total_frames - 1))
 
-        # Set position
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
         ret, frame = cap.read()
 
-        # Fallback: If position seek failed, read sequentially
         if not ret or frame is None:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             curr = 0
@@ -75,7 +70,6 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
 
         cap.release()
 
-        # Clean up temporary file safely
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
@@ -122,13 +116,20 @@ def process_video_frame(
     pixel_points = []
 
     if model is not None:
-        # Run inference / tracking
-        results = model.track(
-            annotated_frame,
-            conf=conf_threshold,
-            persist=True,
-            verbose=False,
-        )
+        # Run tracking if possible, fallback to standard prediction if lap is missing
+        try:
+            results = model.track(
+                annotated_frame,
+                conf=conf_threshold,
+                persist=True,
+                verbose=False,
+            )
+        except Exception:
+            results = model.predict(
+                annotated_frame,
+                conf=conf_threshold,
+                verbose=False,
+            )
 
         if results and len(results) > 0:
             res = results[0]
@@ -140,7 +141,7 @@ def process_video_frame(
 
                 for idx, kpts in enumerate(keypoints_data):
                     track_id = idx + 1
-                    if boxes is not None and idx < len(boxes) and boxes[idx].id is not None:
+                    if boxes is not None and idx < len(boxes) and hasattr(boxes[idx], "id") and boxes[idx].id is not None:
                         track_id = int(boxes[idx].id[0].cpu().numpy())
 
                     # Pose keypoint indices: 0 = Nose, 1 = Left Eye, 2 = Right Eye, 3 = Left Ear, 4 = Right Ear
@@ -150,7 +151,6 @@ def process_video_frame(
                         target_x = float(np.mean([pt[0] for pt in valid_head_pts]))
                         target_y = float(np.mean([pt[1] for pt in valid_head_pts]))
                     elif boxes is not None and idx < len(boxes):
-                        # Fallback to bbox
                         xyxy = boxes[idx].xyxy[0].cpu().numpy()
                         target_x = float((xyxy[0] + xyxy[2]) / 2.0)
                         target_y = float(xyxy[1] if detect_target == "Head" else xyxy[3])
@@ -159,7 +159,6 @@ def process_video_frame(
 
                     pixel_points.append([target_x, target_y])
 
-                    # Draw head point
                     cv2.circle(annotated_frame, (int(target_x), int(target_y)), 7, (255, 0, 128), -1)
                     cv2.putText(
                         annotated_frame,
@@ -182,15 +181,14 @@ def process_video_frame(
             # MODE B: Standard Object Bounding Box Detections
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
-                for box in boxes:
-                    # Filter for Person class (class_id == 0)
+                for idx, box in enumerate(boxes):
                     cls_id = int(box.cls[0].cpu().numpy()) if box.cls is not None else 0
                     if cls_id != 0:
                         continue
 
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = xyxy
-                    track_id = int(box.id[0].cpu().numpy()) if box.id is not None else 0
+                    track_id = int(box.id[0].cpu().numpy()) if hasattr(box, "id") and box.id is not None else (idx + 1)
 
                     target_x = (x1 + x2) / 2.0
                     target_y = y1 if detect_target == "Head" else y2

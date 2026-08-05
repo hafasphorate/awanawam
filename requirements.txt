@@ -6,6 +6,7 @@ plotly>=5.15.0
 shapely>=2.0.0
 ezdxf>=1.1.0
 ultralytics>=8.0.0
+lapx
 torch
 torchvision
 
