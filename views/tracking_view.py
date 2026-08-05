@@ -64,8 +64,13 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
         with col_cfg1:
             model_name = st.selectbox(
-                "YOLO Model Architecture:",
-                ["yolov8x-pose.pt", "yolov8m-pose.pt", "yolov8x.pt", "yolov8n-pose.pt"],
+                "Select Model Architecture:",
+                    [
+                    "keremberke/yolov8n-head",  # Pretrained Crowd Head Detector
+                    "rtdetr-l.pt",              # Real-Time Detection Transformer
+                    "yolov9e.pt",               # Dense YOLOv9
+                    "yolov8x-pose.pt"
+                ],
                 index=0,
                 help="`yolov8x-pose.pt` is the largest model, providing maximal accuracy for small heads.",
             )

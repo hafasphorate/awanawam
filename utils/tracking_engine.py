@@ -6,9 +6,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# Try importing ultralytics YOLO
 try:
-    from ultralytics import YOLO
+    from ultralytics import YOLO, RTDETR
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
@@ -17,69 +16,19 @@ from utils.homography_engine import project_points
 
 
 @st.cache_resource
-def load_yolo_model(model_name: str = "yolov8x-pose.pt"):
-    """Loads and caches the YOLO model for detection."""
+def load_detection_model(model_name: str = "keremberke/yolov8n-head"):
+    """Loads and caches standard YOLO, Head Detectors, or RT-DETR models."""
     if not YOLO_AVAILABLE:
         return None
     try:
-        model = YOLO(model_name)
+        if "rtdetr" in model_name.lower():
+            model = RTDETR(model_name)
+        else:
+            model = YOLO(model_name)
         return model
     except Exception as e:
-        st.error(f"Error loading YOLO model ({model_name}): {e}")
+        st.error(f"Error loading model ({model_name}): {e}")
         return None
-
-
-def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
-    """Extracts an RGB image frame safely from a Streamlit uploaded video file."""
-    if video_file is None:
-        return None
-
-    try:
-        video_file.seek(0)
-        video_bytes = video_file.read()
-        video_file.seek(0)
-
-        if not video_bytes:
-            return None
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
-            tmp_v.write(video_bytes)
-            tmp_path = tmp_v.name
-
-        cap = cv2.VideoCapture(tmp_path)
-
-        if not cap.isOpened():
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            return None
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        target_frame = min(max(0, frame_number), max(0, total_frames - 1))
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        ret, frame = cap.read()
-
-        if not ret or frame is None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            curr = 0
-            while cap.isOpened() and curr <= target_frame:
-                ret, frame = cap.read()
-                if curr == target_frame:
-                    break
-                curr += 1
-
-        cap.release()
-
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-        if ret and frame is not None:
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    except Exception as e:
-        st.error(f"Video Decoding Error: {e}")
-
-    return None
 
 
 def process_video_frame(
@@ -88,140 +37,64 @@ def process_video_frame(
     conf_threshold: float = 0.15,
     iou_threshold: float = 0.45,
     inference_size: int = 1280,
-    detect_target: str = "Head",
-    model_name: str = "yolov8x-pose.pt",
+    model_name: str = "keremberke/yolov8n-head",
 ) -> tuple:
-    """Detects people in high-resolution, estimates head/ground positions, 
-
-    and projects them onto floorplan coordinates.
-    """
+    """Detects people using dedicated Head/Crowd detection models."""
     if frame_rgb is None:
         return None, pd.DataFrame()
 
     annotated_frame = frame_rgb.copy()
-    h, w, _ = annotated_frame.shape
 
     if not YOLO_AVAILABLE:
-        cv2.putText(
-            annotated_frame,
-            "Ultralytics YOLO not installed!",
-            (20, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
-            (255, 0, 0),
-            2,
-        )
         return annotated_frame, pd.DataFrame()
 
-    model = load_yolo_model(model_name)
+    model = load_detection_model(model_name)
     detection_list = []
     pixel_points = []
 
     if model is not None:
-        # Run tracking with dynamic resolution and custom NMS IoU threshold
-        try:
-            results = model.track(
-                annotated_frame,
-                conf=conf_threshold,
-                iou=iou_threshold,
-                imgsz=inference_size,
-                persist=True,
-                verbose=False,
-            )
-        except Exception:
-            results = model.predict(
-                annotated_frame,
-                conf=conf_threshold,
-                iou=iou_threshold,
-                imgsz=inference_size,
-                verbose=False,
-            )
+        results = model.predict(
+            annotated_frame,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            imgsz=inference_size,
+            verbose=False,
+        )
 
         if results and len(results) > 0:
             res = results[0]
 
-            # MODE A: Keypoint / Pose Detection (Head Keypoint Focus)
+            # 1. Check for Pose Keypoints (if using pose models)
             if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
                 keypoints_data = res.keypoints.xy.cpu().numpy()
-                boxes = res.boxes if hasattr(res, "boxes") else None
-
                 for idx, kpts in enumerate(keypoints_data):
-                    track_id = idx + 1
-                    if boxes is not None and idx < len(boxes) and hasattr(boxes[idx], "id") and boxes[idx].id is not None:
-                        track_id = int(boxes[idx].id[0].cpu().numpy())
-
-                    # Head keypoint indices: 0: Nose, 1: L-Eye, 2: R-Eye, 3: L-Ear, 4: R-Ear
                     valid_head_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]
-
-                    if detect_target == "Head" and len(valid_head_pts) > 0:
+                    if len(valid_head_pts) > 0:
                         target_x = float(np.mean([pt[0] for pt in valid_head_pts]))
                         target_y = float(np.mean([pt[1] for pt in valid_head_pts]))
-                    elif boxes is not None and idx < len(boxes):
-                        xyxy = boxes[idx].xyxy[0].cpu().numpy()
-                        target_x = float((xyxy[0] + xyxy[2]) / 2.0)
-                        target_y = float(xyxy[1] if detect_target == "Head" else xyxy[3])
-                    else:
-                        continue
+                        pixel_points.append([target_x, target_y])
+                        cv2.circle(annotated_frame, (int(target_x), int(target_y)), 5, (255, 0, 128), -1)
+                        detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
 
-                    pixel_points.append([target_x, target_y])
-
-                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 6, (255, 0, 128), -1)
-                    cv2.putText(
-                        annotated_frame,
-                        f"ID:{track_id}",
-                        (int(target_x) + 6, int(target_y) - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 255, 128),
-                        2,
-                    )
-
-                    detection_list.append({
-                        "track_id": track_id,
-                        "img_x": target_x,
-                        "img_y": target_y,
-                        "world_x": None,
-                        "world_y": None,
-                    })
-
-            # MODE B: Standard Object Bounding Boxes
+            # 2. Check for Bounding Boxes (Head Detectors / RT-DETR / Standard YOLO)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
-                    cls_id = int(box.cls[0].cpu().numpy()) if box.cls is not None else 0
-                    if cls_id != 0:
-                        continue
-
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = xyxy
-                    track_id = int(box.id[0].cpu().numpy()) if hasattr(box, "id") and box.id is not None else (idx + 1)
 
+                    # Center point of bounding box (ideal for head detectors)
                     target_x = (x1 + x2) / 2.0
-                    target_y = y1 if detect_target == "Head" else y2
+                    target_y = (y1 + y2) / 2.0
 
                     pixel_points.append([target_x, target_y])
 
                     cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 128), 2)
-                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 6, (255, 0, 128), -1)
-                    cv2.putText(
-                        annotated_frame,
-                        f"ID:{track_id}",
-                        (int(x1), max(15, int(y1) - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 255, 128),
-                        2,
-                    )
+                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 4, (255, 0, 128), -1)
 
-                    detection_list.append({
-                        "track_id": track_id,
-                        "img_x": target_x,
-                        "img_y": target_y,
-                        "world_x": None,
-                        "world_y": None,
-                    })
+                    detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
 
-    # Project pixel points into world coordinates
+    # Project to 2D Floorplan
     if H_matrix is not None and len(pixel_points) > 0:
         world_pts = project_points(pixel_points, H_matrix)
         for idx, w_pt in enumerate(world_pts):
