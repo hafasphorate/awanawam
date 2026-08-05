@@ -29,21 +29,18 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         col_up1, col_up2 = st.columns(2)
 
         with col_up1:
-            # Combined CSV and JSON Uploader
             uploaded_file = st.file_uploader(
                 "📂 Upload Tracking File (CSV or JSON)",
                 type=["csv", "json"],
                 key="tab4_data_upload"
             )
             
-            # Optional DXF Uploader
             uploaded_dxf = st.file_uploader(
                 "📐 Upload Floorplan Layout (DXF - Optional)",
                 type=["dxf"],
                 key="tab4_dxf_upload"
             )
 
-            # Process DXF file
             if uploaded_dxf is not None:
                 parsed_walls = _parse_dxf_file(uploaded_dxf)
                 if parsed_walls:
@@ -51,7 +48,6 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                     wall_lines = parsed_walls
                     st.success("✅ Loaded DXF CAD layout!")
 
-            # Process CSV/JSON file
             if uploaded_file is not None:
                 try:
                     df = _parse_tracking_file(uploaded_file)
@@ -75,7 +71,9 @@ def render_playback_view(wall_lines=None, tracking_df=None):
     # Normalize column names
     df.columns = [str(c).lower().strip() for c in df.columns]
 
-    # Map frame variations (including frame_idx) to 'frame'
+    # --- COLUMN ALIAS MAPPING ---
+    
+    # 1. Frame mapping
     frame_aliases = ["frame_idx", "frame_id", "frames", "frame_num", "step", "timestamp"]
     if "frame" not in df.columns:
         for alias in frame_aliases:
@@ -83,12 +81,28 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                 df.rename(columns={alias: "frame"}, inplace=True)
                 break
 
-    # Map ID variations to 'track_id'
-    id_aliases = ["id", "pedestrian_id", "agent_id", "track_idx"]
+    # 2. Track ID mapping
+    id_aliases = ["track_id", "id", "pedestrian_id", "agent_id", "track_idx", "person_id"]
     if "track_id" not in df.columns:
         for alias in id_aliases:
             if alias in df.columns:
                 df.rename(columns={alias: "track_id"}, inplace=True)
+                break
+
+    # 3. X Coordinate mapping
+    x_aliases = ["world_x", "pos_x", "x_coord", "x_pos", "px", "x_m"]
+    if "x" not in df.columns:
+        for alias in x_aliases:
+            if alias in df.columns:
+                df.rename(columns={alias: "x"}, inplace=True)
+                break
+
+    # 4. Y Coordinate mapping
+    y_aliases = ["world_y", "pos_y", "y_coord", "y_pos", "py", "y_m"]
+    if "y" not in df.columns:
+        for alias in y_aliases:
+            if alias in df.columns:
+                df.rename(columns={alias: "y"}, inplace=True)
                 break
 
     # Validate essential columns
@@ -97,7 +111,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     if missing_cols:
         st.error(f"❌ Loaded file is missing required columns: `{', '.join(missing_cols)}`")
-        st.write("Found columns:", list(df.columns))
+        st.write("Found columns in your dataset:", list(df.columns))
 
         if st.button("🔄 Reset & Try Again"):
             st.session_state.tracking_results_df = None
@@ -241,21 +255,41 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
 
 def _parse_tracking_file(uploaded_file):
-    """Parses uploaded CSV or JSON file into a pandas DataFrame."""
+    """Parses uploaded CSV or JSON file safely into a pandas DataFrame."""
     file_name = uploaded_file.name.lower()
 
     if file_name.endswith(".csv"):
         return pd.read_csv(uploaded_file)
+    
     elif file_name.endswith(".json"):
         content = json.load(uploaded_file)
+        
+        # Scenario 1: Array of row records [{...}, {...}]
         if isinstance(content, list):
-            return pd.DataFrame(content)
+            return pd.read_json(io.StringIO(json.dumps(content)))
+        
+        # Scenario 2: Dict containing tracking array key e.g. {"tracks": [...]}
         elif isinstance(content, dict):
-            # Check for nested data structures like {"tracks": [...]}
-            for key in ["tracks", "data", "records", "results"]:
+            for key in ["tracks", "data", "records", "results", "detections", "trajectories"]:
                 if key in content and isinstance(content[key], list):
                     return pd.DataFrame(content[key])
-            return pd.DataFrame(content)
+            
+            # Scenario 3: Nested track structures e.g. {"track_1": [{x,y,...}], "track_2": [...]}
+            flattened_records = []
+            for k, v in content.items():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict):
+                            if "track_id" not in item:
+                                item["track_id"] = k
+                            flattened_records.append(item)
+            
+            if flattened_records:
+                return pd.DataFrame(flattened_records)
+
+            # Scenario 4: Standard dictionary of lists (must be same length)
+            return pd.DataFrame.from_dict(content, orient="index").T if any(isinstance(v, list) for v in content.values()) else pd.DataFrame([content])
+            
     else:
         raise ValueError("Unsupported file format. Please upload CSV or JSON.")
 
@@ -267,7 +301,6 @@ def _parse_dxf_file(uploaded_dxf):
         return []
 
     try:
-        # ezdxf requires stream reading
         dxf_bytes = uploaded_dxf.read()
         doc = ezdxf.read(io.StringIO(dxf_bytes.decode('utf-8', errors='ignore')))
         msp = doc.modelspace()
