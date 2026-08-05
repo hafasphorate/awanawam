@@ -188,6 +188,8 @@ with tab_region:
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
+                if "roi_floorplan_canvas" in st.session_state:
+                    del st.session_state["roi_floorplan_canvas"]
                 st.rerun()
 
         with col_btn2:
@@ -364,7 +366,7 @@ with tab_region:
             clickmode="event+select",
             dragmode=False,
             hovermode="closest",
-            uirevision="constant_viewport", # Retains user zoom & pan position
+            uirevision="static_viewport_key", # Retains user zoom & pan position
         )
 
         chart_events = st.plotly_chart(
@@ -372,7 +374,7 @@ with tab_region:
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
-            key=f"four_corner_canvas_{len(st.session_state.four_corners)}_{st.session_state.editing_point_idx}",
+            key="roi_floorplan_canvas",  # Static key keeps component mounted in DOM
         )
 
         # Event Dispatcher for Direct Map Clicks
