@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import json
 
 def render_playback_view(wall_lines, tracking_df=None):
     st.subheader("📊 2D Movement Playback & Crowd Metric Heatmaps")
@@ -10,29 +11,37 @@ def render_playback_view(wall_lines, tracking_df=None):
     # 1. Check Session State
     df = tracking_df if tracking_df is not None else st.session_state.get("tracking_results_df", None)
 
-    # 2. Fallback: Allow direct CSV upload if session state is missing
+    # 2. If data is missing, render an easy upload interface right inside Tab 4
     if df is None or df.empty:
-        st.info("ℹ️ No active tracking session found. You can run tracking in Tab 2.3 or upload a previously exported tracking CSV below.")
+        st.warning("⚠️ No active tracking session found in memory.")
+        st.info("💡 **Quick Fix:** Upload your exported tracking CSV file below, or use mock data to test the playback interface instantly.")
+
+        col_up1, col_up2 = st.columns(2)
         
-        uploaded_csv = st.file_uploader("Upload Tracking CSV Result", type=["csv"], key="playback_csv_uploader")
-        
-        if uploaded_csv is not None:
-            try:
-                df = pd.read_csv(uploaded_csv)
-                st.session_state.tracking_results_df = df
-                st.success(f"✅ Loaded {len(df)} tracking records!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error reading CSV: {e}")
-                return
-        else:
-            if st.checkbox("🧪 Load Mock Playback Data for Testing", value=False):
+        with col_up1:
+            uploaded_csv = st.file_uploader(
+                "📂 Upload Tracking CSV (Exported from Tab 2.3)",
+                type=["csv"],
+                key="tab4_csv_upload"
+            )
+            if uploaded_csv is not None:
+                try:
+                    df = pd.read_csv(uploaded_csv)
+                    st.session_state.tracking_results_df = df
+                    st.success(f"✅ Successfully loaded {len(df)} tracking records!")
+                    st.rerurn()
+                except Exception as e:
+                    st.error(f"Error parsing CSV file: {e}")
+
+        with col_up2:
+            if st.button("🧪 Load Mock Playback Data for Testing", use_container_width=True):
                 df = _generate_mock_tracking_data()
                 st.session_state.tracking_results_df = df
-                st.rerun()
-            return
+                st.rerurn()
 
-    # Normalize column names if needed
+        return
+
+    # Normalize column names just in case
     df.columns = [c.lower().strip() for c in df.columns]
 
     # --- CONTROLS BAR ---
@@ -42,7 +51,8 @@ def render_playback_view(wall_lines, tracking_df=None):
         metric_choice = st.selectbox(
             "Select Crowd Metric Heatmap:",
             options=["None (Trajectory Only)", "Crowd Volume", "Density", "Speed", "Direction"],
-            index=1
+            index=1,
+            key="playback_metric_selectbox"
         )
 
     max_frame = int(df["frame"].max())
@@ -64,10 +74,11 @@ def render_playback_view(wall_lines, tracking_df=None):
             min_value=1,
             max_value=100,
             value=15,
-            step=5
+            step=5,
+            key="playback_trail_input"
         )
 
-    # --- PREPARE FIGURE ---
+    # --- PREPARE PLOTLY FIGURE ---
     fig = go.Figure()
 
     # Draw CAD Walls
@@ -92,7 +103,7 @@ def render_playback_view(wall_lines, tracking_df=None):
             showlegend=False
         ))
 
-    # Add Heatmap Layer
+    # Add Heatmap Layer based on Selected Metric
     if metric_choice != "None (Trajectory Only)":
         heatmap_df = df[df["frame"] <= current_frame]
         
@@ -125,7 +136,7 @@ def render_playback_view(wall_lines, tracking_df=None):
                 contours=dict(coloring="heatmap")
             ))
 
-    # Add 2D Human Trajectories
+    # Add 2D Human Trajectory Trails
     start_frame = max(min_frame, current_frame - trail_length)
     frame_window_df = df[(df["frame"] >= start_frame) & (df["frame"] <= current_frame)]
 
@@ -140,7 +151,7 @@ def render_playback_view(wall_lines, tracking_df=None):
             opacity=0.6
         ))
 
-    # Active Pedestrians Marker
+    # Add Active Pedestrians at Current Frame
     active_agents = df[df["frame"] == current_frame]
     if not active_agents.empty:
         fig.add_trace(go.Scatter(
@@ -169,6 +180,7 @@ def render_playback_view(wall_lines, tracking_df=None):
     st.plotly_chart(fig, use_container_width=True)
 
 def _generate_mock_tracking_data():
+    """Generates mock testing tracks."""
     np.random.seed(42)
     records = []
     for tid in range(1, 9):
