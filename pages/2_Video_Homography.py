@@ -162,59 +162,68 @@ with tab_import:
             )
 
 # ==========================================
-# TAB 2: REGION SELECTION & EDITING (4-CORNER CLICK FIX)
+# TAB 2: REGION SELECTION & EDITING (ENHANCED)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
     st.info(
         "💡 **4-Point Click Selection:** Click **4 points** anywhere on the floorplan canvas to define "
-        "the 4 corners of your camera's ground field of view. The shape will fill in real-time."
+        "the corners of your camera's field of view. Zoom in as needed — the viewport position will remain locked between clicks!"
     )
 
     if "four_corners" not in st.session_state:
         st.session_state.four_corners = []
+    if "editing_point_idx" not in st.session_state:
+        st.session_state.editing_point_idx = None
 
-    col_controls, col_plot = st.columns([1, 2.5])
+    col_controls, col_plot = st.columns([1.1, 2.4])
 
     with col_controls:
         st.markdown("#### Corner Coordinates (CAD World)")
 
-        # Control Buttons
+        # Global Control Buttons
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("🔴 Clear Points", use_container_width=True):
+            if st.button("🔴 Reset All", use_container_width=True):
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
+                st.session_state.editing_point_idx = None
                 st.rerun()
 
         with col_btn2:
-            if len(st.session_state.four_corners) > 0:
-                if st.button("↩️ Undo Last", use_container_width=True):
-                    st.session_state.four_corners.pop()
-                    st.session_state.selected_polygon_pts = [
-                        {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                    ]
+            if st.session_state.editing_point_idx is not None:
+                if st.button("❌ Cancel Edit", use_container_width=True):
+                    st.session_state.editing_point_idx = None
                     st.rerun()
 
-        # Display Selection Progress Status
+        # Display Selection Status
         num_pts = len(st.session_state.four_corners)
-        if num_pts < 4:
-            st.warning(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
+        if st.session_state.editing_point_idx is not None:
+            edit_num = st.session_state.editing_point_idx + 1
+            st.warning(f"🎯 **Editing Mode Active:** Click anywhere on the map to re-position **P{edit_num}**.")
+        elif num_pts < 4:
+            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
         else:
             st.success("✅ All 4 Corners Selected!")
 
-        # Display Corner Coordinates Table
+        # Per-Point Table with Redo / Edit Buttons
         corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
-        formatted_table = []
-        for idx, pt in enumerate(st.session_state.four_corners[:4]):
-            formatted_table.append({
-                "Corner": corner_labels[idx] if idx < 4 else f"P{idx+1}",
-                "X": round(pt[0], 2),
-                "Y": round(pt[1], 2),
-            })
+        
+        if len(st.session_state.four_corners) > 0:
+            st.markdown("---")
+            st.markdown("##### Selected Points & Individual Redo")
+            for idx, pt in enumerate(st.session_state.four_corners[:4]):
+                c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
+                col_info, col_act = st.columns([2.5, 1])
 
-        if formatted_table:
-            st.dataframe(pd.DataFrame(formatted_table), use_container_width=True)
+                with col_info:
+                    st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
+                with col_act:
+                    is_currently_editing = (st.session_state.editing_point_idx == idx)
+                    btn_label = "🎯 Target" if is_currently_editing else "✏️ Edit"
+                    if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
+                        st.session_state.editing_point_idx = idx
+                        st.rerun()
 
         st.markdown("---")
 
@@ -246,17 +255,28 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Render DXF/DWG Wall Lines & Calculate Bounding Box
+        # 1. Unpack Wall Lines (Supports both live DXF objects and JSON imported dicts/lists)
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
-        for line in st.session_state.get("dxf_walls", []):
+        dxf_walls = st.session_state.get("dxf_walls", [])
+        for line in dxf_walls:
+            # Handles Shapely LineString / Polygon objects from DXF parser
             if hasattr(line, "xy"):
                 x, y = line.xy
                 wall_x.extend([x[0], x[1], None])
                 wall_y.extend([y[0], y[1], None])
                 all_x.extend(x)
                 all_y.extend(y)
+            # Handles raw coordinate tuples/lists parsed from JSON import
+            elif isinstance(line, (list, tuple)):
+                for pt in line:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        all_x.append(pt[0])
+                        all_y.append(pt[1])
+                for i in range(len(line) - 1):
+                    wall_x.extend([line[i][0], line[i+1][0], None])
+                    wall_y.extend([line[i][1], line[i+1][1], None])
 
         if wall_x:
             fig.add_trace(
@@ -271,12 +291,12 @@ with tab_region:
                 )
             )
 
-        # 2. Add Click-Receiver Sensor Grid Across Floorplan Bounding Box
+        # 2. Add Click-Receiver Sensor Grid Across Bounding Box
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
-            grid_step_x = (maxx - minx) / 50 if (maxx - minx) > 0 else 1.0
-            grid_step_y = (maxy - miny) / 50 if (maxy - miny) > 0 else 1.0
+            grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
 
             gx = np.arange(minx, maxx, grid_step_x)
             gy = np.arange(miny, maxy, grid_step_y)
@@ -287,14 +307,14 @@ with tab_region:
                     x=g_xx.flatten(),
                     y=g_yy.flatten(),
                     mode="markers",
-                    marker=dict(size=14, color="rgba(0, 0, 0, 0.001)"), # Nearly invisible hit-box
+                    marker=dict(size=14, color="rgba(0, 0, 0, 0.001)"),
                     hoverinfo="none",
                     showlegend=False,
                     name="click_sensor_grid",
                 )
             )
 
-        # 3. Render Clicked 4 Corners and Polygon Fill
+        # 3. Render Selected Corners & ROI Fill Area
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px = [p[0] for p in pts]
@@ -315,12 +335,18 @@ with tab_region:
                     )
                 )
 
+            # Draw Point Markers & Highlight active editing point in yellow
+            marker_colors = [
+                "#FFD700" if (st.session_state.editing_point_idx == i) else "#00FF66"
+                for i in range(len(pts))
+            ]
+
             fig.add_trace(
                 go.Scatter(
                     x=px,
                     y=py,
                     mode="markers+text",
-                    marker=dict(size=12, color="#00FF66", symbol="circle"),
+                    marker=dict(size=14, color=marker_colors, symbol="circle"),
                     text=[f"P{i+1}" for i in range(len(pts))],
                     textposition="top right",
                     textfont=dict(size=14, color="#FFFFFF"),
@@ -328,35 +354,46 @@ with tab_region:
                 )
             )
 
+        # Layout Configuration with uirevision=True to retain zoom level across reruns
         fig.update_layout(
             template="plotly_dark",
-            height=600,
+            height=620,
             xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode=False,
             hovermode="closest",
+            uirevision="constant_viewport", # Retains user zoom & pan position
         )
 
-        # Render Chart with dynamic key to ensure clean event updates
         chart_events = st.plotly_chart(
             fig,
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
-            key=f"four_corner_canvas_{len(st.session_state.four_corners)}",
+            key=f"four_corner_canvas_{len(st.session_state.four_corners)}_{st.session_state.editing_point_idx}",
         )
 
-        # Handle Selection Events
+        # Event Dispatcher for Direct Map Clicks
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
                 click_x = float(event_pts[0]["x"])
                 click_y = float(event_pts[0]["y"])
 
-                if len(st.session_state.four_corners) < 4:
-                    # Prevent rapid duplicate clicks
+                # Mode A: Replacing/Redoing a Specific Selected Corner
+                if st.session_state.editing_point_idx is not None:
+                    target_idx = st.session_state.editing_point_idx
+                    st.session_state.four_corners[target_idx] = [click_x, click_y]
+                    st.session_state.editing_point_idx = None
+                    st.session_state.selected_polygon_pts = [
+                        {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                    ]
+                    st.rerun()
+
+                # Mode B: Adding a New Corner (Up to 4 total)
+                elif len(st.session_state.four_corners) < 4:
                     if not st.session_state.four_corners or (
                         st.session_state.four_corners[-1] != [click_x, click_y]
                     ):
@@ -365,7 +402,7 @@ with tab_region:
                             {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
                         ]
                         st.rerun()
-                        
+
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
 # ==========================================
