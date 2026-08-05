@@ -29,7 +29,7 @@ def render_playback_view(wall_lines, tracking_df=None):
                     df = pd.read_csv(uploaded_csv)
                     st.session_state.tracking_results_df = df
                     st.success(f"✅ Successfully loaded {len(df)} tracking records!")
-                    st.rerurn()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error parsing CSV file: {e}")
 
@@ -37,7 +37,7 @@ def render_playback_view(wall_lines, tracking_df=None):
             if st.button("🧪 Load Mock Playback Data for Testing", use_container_width=True):
                 df = _generate_mock_tracking_data()
                 st.session_state.tracking_results_df = df
-                st.rerurn()
+                st.rerun()
 
         return
 
