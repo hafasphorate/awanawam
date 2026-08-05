@@ -6,3 +6,4 @@ pandas
 numpy
 opencv-python-headless
 matplotlib
+streamlit-plotly-events
