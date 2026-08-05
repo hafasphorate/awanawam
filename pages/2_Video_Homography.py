@@ -7,9 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from shapely.geometry import LineString, Polygon
 import streamlit as st
-from streamlit_plotly_events import plotly_events
 
-# Reuse your working CAD engine and tracking functions
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
@@ -34,6 +32,10 @@ if "homography_matrix" not in st.session_state:
     st.session_state.homography_matrix = None
 if "selected_frame_idx" not in st.session_state:
     st.session_state.selected_frame_idx = 0
+if "camera_view_range" not in st.session_state:
+    st.session_state.camera_view_range = None
+if "last_click_hash" not in st.session_state:
+    st.session_state.last_click_hash = None
 
 
 # Navigation Tabs
@@ -51,7 +53,7 @@ with tab_import:
 
     col_json, col_dxf = st.columns(2)
 
-    # 📄 Option A: JSON Import
+    # Option A: JSON Import
     with col_json:
         st.markdown("### 📄 Option A: Import Exported JSON")
         uploaded_json = st.file_uploader(
@@ -64,12 +66,10 @@ with tab_import:
             try:
                 data = json.load(uploaded_json)
 
-                # 1. Parse VGA Grid
                 if "vga_grid" in data and data["vga_grid"]:
                     st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Parse Polygon Points Safely
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
@@ -87,12 +87,10 @@ with tab_import:
                         st.session_state.four_corners = [[p["X (m)"], p["Y (m)"]] for p in formatted_pts]
                         st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
 
-                # 3. Parse Homography Matrix
                 if "homography_matrix" in data and data["homography_matrix"]:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
                     st.success("✅ Loaded pre-saved Homography Matrix")
 
-                # 4. Parse Walls
                 if "dxf_walls" in data and data["dxf_walls"]:
                     walls = []
                     for w in data["dxf_walls"]:
@@ -101,12 +99,13 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
+                    st.session_state.camera_view_range = None
                     st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: CAD Import (DXF / DWG)
+    # Option B: CAD Import
     with col_dxf:
         st.markdown("### 📐 Option B: Import Raw CAD File")
         uploaded_cad = st.file_uploader(
@@ -125,6 +124,7 @@ with tab_import:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = wall_lines
+                    st.session_state.camera_view_range = None
                     st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
@@ -134,7 +134,7 @@ with tab_import:
 
     st.markdown("---")
 
-    # 📹 Surveillance Video Upload
+    # Video Upload
     st.markdown("### 📹 Video Stream Target")
     uploaded_video = st.file_uploader(
         "Upload Surveillance Video (.mp4, .avi, .mov)",
@@ -169,8 +169,8 @@ with tab_import:
 with tab_region:
     st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
     st.info(
-        "💡 **4-Point Click Selection:** Click **4 points** anywhere on the floorplan canvas to define "
-        "the corners of your camera's field of view. Zoom in freely — zoom position will remain completely locked."
+        "💡 **4-Point Click Selection:** Click **4 points** on the floorplan to set your camera corners. "
+        "Zoom or pan freely — your zoom state is locked across clicks!"
     )
 
     if "four_corners" not in st.session_state:
@@ -183,13 +183,15 @@ with tab_region:
     with col_controls:
         st.markdown("#### Corner Coordinates (CAD World)")
 
-        # Global Control Buttons
+        # Global Buttons
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("🔴 Reset All", use_container_width=True):
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
+                st.session_state.camera_view_range = None
+                st.session_state.last_click_hash = None
                 st.rerun()
 
         with col_btn2:
@@ -198,22 +200,22 @@ with tab_region:
                     st.session_state.editing_point_idx = None
                     st.rerun()
 
-        # Display Selection Status
+        # Selection Status
         num_pts = len(st.session_state.four_corners)
         if st.session_state.editing_point_idx is not None:
             edit_num = st.session_state.editing_point_idx + 1
-            st.warning(f"🎯 **Editing Mode Active:** Click anywhere on the map to re-position **P{edit_num}**.")
+            st.warning(f"🎯 **Editing P{edit_num}:** Click anywhere on the map to set the new position.")
         elif num_pts < 4:
             st.info(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
         else:
             st.success("✅ All 4 Corners Selected!")
 
-        # Per-Point Table with Redo / Edit Buttons
+        # Point Table with Edit Controls
         corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
         
         if len(st.session_state.four_corners) > 0:
             st.markdown("---")
-            st.markdown("##### Selected Points & Individual Redo")
+            st.markdown("##### Selected Points")
             for idx, pt in enumerate(st.session_state.four_corners[:4]):
                 c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
                 col_info, col_act = st.columns([2.5, 1])
@@ -221,8 +223,8 @@ with tab_region:
                 with col_info:
                     st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
                 with col_act:
-                    is_currently_editing = (st.session_state.editing_point_idx == idx)
-                    btn_label = "🎯 Target" if is_currently_editing else "✏️ Edit"
+                    is_editing = (st.session_state.editing_point_idx == idx)
+                    btn_label = "🎯 Active" if is_editing else "✏️ Edit"
                     if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
                         st.session_state.editing_point_idx = idx
                         st.rerun()
@@ -257,7 +259,7 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Unpack Wall Lines
+        # 1. Unpack CAD Walls
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
@@ -291,12 +293,30 @@ with tab_region:
                 )
             )
 
-        # 2. Add Click-Receiver Sensor Grid
+        # Compute Initial Bounds if not set
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
-            grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
-            grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
+            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
+            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
+            init_x_range = [minx - pad_x, maxx + pad_x]
+            init_y_range = [miny - pad_y, maxy + pad_y]
+        else:
+            minx, maxx = -1, 10
+            miny, maxy = -1, 10
+            init_x_range = [-1, 10]
+            init_y_range = [-1, 10]
+
+        if st.session_state.camera_view_range is None:
+            st.session_state.camera_view_range = {
+                "x": init_x_range,
+                "y": init_y_range,
+            }
+
+        # 2. Dense Click Target Grid
+        if all_x and all_y:
+            grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
 
             gx = np.arange(minx, maxx, grid_step_x)
             gy = np.arange(miny, maxy, grid_step_y)
@@ -307,14 +327,14 @@ with tab_region:
                     x=g_xx.flatten(),
                     y=g_yy.flatten(),
                     mode="markers",
-                    marker=dict(size=14, color="rgba(0, 0, 0, 0.001)"),
+                    marker=dict(size=12, color="rgba(0,0,0,0.001)"),
                     hoverinfo="none",
                     showlegend=False,
                     name="click_sensor_grid",
                 )
             )
 
-        # 3. Render Selected Corners & ROI Fill Area
+        # 3. Selected Corners & ROI Fill
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px = [p[0] for p in pts]
@@ -353,61 +373,80 @@ with tab_region:
                 )
             )
 
+        # Apply persisted camera ranges so zoom position is preserved perfectly
         fig.update_layout(
             template="plotly_dark",
             height=620,
             xaxis=dict(
                 title="X Coordinate",
+                range=st.session_state.camera_view_range["x"],
                 scaleanchor="y",
                 scaleratio=1,
                 showgrid=True,
             ),
             yaxis=dict(
                 title="Y Coordinate",
+                range=st.session_state.camera_view_range["y"],
                 showgrid=True,
             ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="lock_viewport",  # Retains browser camera zoom across renders
+            uirevision="constant_lock",
         )
 
-        # Render canvas using stream-based event capture
-        selected_points = plotly_events(
+        chart_events = st.plotly_chart(
             fig,
-            click_event=True,
-            hover_event=False,
-            select_event=False,
-            override_height=620,
-            key="roi_floorplan_canvas_events",
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="points",
+            key="roi_floorplan_canvas",
         )
 
-        # Dispatch Clicks
-        if selected_points:
-            click_x = float(selected_points[0]["x"])
-            click_y = float(selected_points[0]["y"])
-
-            # Mode A: Replacing/Redoing a Specific Selected Corner
-            if st.session_state.editing_point_idx is not None:
-                target_idx = st.session_state.editing_point_idx
-                st.session_state.four_corners[target_idx] = [click_x, click_y]
-                st.session_state.editing_point_idx = None
-                st.session_state.selected_polygon_pts = [
-                    {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+        # Preserve Zoom/Pan position when user zooms or pans
+        if chart_events and "relayout" in chart_events:
+            relayout = chart_events["relayout"]
+            if "xaxis.range[0]" in relayout and "xaxis.range[1]" in relayout:
+                st.session_state.camera_view_range["x"] = [
+                    relayout["xaxis.range[0]"],
+                    relayout["xaxis.range[1]"],
                 ]
-                st.rerun()
+            if "yaxis.range[0]" in relayout and "yaxis.range[1]" in relayout:
+                st.session_state.camera_view_range["y"] = [
+                    relayout["yaxis.range[0]"],
+                    relayout["yaxis.range[1]"],
+                ]
 
-            # Mode B: Adding a New Corner (Up to 4 total)
-            elif len(st.session_state.four_corners) < 4:
-                if not st.session_state.four_corners or (
-                    st.session_state.four_corners[-1] != [click_x, click_y]
-                ):
-                    st.session_state.four_corners.append([click_x, click_y])
-                    st.session_state.selected_polygon_pts = [
-                        {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                    ]
-                    st.rerun()
+        # Handle Click Selection & Edit Dispatching
+        if chart_events and "selection" in chart_events:
+            event_pts = chart_events["selection"].get("points", [])
+            if event_pts:
+                click_x = float(event_pts[0]["x"])
+                click_y = float(event_pts[0]["y"])
+                click_hash = f"{click_x:.3f}_{click_y:.3f}_{st.session_state.editing_point_idx}"
+
+                # Only process if this is a fresh new click
+                if click_hash != st.session_state.last_click_hash:
+                    st.session_state.last_click_hash = click_hash
+
+                    # EDIT MODE: Replace the active target corner
+                    if st.session_state.editing_point_idx is not None:
+                        target_idx = st.session_state.editing_point_idx
+                        st.session_state.four_corners[target_idx] = [click_x, click_y]
+                        st.session_state.editing_point_idx = None
+                        st.session_state.selected_polygon_pts = [
+                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                        ]
+                        st.rerun()
+
+                    # ADD MODE: Add up to 4 corners
+                    elif len(st.session_state.four_corners) < 4:
+                        st.session_state.four_corners.append([click_x, click_y])
+                        st.session_state.selected_polygon_pts = [
+                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                        ]
+                        st.rerun()
 
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
