@@ -89,7 +89,8 @@ def process_video_frame(
     H_matrix: np.ndarray = None,
     conf_threshold: float = 0.12,
     iou_threshold: float = 0.45,
-    inference_size: int = 1280,
+    inference_size: int = 640,
+    detect_target: str = "Head",
     model_name: str = "keremberke/yolov8n-head",
 ) -> tuple:
     """Detects people using dedicated Head/Crowd detection models or YOLO pose."""
@@ -110,7 +111,7 @@ def process_video_frame(
             annotated_frame,
             conf=conf_threshold,
             iou=iou_threshold,
-            imgsz=640, #Lowering from 1280 to 640 dramatically saves CPU
+            imgsz=inference_size,
             verbose=False,
         )
 
@@ -121,10 +122,15 @@ def process_video_frame(
             if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
                 keypoints_data = res.keypoints.xy.cpu().numpy()
                 for idx, kpts in enumerate(keypoints_data):
-                    valid_head_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]
-                    if len(valid_head_pts) > 0:
-                        target_x = float(np.mean([pt[0] for pt in valid_head_pts]))
-                        target_y = float(np.mean([pt[1] for pt in valid_head_pts]))
+                    # Select head keypoints vs foot keypoints
+                    if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
+                        valid_pts = [pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0] # Ankle keypoints
+                    else:
+                        valid_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]  # Nose/eyes/ears keypoints
+
+                    if len(valid_pts) > 0:
+                        target_x = float(np.mean([pt[0] for pt in valid_pts]))
+                        target_y = float(np.mean([pt[1] for pt in valid_pts]))
                         pixel_points.append([target_x, target_y])
                         cv2.circle(annotated_frame, (int(target_x), int(target_y)), 5, (255, 0, 128), -1)
                         detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
@@ -137,7 +143,12 @@ def process_video_frame(
                     x1, y1, x2, y2 = xyxy
 
                     target_x = float((x1 + x2) / 2.0)
-                    target_y = float((y1 + y2) / 2.0)
+                    
+                    # Choose point based on target (Top/Head vs Bottom/Feet)
+                    if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
+                        target_y = float(y2)
+                    else:
+                        target_y = float((y1 + y2) / 2.0)
 
                     pixel_points.append([target_x, target_y])
 
