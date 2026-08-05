@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 
@@ -5,7 +6,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point, LineString, Polygon
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
@@ -37,7 +38,7 @@ st.markdown(
 
 st.title("1. Visibility Graph Analysis (VGA)")
 st.markdown(
-    "Upload a CAD floorplan (**DXF or DWG**), hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
+    "Upload a CAD floorplan (**DXF or DWG**) or a **saved JSON session**. Hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
 )
 
 # Sidebar Settings
@@ -53,7 +54,7 @@ door_snap_dist = st.sidebar.slider(
     "Doorway/Corridor Auto-Close Gap (mm)", min_value=100, max_value=3000, value=1200, step=100
 )
 
-uploaded_file = st.file_uploader("Upload CAD Floorplan (DXF or DWG)", type=["dxf", "dwg"])
+uploaded_file = st.file_uploader("Upload CAD Floorplan (DXF, DWG) or Saved Session (JSON)", type=["dxf", "dwg", "json"])
 
 
 @st.cache_data
@@ -303,164 +304,186 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
 if uploaded_file is not None:
     file_ext = "." + uploaded_file.name.split(".")[-1].lower()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_path = tmp_file.name
-
-    with st.spinner("Parsing CAD wall geometry and building enclosed spatial zones..."):
+    if file_ext == ".json":
+        # Process imported pre-computed session
         try:
-            wall_lines = process_cad_file(tmp_path)
-            st.session_state["wall_lines"] = wall_lines
-            strtree = STRtree(wall_lines)
-            enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
+            session_data = json.load(uploaded_file)
+            st.session_state["vga_df"] = pd.DataFrame(session_data["vga_results"])
+            
+            restored_walls = [
+                LineString(coords) for coords in session_data["floorplan"]["wall_lines"]
+            ]
+            st.session_state["wall_lines"] = restored_walls
+            
+            if "selected_rooms" in session_data["floorplan"]:
+                st.session_state["selected_rooms"] = [
+                    Polygon(coords) for coords in session_data["floorplan"]["selected_rooms"]
+                ]
+            
+            st.success(f"✅ Successfully reimported session data from `{uploaded_file.name}`!")
         except Exception as e:
-            st.error(f"❌ Error parsing CAD file: {e}")
+            st.error(f"❌ Error loading JSON session file: {e}")
             st.stop()
+    else:
+        # Process raw CAD files (DXF or DWG)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
 
-    st.success(
-        f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones."
-    )
+        with st.spinner("Parsing CAD wall geometry and building enclosed spatial zones..."):
+            try:
+                wall_lines = process_cad_file(tmp_path)
+                st.session_state["wall_lines"] = wall_lines
+                strtree = STRtree(wall_lines)
+                enclosed_rooms = extract_enclosed_rooms(wall_lines, snap_distance=door_snap_dist)
+            except Exception as e:
+                st.error(f"❌ Error parsing CAD file: {e}")
+                st.stop()
 
-    all_bounds = [w.bounds for w in wall_lines]
-    minx = min(b[0] for b in all_bounds)
-    miny = min(b[1] for b in all_bounds)
-    maxx = max(b[2] for b in all_bounds)
-    maxy = max(b[3] for b in all_bounds)
-    floorplan_bounds = (minx, miny, maxx, maxy)
+        st.success(
+            f"Extracted {len(wall_lines)} wall boundary segments and detected {len(enclosed_rooms)} spatial zones."
+        )
 
-    st.subheader("Interactive Public Space Selection")
-    st.info(
-        "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
-    )
+        all_bounds = [w.bounds for w in wall_lines]
+        minx = min(b[0] for b in all_bounds)
+        miny = min(b[1] for b in all_bounds)
+        maxx = max(b[2] for b in all_bounds)
+        maxy = max(b[3] for b in all_bounds)
+        floorplan_bounds = (minx, miny, maxx, maxy)
 
-    selection_mode_option = st.radio(
-        "Selection Mode:",
-        ["Full Floorplan", "Click Inside Rooms to Select Zones"],
-        horizontal=True,
-    )
+        st.subheader("Interactive Public Space Selection")
+        st.info(
+            "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
+        )
 
-    if "selected_rooms" not in st.session_state:
-        st.session_state["selected_rooms"] = []
+        selection_mode_option = st.radio(
+            "Selection Mode:",
+            ["Full Floorplan", "Click Inside Rooms to Select Zones"],
+            horizontal=True,
+        )
 
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        if st.button("🔴 Reset Selected Regions"):
+        if "selected_rooms" not in st.session_state:
             st.session_state["selected_rooms"] = []
-            st.rerun()
 
-    selected_polygons = st.session_state["selected_rooms"]
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("🔴 Reset Selected Regions"):
+                st.session_state["selected_rooms"] = []
+                st.rerun()
 
-    if selection_mode_option == "Click Inside Rooms to Select Zones":
-        fig_plan = render_interactive_floorplan(
-            wall_lines, floorplan_bounds, selected_polys=selected_polygons
-        )
+        selected_polygons = st.session_state["selected_rooms"]
 
-        chart_events = st.plotly_chart(
-            fig_plan,
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="points",
-            key="floorplan_selector",
-        )
-
-        if chart_events and "selection" in chart_events:
-            pts = chart_events["selection"].get("points", [])
-            if pts:
-                click_x = pts[0]["x"]
-                click_y = pts[0]["y"]
-                click_point = Point(click_x, click_y)
-
-                candidate_rooms = [r for r in enclosed_rooms if r.contains(click_point)]
-                if candidate_rooms:
-                    matched_room = candidate_rooms[0]
-
-                    if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
-                        st.session_state["selected_rooms"].append(matched_room)
-                        st.rerun()
-
-        if selected_polygons:
-            total_area = sum(p.area for p in selected_polygons) / 1e6
-            st.success(
-                f"✅ **{len(selected_polygons)} Zone(s) Selected & Highlighted!** Combined Area: `{round(total_area, 2)} m²`"
+        if selection_mode_option == "Click Inside Rooms to Select Zones":
+            fig_plan = render_interactive_floorplan(
+                wall_lines, floorplan_bounds, selected_polys=selected_polygons
             )
 
-    if st.button("Run Visibility Analysis"):
-        if selected_polygons and selection_mode_option != "Full Floorplan":
-            combined_bounds = unary_union(selected_polygons).bounds
-            calc_minx, calc_miny, calc_maxx, calc_maxy = combined_bounds
-        else:
-            calc_minx, calc_miny, calc_maxx, calc_maxy = minx, miny, maxx, maxy
+            chart_events = st.plotly_chart(
+                fig_plan,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="points",
+                key="floorplan_selector",
+            )
 
-        x_coords = np.arange(calc_minx, calc_maxx, grid_size)
-        y_coords = np.arange(calc_miny, calc_maxy, grid_size)
+            if chart_events and "selection" in chart_events:
+                pts = chart_events["selection"].get("points", [])
+                if pts:
+                    click_x = pts[0]["x"]
+                    click_y = pts[0]["y"]
+                    click_point = Point(click_x, click_y)
 
-        grid_points = []
-        for x in x_coords:
-            for y in y_coords:
-                pt = Point(x, y)
-                if selected_polygons and selection_mode_option != "Full Floorplan":
-                    if any(poly.contains(pt) for poly in selected_polygons):
-                        grid_points.append((x, y))
-                else:
-                    grid_points.append((x, y))
+                    candidate_rooms = [r for r in enclosed_rooms if r.contains(click_point)]
+                    if candidate_rooms:
+                        matched_room = candidate_rooms[0]
 
-        total_points = len(grid_points)
+                        if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
+                            st.session_state["selected_rooms"].append(matched_room)
+                            st.rerun()
 
-        if total_points == 0:
-            st.warning("No grid points generated in selected zone. Try a smaller grid dimension or select a room.")
-        else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            vga_results = []
-            isovist_polys = []
-            start_time = time.time()
-
-            for idx, pt in enumerate(grid_points):
-                isovist, occluded_count = generate_isovist_polygon(
-                    pt, wall_lines, strtree, num_rays=ray_count
-                )
-                if isovist:
-                    metrics = compute_isovist_metrics(
-                        isovist, pt, occluded_count, ray_count
-                    )
-                    metrics["x"] = pt[0]
-                    metrics["y"] = pt[1]
-                    vga_results.append(metrics)
-                    isovist_polys.append(isovist)
-
-                completed = idx + 1
-                progress_ratio = completed / total_points
-                elapsed_time = time.time() - start_time
-                avg_time_per_pt = elapsed_time / completed
-                remaining_pts = total_points - completed
-                estimated_remaining_seconds = remaining_pts * avg_time_per_pt
-
-                mins, secs = divmod(int(estimated_remaining_seconds), 60)
-                time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-
-                if completed % 5 == 0 or completed == total_points:
-                    progress_bar.progress(progress_ratio)
-                    status_text.markdown(
-                        f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
-                    )
-
-            if vga_results:
-                final_vga_results = compute_graph_topology_with_progress(
-                    vga_results, isovist_polys, status_text, progress_bar
+            if selected_polygons:
+                total_area = sum(p.area for p in selected_polygons) / 1e6
+                st.success(
+                    f"✅ **{len(selected_polygons)} Zone(s) Selected & Highlighted!** Combined Area: `{round(total_area, 2)} m²`"
                 )
 
-                progress_bar.empty()
-                total_time = round(time.time() - start_time, 2)
-                status_text.success(
-                    f"✅ Analysis complete in **{total_time}s** across **{total_points}** points!"
-                )
-
-                df_results = pd.DataFrame(final_vga_results)
-                st.session_state["vga_df"] = df_results
+        if st.button("Run Visibility Analysis"):
+            if selected_polygons and selection_mode_option != "Full Floorplan":
+                combined_bounds = unary_union(selected_polygons).bounds
+                calc_minx, calc_miny, calc_maxx, calc_maxy = combined_bounds
             else:
-                progress_bar.empty()
-                st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")
+                calc_minx, calc_miny, calc_maxx, calc_maxy = minx, miny, maxx, maxy
+
+            x_coords = np.arange(calc_minx, calc_maxx, grid_size)
+            y_coords = np.arange(calc_miny, calc_maxy, grid_size)
+
+            grid_points = []
+            for x in x_coords:
+                for y in y_coords:
+                    pt = Point(x, y)
+                    if selected_polygons and selection_mode_option != "Full Floorplan":
+                        if any(poly.contains(pt) for poly in selected_polygons):
+                            grid_points.append((x, y))
+                    else:
+                        grid_points.append((x, y))
+
+            total_points = len(grid_points)
+
+            if total_points == 0:
+                st.warning("No grid points generated in selected zone. Try a smaller grid dimension or select a room.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                vga_results = []
+                isovist_polys = []
+                start_time = time.time()
+
+                for idx, pt in enumerate(grid_points):
+                    isovist, occluded_count = generate_isovist_polygon(
+                        pt, wall_lines, strtree, num_rays=ray_count
+                    )
+                    if isovist:
+                        metrics = compute_isovist_metrics(
+                            isovist, pt, occluded_count, ray_count
+                        )
+                        metrics["x"] = pt[0]
+                        metrics["y"] = pt[1]
+                        vga_results.append(metrics)
+                        isovist_polys.append(isovist)
+
+                    completed = idx + 1
+                    progress_ratio = completed / total_points
+                    elapsed_time = time.time() - start_time
+                    avg_time_per_pt = elapsed_time / completed
+                    remaining_pts = total_points - completed
+                    estimated_remaining_seconds = remaining_pts * avg_time_per_pt
+
+                    mins, secs = divmod(int(estimated_remaining_seconds), 60)
+                    time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+
+                    if completed % 5 == 0 or completed == total_points:
+                        progress_bar.progress(progress_ratio)
+                        status_text.markdown(
+                            f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
+                        )
+
+                if vga_results:
+                    final_vga_results = compute_graph_topology_with_progress(
+                        vga_results, isovist_polys, status_text, progress_bar
+                    )
+
+                    progress_bar.empty()
+                    total_time = round(time.time() - start_time, 2)
+                    status_text.success(
+                        f"✅ Analysis complete in **{total_time}s** across **{total_points}** points!"
+                    )
+
+                    df_results = pd.DataFrame(final_vga_results)
+                    st.session_state["vga_df"] = df_results
+                else:
+                    progress_bar.empty()
+                    st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")
 
     if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
         df = st.session_state["vga_df"]
@@ -477,10 +500,43 @@ if uploaded_file is not None:
                 )
                 st.plotly_chart(fig_heatmap, use_container_width=True)
 
-            json_data = df.to_json(orient="records")
-            st.download_button(
-                label="📥 Download Complete VGA Metrics JSON",
-                data=json_data,
-                file_name="vga_analysis_results.json",
-                mime="application/json",
-            )
+        # Serialize Shapely wall lines to list of coordinate lists
+        wall_lines_serialized = []
+        if "wall_lines" in st.session_state:
+            for line in st.session_state["wall_lines"]:
+                wall_lines_serialized.append(list(line.coords))
+
+        # Serialize Shapely selected room polygons
+        selected_rooms_serialized = []
+        if "selected_rooms" in st.session_state:
+            for poly in st.session_state["selected_rooms"]:
+                selected_rooms_serialized.append(list(poly.exterior.coords))
+
+        # Build complete JSON package
+        complete_vga_export = {
+            "metadata": {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "file_name": uploaded_file.name if uploaded_file else "imported_session"
+            },
+            "analysis_settings": {
+                "grid_size_mm": grid_size,
+                "ray_step_deg": ray_step,
+                "door_snap_dist_mm": door_snap_dist,
+                "selection_mode": selection_mode_option if 'selection_mode_option' in locals() else "Unknown"
+            },
+            "floorplan": {
+                "bounds": floorplan_bounds if 'floorplan_bounds' in locals() else None,
+                "wall_lines": wall_lines_serialized,
+                "selected_rooms": selected_rooms_serialized
+            },
+            "vga_results": df.to_dict(orient="records")
+        }
+
+        json_data = json.dumps(complete_vga_export, indent=2)
+
+        st.download_button(
+            label="📥 Download Complete VGA Session JSON",
+            data=json_data,
+            file_name="vga_complete_session.json",
+            mime="application/json",
+        )
