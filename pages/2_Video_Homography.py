@@ -20,6 +20,8 @@ st.title("📹 Module 2: Video Homography & Region Selection")
 # Initialize Session State safely
 if "dxf_walls" not in st.session_state:
     st.session_state.dxf_walls = []
+if "wall_lines" not in st.session_state:
+    st.session_state.wall_lines = []
 if "vga_grid_df" not in st.session_state:
     st.session_state.vga_grid_df = None
 if "selected_polygon_pts" not in st.session_state:
@@ -64,7 +66,7 @@ with tab_import:
 
     # 📄 Option A: JSON Import
     with col_json:
-        st.markdown("### 📄 Option A: Import Exported JSON")
+        st.markdown("### 📄 Option A: Import Exported JSON Session")
         uploaded_json = st.file_uploader(
             "Upload JSON Floorplan / Export (VGA + Polygon Config)",
             type=["json"],
@@ -75,12 +77,14 @@ with tab_import:
             try:
                 data = json.load(uploaded_json)
 
-                # 1. Parse VGA Grid
-                if "vga_grid" in data and data["vga_grid"]:
-                    st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
+                # 1. Parse VGA Grid (handles `vga_results` or `vga_grid`)
+                vga_data = data.get("vga_results", data.get("vga_grid", []))
+                if vga_data:
+                    st.session_state.vga_grid_df = pd.DataFrame(vga_data)
+                    st.session_state["vga_df"] = st.session_state.vga_grid_df
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Parse Polygon Points Safely
+                # 2. Parse Polygon Points
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
@@ -103,28 +107,24 @@ with tab_import:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
                     st.success("✅ Loaded pre-saved Homography Matrix")
 
-                # 4. Parse Wall Geometries (handles `wall_lines`, `dxf_walls`, and `walls`)
-                raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
+                # 4. Parse Wall Geometries (nested `data["floorplan"]["wall_lines"]` or root keys)
+                raw_walls = None
+                if "floorplan" in data and isinstance(data["floorplan"], dict):
+                    raw_walls = data["floorplan"].get("wall_lines", [])
+                if not raw_walls:
+                    raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
+
                 if raw_walls:
                     walls = []
                     for w in raw_walls:
-                        if isinstance(w, (list, tuple)):
-                            if len(w) == 2 and isinstance(w[0], (list, tuple)) and isinstance(w[1], (list, tuple)):
-                                # Line segment: [[x1, y1], [x2, y2]]
-                                walls.append(LineString(w))
-                            elif len(w) >= 3 and isinstance(w[0], (list, tuple)):
-                                # Polygon coordinates
-                                walls.append(Polygon(w))
-                            elif len(w) == 2 and isinstance(w[0], (int, float)):
-                                # Corner or single point skip
-                                pass
-                        elif isinstance(w, dict):
-                            # In case wall is stored as object with start/end
-                            if "start" in w and "end" in w:
-                                walls.append(LineString([w["start"], w["end"]]))
+                        if hasattr(w, "xy"):
+                            walls.append(w)
+                        elif isinstance(w, (list, tuple)) and len(w) >= 2:
+                            walls.append(LineString(w))
 
                     if walls:
                         st.session_state.dxf_walls = walls
+                        st.session_state.wall_lines = walls
                         st.session_state.current_x_range = None
                         st.session_state.current_y_range = None
                         st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
@@ -132,47 +132,34 @@ with tab_import:
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: CAD / JSON Floorplan Import
+    # 📐 Option B: Raw CAD Import (DXF / DWG)
     with col_dxf:
-        st.markdown("### 📐 Option B: Import Raw CAD / Floorplan File")
+        st.markdown("### 📐 Option B: Import Raw CAD File")
         uploaded_cad = st.file_uploader(
-            "Upload CAD Floorplan (DXF, DWG, or JSON)",
-            type=["dxf", "dwg", "json"],
+            "Upload CAD Floorplan (DXF or DWG)",
+            type=["dxf", "dwg"],
             key="cad_uploader",
         )
 
         if uploaded_cad is not None:
             file_ext = "." + uploaded_cad.name.split(".")[-1].lower()
-            
-            if file_ext == ".json":
-                try:
-                    data = json.load(uploaded_cad)
-                    raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
-                    walls = [LineString(w) for w in raw_walls if len(w) == 2]
-                    
-                    st.session_state.dxf_walls = walls
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                tmp_file.write(uploaded_cad.getvalue())
+                tmp_path = tmp_file.name
+
+            try:
+                with st.spinner("Processing CAD file via VGA Engine..."):
+                    wall_lines = process_cad_file(tmp_path)
+                    st.session_state.dxf_walls = wall_lines
+                    st.session_state.wall_lines = wall_lines
                     st.session_state.current_x_range = None
                     st.session_state.current_y_range = None
-                    st.success(f"✅ Parsed {len(walls)} wall lines from JSON!")
-                except Exception as e:
-                    st.error(f"Failed to parse JSON file: {e}")
-            else:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                    tmp_file.write(uploaded_cad.getvalue())
-                    tmp_path = tmp_file.name
-
-                try:
-                    with st.spinner("Processing CAD file via VGA Engine..."):
-                        wall_lines = process_cad_file(tmp_path)
-                        st.session_state.dxf_walls = wall_lines
-                        st.session_state.current_x_range = None
-                        st.session_state.current_y_range = None
-                        st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
-                except Exception as e:
-                    st.error(f"Failed to parse CAD file: {e}")
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                    st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
+            except Exception as e:
+                st.error(f"Failed to parse CAD file: {e}")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
     st.markdown("---")
 
@@ -265,7 +252,7 @@ with tab_region:
                     btn_label = "🎯 Target" if is_editing else "✏️ Edit"
                     if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
                         st.session_state.editing_point_idx = idx
-                        st.session_state.processed_click_sig = None  # Ready to accept new point
+                        st.session_state.processed_click_sig = None
                         st.rerun()
 
         st.markdown("---")
@@ -302,7 +289,8 @@ with tab_region:
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
-        dxf_walls = st.session_state.get("dxf_walls", [])
+        # Check both keys for loaded wall objects
+        dxf_walls = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
         for line in dxf_walls:
             if hasattr(line, "xy"):
                 x, y = line.xy
