@@ -12,7 +12,7 @@ import streamlit as st
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
-from views.playback_view import render_playback_view     # <--- IMPORT NEW VIEW
+from views.playback_view import render_playback_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
 
