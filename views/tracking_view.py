@@ -363,9 +363,9 @@ st.download_button(
     # 📥 Dual Export Options (CSV & JSON with VGA Metadata)
 full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
 
-    if not full_df.empty:
-        st.markdown("#### 📥 Export Tracking & VGA Analytics")
-        col_dl1, col_dl2 = st.columns(2)
+if not full_df.empty:
+    st.markdown("#### 📥 Export Tracking & VGA Analytics")
+    col_dl1, col_dl2 = st.columns(2)
 
         # 1. Standard CSV Export
         csv_bytes = full_df.to_csv(index=False).encode("utf-8")
