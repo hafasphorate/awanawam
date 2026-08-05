@@ -1,4 +1,5 @@
 # views/tracking_view.py
+import json
 import os
 import tempfile
 import cv2
@@ -58,7 +59,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     uploaded_video.seek(0)
     video_bytes = uploaded_video.read()
     uploaded_video.seek(0)
-    
+
     max_frames = get_video_frame_count_cached(uploaded_video.name, video_bytes)
 
     # 🎛️ Advanced Precision & CPU Controls
@@ -68,14 +69,14 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             model_name = st.selectbox(
                 "Select Model Architecture:",
                 [
-                    "yolov8n.pt", #Fast & CPU-Friendly
-                    "yolov8s.pt", #Balanced Accuracy
-                    "rtdetr-l.pt", #Transformer-based
-                    "yolov8x-pose.pt" #Pose/Keypoints
+                    "yolov8n.pt",       # Fast & CPU-friendly
+                    "yolov8s.pt",       # Balanced Accuracy
+                    "rtdetr-l.pt",      # Transformer-based
+                    "yolov8x-pose.pt",   # Pose/Keypoints
                 ],
                 index=0,
+                help="`yolov8n.pt` is lightweight and recommended for high-density cloud execution.",
             )
-            
             detect_target = st.radio(
                 "Tracking Point Target:",
                 ["Head", "Feet / Ground"],
@@ -86,8 +87,8 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             inference_size = st.selectbox(
                 "Inference Resolution (px):",
                 [320, 640, 960, 1280],
-                index=1,  # 640px default to balance speed and detection recall
-                help="320/640px drastically cuts CPU load while retaining head detection quality.",
+                index=1,
+                help="320/640px drastically cuts CPU load while retaining detection quality.",
             )
             conf_threshold = st.slider(
                 "Confidence Threshold",
@@ -304,7 +305,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             if not ret:
                 break
 
-            # Frame Skipping Logic to prevent CPU limit exceed
+            # Frame Skipping Logic
             if curr_frame_idx % frame_skip != 0:
                 curr_frame_idx += 1
                 continue
@@ -344,5 +345,48 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
         if all_tracking_results:
             full_df = pd.concat(all_tracking_results, ignore_index=True)
-            st.markdown("#### 📈 Accumulated Motion Data")
-            st.dataframe(full_df, use_container_width=True)
+            st.session_state["full_tracking_df"] = full_df
+
+    # 📥 Dual Export Options (CSV & JSON with VGA Metadata)
+    full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
+
+    if not full_df.empty:
+        st.markdown("#### 📥 Export Tracking & VGA Analytics")
+        col_dl1, col_dl2 = st.columns(2)
+
+        # 1. Standard CSV Export
+        csv_bytes = full_df.to_csv(index=False).encode("utf-8")
+        with col_dl1:
+            st.download_button(
+                label="📄 Download Motion Data (CSV)",
+                data=csv_bytes,
+                file_name="human_tracking_data.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        # 2. Combined JSON Export (Includes VGA Grid Metadata)
+        vga_dict = vga_grid_df.to_dict(orient="records") if vga_grid_df is not None else []
+
+        export_payload = {
+            "metadata": {
+                "four_corners_roi": st.session_state.get("four_corners", []),
+                "total_detections": int(len(full_df)),
+                "total_frames_processed": int(full_df["frame_idx"].max()) if "frame_idx" in full_df.columns else 0,
+                "model_used": model_name,
+                "detect_target": detect_target,
+            },
+            "vga_floorplan_nodes": vga_dict,
+            "tracking_points": full_df.to_dict(orient="records"),
+        }
+
+        json_bytes = json.dumps(export_payload, indent=2).encode("utf-8")
+
+        with col_dl2:
+            st.download_button(
+                label="📦 Download Complete Dataset (JSON + VGA)",
+                data=json_bytes,
+                file_name="human_tracking_and_vga.json",
+                mime="application/json",
+                use_container_width=True,
+            )
