@@ -11,15 +11,12 @@ from utils.homography_engine import compute_homography_matrix
 from utils.tracking_engine import extract_frame_from_video, process_video_frame
 
 
-def get_video_frame_count(video_file) -> int:
-    """Helper to get total frame count of uploaded video."""
-    if video_file is None:
+@st.cache_data(show_spinner=False)
+def get_video_frame_count_cached(file_name: str, video_bytes: bytes) -> int:
+    """Cached helper to read video frame count once without repeated disk I/O."""
+    if not video_bytes:
         return 100
     try:
-        video_file.seek(0)
-        video_bytes = video_file.read()
-        video_file.seek(0)
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
             tmp_v.write(video_bytes)
             tmp_path = tmp_v.name
@@ -57,7 +54,12 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     st.markdown("---")
 
-    max_frames = get_video_frame_count(uploaded_video)
+    # Read video bytes safely for cached frame counting
+    uploaded_video.seek(0)
+    video_bytes = uploaded_video.read()
+    uploaded_video.seek(0)
+    
+    max_frames = get_video_frame_count_cached(uploaded_video.name, video_bytes)
 
     # 🎛️ Advanced Precision & CPU Controls
     with st.expander("🛠️ Detection Sensitivity & CPU Optimization Controls", expanded=True):
@@ -83,9 +85,9 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         with col_cfg2:
             inference_size = st.selectbox(
                 "Inference Resolution (px):",
-                [640, 960, 1280, 320],
-                index=0,
-                help="640px drastically cuts CPU load while retaining solid detection accuracy.",
+                [320, 640, 960, 1280],
+                index=1,  # 640px default to balance speed and detection recall
+                help="320/640px drastically cuts CPU load while retaining head detection quality.",
             )
             conf_threshold = st.slider(
                 "Confidence Threshold",
@@ -111,12 +113,12 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
                 max_value=10,
                 value=3,
                 step=1,
-                help="Process 1 out of N frames during video playback to prevent CPU throttling.",
+                help="Process 1 out of N frames during video tracking to prevent CPU throttling.",
             )
 
     st.markdown("### 🎞️ Single Frame Preview")
     frame_idx = st.slider(
-        "Frame Timeline Slider",
+        "Select Frame to Preview",
         min_value=0,
         max_value=max(1, max_frames - 1),
         value=st.session_state.get("selected_frame_idx", 0),
@@ -124,7 +126,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         key="tracking_frame_slider",
     )
 
-    # Extract single frame for preview
+    # Extract single raw frame for preview without running YOLO yet
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
     if raw_frame is None:
         st.error("❌ Failed to decode frame from video. Try re-uploading the video file in Tab 2.1.")
@@ -144,16 +146,29 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     H = compute_homography_matrix(video_src_pts, four_corners[:4])
     st.session_state.homography_matrix = H
 
-    # Process preview frame with YOLO + Homography Projection
-    annotated_frame, df_detections = process_video_frame(
-        raw_frame,
-        H_matrix=H,
-        conf_threshold=conf_threshold,
-        iou_threshold=iou_threshold,
-        inference_size=inference_size,
-        detect_target=detect_target,
-        model_name=model_name,
-    )
+    # Manual button trigger to protect CPU from continuous slider inference
+    col_btn, col_info = st.columns([1, 2])
+    with col_btn:
+        run_preview = st.button("🔍 Run Frame Preview", type="primary", use_container_width=True)
+    with col_info:
+        st.caption("Click button to execute YOLO model on selected frame. Prevents slider CPU throttling.")
+
+    if run_preview:
+        with st.spinner("Processing preview frame..."):
+            annotated_frame, df_detections = process_video_frame(
+                raw_frame,
+                H_matrix=H,
+                conf_threshold=conf_threshold,
+                iou_threshold=iou_threshold,
+                inference_size=inference_size,
+                detect_target=detect_target,
+                model_name=model_name,
+            )
+            st.session_state["preview_annotated"] = annotated_frame
+            st.session_state["preview_dets"] = df_detections
+    else:
+        annotated_frame = st.session_state.get("preview_annotated", raw_frame)
+        df_detections = st.session_state.get("preview_dets", pd.DataFrame())
 
     st.markdown("---")
 
@@ -273,10 +288,6 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         progress_bar = st.progress(0)
         status_text = st.empty()
         video_placeholder = st.empty()
-
-        uploaded_video.seek(0)
-        video_bytes = uploaded_video.read()
-        uploaded_video.seek(0)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
             tmp_v.write(video_bytes)
