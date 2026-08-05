@@ -33,6 +33,8 @@ if "homography_matrix" not in st.session_state:
     st.session_state.homography_matrix = None
 if "selected_frame_idx" not in st.session_state:
     st.session_state.selected_frame_idx = 0
+if "reset_view" not in st.session_state:
+    st.session_state.reset_view = True
 
 
 # Navigation Tabs
@@ -99,6 +101,7 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
+                    st.session_state.reset_view = True
                     st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
@@ -123,6 +126,7 @@ with tab_import:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = wall_lines
+                    st.session_state.reset_view = True
                     st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
@@ -188,6 +192,7 @@ with tab_region:
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
+                st.session_state.reset_view = True
                 if "roi_floorplan_canvas" in st.session_state:
                     del st.session_state["roi_floorplan_canvas"]
                 st.rerun()
@@ -263,14 +268,12 @@ with tab_region:
 
         dxf_walls = st.session_state.get("dxf_walls", [])
         for line in dxf_walls:
-            # Handles Shapely LineString / Polygon objects from DXF parser
             if hasattr(line, "xy"):
                 x, y = line.xy
                 wall_x.extend([x[0], x[1], None])
                 wall_y.extend([y[0], y[1], None])
                 all_x.extend(x)
                 all_y.extend(y)
-            # Handles raw coordinate tuples/lists parsed from JSON import
             elif isinstance(line, (list, tuple)):
                 for pt in line:
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2:
@@ -293,21 +296,21 @@ with tab_region:
                 )
             )
 
-        # Calculate static bounding box for axis boundaries
+        # Compute initial bounds
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
             pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
             pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
-            x_range = [minx - pad_x, maxx + pad_x]
-            y_range = [miny - pad_y, maxy + pad_y]
+            initial_x_range = [minx - pad_x, maxx + pad_x]
+            initial_y_range = [miny - pad_y, maxy + pad_y]
         else:
             minx, maxx = -1, 10
             miny, maxy = -1, 10
-            x_range = [-1, 10]
-            y_range = [-1, 10]
+            initial_x_range = [-1, 10]
+            initial_y_range = [-1, 10]
 
-        # 2. Add Click-Receiver Sensor Grid Across Bounding Box
+        # 2. Add Click-Receiver Sensor Grid
         if all_x and all_y:
             grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
             grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
@@ -349,7 +352,6 @@ with tab_region:
                     )
                 )
 
-            # Draw Point Markers & Highlight active editing point in yellow
             marker_colors = [
                 "#FFD700" if (st.session_state.editing_point_idx == i) else "#00FF66"
                 for i in range(len(pts))
@@ -368,29 +370,33 @@ with tab_region:
                 )
             )
 
-        # Layout Configuration with fixed ranges, autorange disabled, and static uirevision
+        # Build Axis Configurations (Apply explicit range ONLY on initial load / reset)
+        xaxis_config = dict(
+            title="X Coordinate",
+            scaleanchor="y",
+            scaleratio=1,
+            showgrid=True,
+        )
+        yaxis_config = dict(
+            title="Y Coordinate",
+            showgrid=True,
+        )
+
+        if st.session_state.reset_view:
+            xaxis_config["range"] = initial_x_range
+            yaxis_config["range"] = initial_y_range
+            st.session_state.reset_view = False  # Lock view persistence for subsequent clicks
+
         fig.update_layout(
             template="plotly_dark",
             height=620,
-            xaxis=dict(
-                title="X Coordinate",
-                range=x_range,
-                autorange=False,  # Stops Plotly from re-fitting zoom on new point additions
-                scaleanchor="y",
-                scaleratio=1,
-                showgrid=True,
-            ),
-            yaxis=dict(
-                title="Y Coordinate",
-                range=y_range,
-                autorange=False,  # Stops Plotly from re-fitting zoom on new point additions
-                showgrid=True,
-            ),
+            xaxis=xaxis_config,
+            yaxis=yaxis_config,
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
-            dragmode="pan",  # Easy panning for finding regions on complex floorplans
+            dragmode="pan",
             hovermode="closest",
-            uirevision="lock_viewport",  # Constant string locks client-side zoom state across reruns
+            uirevision="constant_viewport_lock",  # Retains client-side zoom state
         )
 
         chart_events = st.plotly_chart(
@@ -398,10 +404,10 @@ with tab_region:
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
-            key="roi_floorplan_canvas",  # Static key maintains DOM element stability
+            key="roi_floorplan_canvas",
         )
 
-        # Event Dispatcher for Direct Map Clicks
+        # Event Dispatcher for Direct Map Clicks (No manual st.rerun calls needed)
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
@@ -416,7 +422,6 @@ with tab_region:
                     st.session_state.selected_polygon_pts = [
                         {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
                     ]
-                    st.rerun()
 
                 # Mode B: Adding a New Corner (Up to 4 total)
                 elif len(st.session_state.four_corners) < 4:
@@ -427,7 +432,6 @@ with tab_region:
                         st.session_state.selected_polygon_pts = [
                             {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
                         ]
-                        st.rerun()
 
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
