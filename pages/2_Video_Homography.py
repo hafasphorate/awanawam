@@ -162,19 +162,87 @@ with tab_import:
             )
 
 # ==========================================
-# TAB 2: REGION SELECTION & EDITING (INTERACTIVE)
+# TAB 2: REGION SELECTION & EDITING (4-CORNER CLICK)
 # ==========================================
 with tab_region:
-    st.subheader("Step 2.2: Define Analysis Polygon on Floorplan")
+    st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
     st.info(
-        "💡 **Interactive Drawing:** Use the Plotly toolbar at the top right of the map to select the "
-        "**Box Select** or **Lasso Select** tool to draw your ROI directly on the CAD floorplan!"
+        "💡 **4-Point Click Selection:** Click **4 points** on the floorplan to define the 4 corners of your camera's field of view. "
+        "The quadrilateral will automatically draw and highlight in real-time."
     )
 
-    col_controls, col_plot = st.columns([1, 2])
+    if "four_corners" not in st.session_state:
+        st.session_state.four_corners = []
+
+    col_controls, col_plot = st.columns([1, 2.5])
+
+    with col_controls:
+        st.markdown("#### Corner Coordinates (CAD World)")
+
+        # Control Buttons
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("🔴 Clear Points", use_container_width=True):
+                st.session_state.four_corners = []
+                st.session_state.selected_polygon_pts = []
+                st.rerun()
+
+        with col_btn2:
+            if len(st.session_state.four_corners) > 0:
+                if st.button("↩️ Undo Last", use_container_width=True):
+                    st.session_state.four_corners.pop()
+                    st.session_state.selected_polygon_pts = [
+                        {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                    ]
+                    st.rerun()
+
+        # Display Selected Points Status
+        num_pts = len(st.session_state.four_corners)
+        if num_pts < 4:
+            st.warning(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
+        else:
+            st.success("✅ All 4 Corners Selected!")
+
+        # Display formatted corner table
+        corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
+        formatted_table = []
+        for idx, pt in enumerate(st.session_state.four_corners[:4]):
+            formatted_table.append({
+                "Corner": corner_labels[idx] if idx < 4 else f"P{idx+1}",
+                "X Coordinate": round(pt[0], 2),
+                "Y Coordinate": round(pt[1], 2),
+            })
+
+        if formatted_table:
+            st.dataframe(pd.DataFrame(formatted_table), use_container_width=True)
+
+        st.markdown("---")
+
+        # Config Exporter
+        export_payload = {
+            "polygon_points": st.session_state.four_corners[:4],
+            "vga_grid": (
+                st.session_state.vga_grid_df.to_dict(orient="records")
+                if st.session_state.vga_grid_df is not None
+                else []
+            ),
+            "homography_matrix": (
+                st.session_state.homography_matrix.tolist()
+                if st.session_state.homography_matrix is not None
+                else None
+            ),
+        }
+
+        st.download_button(
+            label="💾 Export JSON Config",
+            data=json.dumps(export_payload, indent=2),
+            file_name="floorplan_homography_config.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     with col_plot:
-        st.markdown("#### Interactive Floorplan & ROI Drawing Canvas")
+        st.markdown("#### Click Floorplan Canvas")
 
         fig = go.Figure()
 
@@ -206,116 +274,85 @@ with tab_region:
                     x=st.session_state.vga_grid_df["x"],
                     y=st.session_state.vga_grid_df["y"],
                     mode="markers",
-                    marker=dict(size=4, color="rgba(200, 200, 200, 0.4)"),
+                    marker=dict(size=4, color="rgba(200, 200, 200, 0.3)"),
                     name="VGA Grid Nodes",
                     hoverinfo="none",
                 )
             )
 
-        # 3. Render Current Selected Polygon Region
-        poly_list = []
-        for p in st.session_state.get("selected_polygon_pts", []):
-            x_val = p.get("X (m)", p.get("x", p.get("X", 0.0)))
-            y_val = p.get("Y (m)", p.get("y", p.get("Y", 0.0)))
-            poly_list.append([float(x_val), float(y_val)])
+        # 3. Render Clicked 4 Corners and Polygon Fill
+        pts = st.session_state.four_corners
+        if len(pts) > 0:
+            px = [p[0] for p in pts]
+            py = [p[1] for p in pts]
 
-        if len(poly_list) >= 3:
-            px = [p[0] for p in poly_list] + [poly_list[0][0]]
-            py = [p[1] for p in poly_list] + [poly_list[0][1]]
+            # If 4 points are selected, close the loop
+            if len(pts) == 4:
+                px_closed = px + [px[0]]
+                py_closed = py + [py[0]]
+                fig.add_trace(
+                    go.Scatter(
+                        x=px_closed,
+                        y=py_closed,
+                        mode="lines",
+                        fill="toself",
+                        fillcolor="rgba(0, 230, 118, 0.3)",
+                        line=dict(color="#00FF66", width=2.5),
+                        name="Camera ROI Zone",
+                    )
+                )
 
+            # Draw clicked markers and corner numbers P1, P2, P3, P4
             fig.add_trace(
                 go.Scatter(
                     x=px,
                     y=py,
-                    mode="lines+markers+text",
-                    fill="toself",
-                    fillcolor="rgba(0, 230, 118, 0.35)",  # Semi-transparent green fill
-                    line=dict(color="#00FF66", width=2.5),
-                    marker=dict(size=8, color="#00FF66"),
-                    text=[f"P{i+1}" for i in range(len(poly_list))] + [""],
+                    mode="markers+text",
+                    marker=dict(size=12, color="#00FF66", symbol="circle"),
+                    text=[f"P{i+1}" for i in range(len(pts))],
                     textposition="top right",
-                    name="Active ROI Region",
+                    textfont=dict(size=14, color="#FFFFFF"),
+                    name="Selected Corners",
                 )
             )
 
         fig.update_layout(
             template="plotly_dark",
-            height=550,
+            height=600,
             xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
-            dragmode="lasso",  # Default cursor set to lasso for easy region selection
             clickmode="event+select",
+            dragmode=False,
         )
 
-        # Enable interactive shape capture from Plotly
+        # Streamlit Plotly Chart Event Handler
         chart_events = st.plotly_chart(
             fig,
             use_container_width=True,
             on_select="rerun",
-            selection_mode=["points", "box", "lasso"],
-            key="roi_canvas_selector",
+            selection_mode="points",
+            key="four_corner_canvas",
         )
 
-        # Capture mouse selection events (Lasso / Box)
+        # Capture direct point clicks on the canvas
         if chart_events and "selection" in chart_events:
-            selected_pts = chart_events["selection"].get("points", [])
-            if len(selected_pts) >= 3:
-                new_poly_pts = [
-                    {"X (m)": round(pt["x"], 2), "Y (m)": round(pt["y"], 2)}
-                    for pt in selected_pts
-                ]
-                st.session_state.selected_polygon_pts = new_poly_pts
+            event_pts = chart_events["selection"].get("points", [])
+            if event_pts:
+                click_x = event_pts[0]["x"]
+                click_y = event_pts[0]["y"]
 
-    with col_controls:
-        st.markdown("#### Region Vertices & Controls")
-
-        # Table showing coordinates (auto-synced with canvas)
-        default_df = pd.DataFrame(st.session_state.selected_polygon_pts)
-        if "X (m)" not in default_df.columns or "Y (m)" not in default_df.columns:
-            default_df = pd.DataFrame([{"X (m)": 0.0, "Y (m)": 0.0}, {"X (m)": 10.0, "Y (m)": 0.0}])
-
-        edited_df = st.data_editor(
-            default_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="poly_editor",
-        )
-
-        # Manual edit sync
-        poly_pts_dicts = edited_df.to_dict(orient="records")
-        st.session_state.selected_polygon_pts = poly_pts_dicts
-
-        if st.button("🔴 Reset Selected Region", use_container_width=True):
-            st.session_state.selected_polygon_pts = []
-            st.rerun()
-
-        st.markdown("---")
-
-        # Config Exporter
-        export_payload = {
-            "polygon_points": [
-                [p.get("X (m)", 0.0), p.get("Y (m)", 0.0)] for p in poly_pts_dicts
-            ],
-            "vga_grid": (
-                st.session_state.vga_grid_df.to_dict(orient="records")
-                if st.session_state.vga_grid_df is not None
-                else []
-            ),
-            "homography_matrix": (
-                st.session_state.homography_matrix.tolist()
-                if st.session_state.homography_matrix is not None
-                else None
-            ),
-        }
-
-        st.download_button(
-            label="💾 Export JSON Config",
-            data=json.dumps(export_payload, indent=2),
-            file_name="floorplan_homography_config.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+                # Add point if less than 4 corners are selected
+                if len(st.session_state.four_corners) < 4:
+                    # Prevent duplicate accidental click inputs
+                    if not st.session_state.four_corners or (
+                        st.session_state.four_corners[-1] != [click_x, click_y]
+                    ):
+                        st.session_state.four_corners.append([click_x, click_y])
+                        st.session_state.selected_polygon_pts = [
+                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                        ]
+                        st.rerun()
 
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
