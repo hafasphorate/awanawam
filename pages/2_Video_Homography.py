@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from shapely.geometry import LineString, Polygon
 import streamlit as st
+from streamlit_plotly_events import plotly_events
 
 # Reuse your working CAD engine and tracking functions
 from utils.vga_engine import process_cad_file
@@ -33,8 +34,6 @@ if "homography_matrix" not in st.session_state:
     st.session_state.homography_matrix = None
 if "selected_frame_idx" not in st.session_state:
     st.session_state.selected_frame_idx = 0
-if "reset_view" not in st.session_state:
-    st.session_state.reset_view = True
 
 
 # Navigation Tabs
@@ -70,7 +69,7 @@ with tab_import:
                     st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Parse Polygon Points Safely (Prevents KeyError "X (m)")
+                # 2. Parse Polygon Points Safely
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
@@ -85,6 +84,7 @@ with tab_import:
 
                     if formatted_pts:
                         st.session_state.selected_polygon_pts = formatted_pts
+                        st.session_state.four_corners = [[p["X (m)"], p["Y (m)"]] for p in formatted_pts]
                         st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
 
                 # 3. Parse Homography Matrix
@@ -101,13 +101,12 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
-                    st.session_state.reset_view = True
                     st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: CAD Import (DXF / DWG) - Uses same backend as VGA Page
+    # 📐 Option B: CAD Import (DXF / DWG)
     with col_dxf:
         st.markdown("### 📐 Option B: Import Raw CAD File")
         uploaded_cad = st.file_uploader(
@@ -126,7 +125,6 @@ with tab_import:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = wall_lines
-                    st.session_state.reset_view = True
                     st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
@@ -166,13 +164,13 @@ with tab_import:
             )
 
 # ==========================================
-# TAB 2: REGION SELECTION & EDITING (ENHANCED)
+# TAB 2: REGION SELECTION & EDITING
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
     st.info(
         "💡 **4-Point Click Selection:** Click **4 points** anywhere on the floorplan canvas to define "
-        "the corners of your camera's field of view. Zoom in as needed — the viewport position will remain locked between clicks!"
+        "the corners of your camera's field of view. Zoom in freely — zoom position will remain completely locked."
     )
 
     if "four_corners" not in st.session_state:
@@ -192,9 +190,6 @@ with tab_region:
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
-                st.session_state.reset_view = True
-                if "roi_floorplan_canvas" in st.session_state:
-                    del st.session_state["roi_floorplan_canvas"]
                 st.rerun()
 
         with col_btn2:
@@ -262,7 +257,7 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Unpack Wall Lines (Supports both live DXF objects and JSON imported dicts/lists)
+        # 1. Unpack Wall Lines
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
@@ -296,22 +291,10 @@ with tab_region:
                 )
             )
 
-        # Compute initial bounds
+        # 2. Add Click-Receiver Sensor Grid
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
-            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
-            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
-            initial_x_range = [minx - pad_x, maxx + pad_x]
-            initial_y_range = [miny - pad_y, maxy + pad_y]
-        else:
-            minx, maxx = -1, 10
-            miny, maxy = -1, 10
-            initial_x_range = [-1, 10]
-            initial_y_range = [-1, 10]
-
-        # 2. Add Click-Receiver Sensor Grid
-        if all_x and all_y:
             grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
             grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
 
@@ -370,68 +353,61 @@ with tab_region:
                 )
             )
 
-        # Build Axis Configurations (Apply explicit range ONLY on initial load / reset)
-        xaxis_config = dict(
-            title="X Coordinate",
-            scaleanchor="y",
-            scaleratio=1,
-            showgrid=True,
-        )
-        yaxis_config = dict(
-            title="Y Coordinate",
-            showgrid=True,
-        )
-
-        if st.session_state.reset_view:
-            xaxis_config["range"] = initial_x_range
-            yaxis_config["range"] = initial_y_range
-            st.session_state.reset_view = False  # Lock view persistence for subsequent clicks
-
         fig.update_layout(
             template="plotly_dark",
             height=620,
-            xaxis=xaxis_config,
-            yaxis=yaxis_config,
+            xaxis=dict(
+                title="X Coordinate",
+                scaleanchor="y",
+                scaleratio=1,
+                showgrid=True,
+            ),
+            yaxis=dict(
+                title="Y Coordinate",
+                showgrid=True,
+            ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="constant_viewport_lock",  # Retains client-side zoom state
+            uirevision="lock_viewport",  # Retains browser camera zoom across renders
         )
 
-        chart_events = st.plotly_chart(
+        # Render canvas using stream-based event capture
+        selected_points = plotly_events(
             fig,
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="points",
-            key="roi_floorplan_canvas",
+            click_event=True,
+            hover_event=False,
+            select_event=False,
+            override_height=620,
+            key="roi_floorplan_canvas_events",
         )
 
-        # Event Dispatcher for Direct Map Clicks (No manual st.rerun calls needed)
-        if chart_events and "selection" in chart_events:
-            event_pts = chart_events["selection"].get("points", [])
-            if event_pts:
-                click_x = float(event_pts[0]["x"])
-                click_y = float(event_pts[0]["y"])
+        # Dispatch Clicks
+        if selected_points:
+            click_x = float(selected_points[0]["x"])
+            click_y = float(selected_points[0]["y"])
 
-                # Mode A: Replacing/Redoing a Specific Selected Corner
-                if st.session_state.editing_point_idx is not None:
-                    target_idx = st.session_state.editing_point_idx
-                    st.session_state.four_corners[target_idx] = [click_x, click_y]
-                    st.session_state.editing_point_idx = None
+            # Mode A: Replacing/Redoing a Specific Selected Corner
+            if st.session_state.editing_point_idx is not None:
+                target_idx = st.session_state.editing_point_idx
+                st.session_state.four_corners[target_idx] = [click_x, click_y]
+                st.session_state.editing_point_idx = None
+                st.session_state.selected_polygon_pts = [
+                    {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                ]
+                st.rerun()
+
+            # Mode B: Adding a New Corner (Up to 4 total)
+            elif len(st.session_state.four_corners) < 4:
+                if not st.session_state.four_corners or (
+                    st.session_state.four_corners[-1] != [click_x, click_y]
+                ):
+                    st.session_state.four_corners.append([click_x, click_y])
                     st.session_state.selected_polygon_pts = [
                         {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
                     ]
-
-                # Mode B: Adding a New Corner (Up to 4 total)
-                elif len(st.session_state.four_corners) < 4:
-                    if not st.session_state.four_corners or (
-                        st.session_state.four_corners[-1] != [click_x, click_y]
-                    ):
-                        st.session_state.four_corners.append([click_x, click_y])
-                        st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                        ]
+                    st.rerun()
 
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
