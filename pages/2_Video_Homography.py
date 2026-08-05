@@ -278,7 +278,7 @@ with tab_region:
                         all_y.append(pt[1])
                 for i in range(len(line) - 1):
                     wall_x.extend([line[i][0], line[i+1][0], None])
-                    wall_y.extend([line[i][1], line[i+1][1], None])
+                    wall_y.extend([line[i+1][0], None])
 
         if wall_x:
             fig.add_trace(
@@ -293,10 +293,22 @@ with tab_region:
                 )
             )
 
-        # 2. Add Click-Receiver Sensor Grid Across Bounding Box
+        # Calculate static bounding box for axis boundaries
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
+            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
+            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
+            x_range = [minx - pad_x, maxx + pad_x]
+            y_range = [miny - pad_y, maxy + pad_y]
+        else:
+            minx, maxx = -1, 10
+            miny, maxy = -1, 10
+            x_range = [-1, 10]
+            y_range = [-1, 10]
+
+        # 2. Add Click-Receiver Sensor Grid Across Bounding Box
+        if all_x and all_y:
             grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
             grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
 
@@ -356,17 +368,29 @@ with tab_region:
                 )
             )
 
-        # Layout Configuration with uirevision=True to retain zoom level across reruns
+        # Layout Configuration with fixed ranges, autorange disabled, and static uirevision
         fig.update_layout(
             template="plotly_dark",
             height=620,
-            xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
-            yaxis=dict(title="Y Coordinate", showgrid=True),
+            xaxis=dict(
+                title="X Coordinate",
+                range=x_range,
+                autorange=False,  # Stops Plotly from re-fitting zoom on new point additions
+                scaleanchor="y",
+                scaleratio=1,
+                showgrid=True,
+            ),
+            yaxis=dict(
+                title="Y Coordinate",
+                range=y_range,
+                autorange=False,  # Stops Plotly from re-fitting zoom on new point additions
+                showgrid=True,
+            ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
-            dragmode=False,
+            dragmode="pan",  # Easy panning for finding regions on complex floorplans
             hovermode="closest",
-            uirevision="static_viewport_key", # Retains user zoom & pan position
+            uirevision="lock_viewport",  # Constant string locks client-side zoom state across reruns
         )
 
         chart_events = st.plotly_chart(
@@ -374,7 +398,7 @@ with tab_region:
             use_container_width=True,
             on_select="rerun",
             selection_mode="points",
-            key="roi_floorplan_canvas",  # Static key keeps component mounted in DOM
+            key="roi_floorplan_canvas",  # Static key maintains DOM element stability
         )
 
         # Event Dispatcher for Direct Map Clicks
