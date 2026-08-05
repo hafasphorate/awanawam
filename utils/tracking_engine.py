@@ -31,15 +31,68 @@ def load_detection_model(model_name: str = "keremberke/yolov8n-head"):
         return None
 
 
+def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
+    """Extracts an RGB image frame safely from a Streamlit uploaded video file."""
+    if video_file is None:
+        return None
+
+    try:
+        video_file.seek(0)
+        video_bytes = video_file.read()
+        video_file.seek(0)
+
+        if not video_bytes:
+            return None
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
+            tmp_v.write(video_bytes)
+            tmp_path = tmp_v.name
+
+        cap = cv2.VideoCapture(tmp_path)
+
+        if not cap.isOpened():
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return None
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        target_frame = min(max(0, frame_number), max(0, total_frames - 1))
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+
+        if not ret or frame is None:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            curr = 0
+            while cap.isOpened() and curr <= target_frame:
+                ret, frame = cap.read()
+                if curr == target_frame:
+                    break
+                curr += 1
+
+        cap.release()
+
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        if ret and frame is not None:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    except Exception as e:
+        st.error(f"Video Decoding Error: {e}")
+
+    return None
+
+
 def process_video_frame(
     frame_rgb: np.ndarray,
     H_matrix: np.ndarray = None,
-    conf_threshold: float = 0.15,
+    conf_threshold: float = 0.12,
     iou_threshold: float = 0.45,
     inference_size: int = 1280,
     model_name: str = "keremberke/yolov8n-head",
 ) -> tuple:
-    """Detects people using dedicated Head/Crowd detection models."""
+    """Detects people using dedicated Head/Crowd detection models or YOLO pose."""
     if frame_rgb is None:
         return None, pd.DataFrame()
 
@@ -64,7 +117,7 @@ def process_video_frame(
         if results and len(results) > 0:
             res = results[0]
 
-            # 1. Check for Pose Keypoints (if using pose models)
+            # 1. Pose Keypoint Models
             if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
                 keypoints_data = res.keypoints.xy.cpu().numpy()
                 for idx, kpts in enumerate(keypoints_data):
@@ -76,16 +129,15 @@ def process_video_frame(
                         cv2.circle(annotated_frame, (int(target_x), int(target_y)), 5, (255, 0, 128), -1)
                         detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
 
-            # 2. Check for Bounding Boxes (Head Detectors / RT-DETR / Standard YOLO)
+            # 2. Bounding Box Models (Head Detectors / RT-DETR / Standard YOLO)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = xyxy
 
-                    # Center point of bounding box (ideal for head detectors)
-                    target_x = (x1 + x2) / 2.0
-                    target_y = (y1 + y2) / 2.0
+                    target_x = float((x1 + x2) / 2.0)
+                    target_y = float((y1 + y2) / 2.0)
 
                     pixel_points.append([target_x, target_y])
 
@@ -94,7 +146,7 @@ def process_video_frame(
 
                     detection_list.append({"track_id": idx + 1, "img_x": target_x, "img_y": target_y})
 
-    # Project to 2D Floorplan
+    # Project pixel points into 2D Floorplan Coordinates
     if H_matrix is not None and len(pixel_points) > 0:
         world_pts = project_points(pixel_points, H_matrix)
         for idx, w_pt in enumerate(world_pts):
