@@ -66,7 +66,7 @@ with tab_import:
     with col_json:
         st.markdown("### 📄 Option A: Import Exported JSON")
         uploaded_json = st.file_uploader(
-            "Upload JSON Export (VGA + Polygon Config)",
+            "Upload JSON Floorplan / Export (VGA + Polygon Config)",
             type=["json"],
             key="json_uploader",
         )
@@ -103,49 +103,76 @@ with tab_import:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
                     st.success("✅ Loaded pre-saved Homography Matrix")
 
-                # 4. Parse Walls
-                if "dxf_walls" in data and data["dxf_walls"]:
+                # 4. Parse Wall Geometries (handles `wall_lines`, `dxf_walls`, and `walls`)
+                raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
+                if raw_walls:
                     walls = []
-                    for w in data["dxf_walls"]:
-                        if len(w) >= 3:
-                            walls.append(Polygon(w))
-                        elif len(w) == 2:
-                            walls.append(LineString(w))
-                    st.session_state.dxf_walls = walls
-                    st.session_state.current_x_range = None
-                    st.session_state.current_y_range = None
-                    st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
+                    for w in raw_walls:
+                        if isinstance(w, (list, tuple)):
+                            if len(w) == 2 and isinstance(w[0], (list, tuple)) and isinstance(w[1], (list, tuple)):
+                                # Line segment: [[x1, y1], [x2, y2]]
+                                walls.append(LineString(w))
+                            elif len(w) >= 3 and isinstance(w[0], (list, tuple)):
+                                # Polygon coordinates
+                                walls.append(Polygon(w))
+                            elif len(w) == 2 and isinstance(w[0], (int, float)):
+                                # Corner or single point skip
+                                pass
+                        elif isinstance(w, dict):
+                            # In case wall is stored as object with start/end
+                            if "start" in w and "end" in w:
+                                walls.append(LineString([w["start"], w["end"]]))
+
+                    if walls:
+                        st.session_state.dxf_walls = walls
+                        st.session_state.current_x_range = None
+                        st.session_state.current_y_range = None
+                        st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: CAD Import (DXF / DWG)
+    # 📐 Option B: CAD / JSON Floorplan Import
     with col_dxf:
-        st.markdown("### 📐 Option B: Import Raw CAD File")
+        st.markdown("### 📐 Option B: Import Raw CAD / Floorplan File")
         uploaded_cad = st.file_uploader(
-            "Upload CAD Floorplan (DXF or DWG)",
-            type=["dxf", "dwg"],
+            "Upload CAD Floorplan (DXF, DWG, or JSON)",
+            type=["dxf", "dwg", "json"],
             key="cad_uploader",
         )
 
         if uploaded_cad is not None:
             file_ext = "." + uploaded_cad.name.split(".")[-1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                tmp_file.write(uploaded_cad.getvalue())
-                tmp_path = tmp_file.name
-
-            try:
-                with st.spinner("Processing CAD file via VGA Engine..."):
-                    wall_lines = process_cad_file(tmp_path)
-                    st.session_state.dxf_walls = wall_lines
+            
+            if file_ext == ".json":
+                try:
+                    data = json.load(uploaded_cad)
+                    raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
+                    walls = [LineString(w) for w in raw_walls if len(w) == 2]
+                    
+                    st.session_state.dxf_walls = walls
                     st.session_state.current_x_range = None
                     st.session_state.current_y_range = None
-                    st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
-            except Exception as e:
-                st.error(f"Failed to parse CAD file: {e}")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                    st.success(f"✅ Parsed {len(walls)} wall lines from JSON!")
+                except Exception as e:
+                    st.error(f"Failed to parse JSON file: {e}")
+            else:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                    tmp_file.write(uploaded_cad.getvalue())
+                    tmp_path = tmp_file.name
+
+                try:
+                    with st.spinner("Processing CAD file via VGA Engine..."):
+                        wall_lines = process_cad_file(tmp_path)
+                        st.session_state.dxf_walls = wall_lines
+                        st.session_state.current_x_range = None
+                        st.session_state.current_y_range = None
+                        st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
+                except Exception as e:
+                    st.error(f"Failed to parse CAD file: {e}")
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
 
     st.markdown("---")
 
@@ -290,7 +317,7 @@ with tab_region:
                         all_y.append(pt[1])
                 for i in range(len(line) - 1):
                     wall_x.extend([line[i][0], line[i+1][0], None])
-                    wall_y.extend([line[i+1][0], None])
+                    wall_y.extend([line[i][1], line[i+1][1], None])
 
         if wall_x:
             fig.add_trace(
@@ -412,9 +439,7 @@ with tab_region:
         )
 
         # 🔍 CAPTURE RELAYOUT ZOOM / PAN EVENTS
-        # Whenever you zoom or pan, Plotly returns the new ranges in chart_events
         if chart_events and isinstance(chart_events, dict):
-            # Inspect layout changes (zoom/pan)
             relayout_data = chart_events.get("relayout", {})
             if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
                 st.session_state.current_x_range = [
