@@ -40,6 +40,12 @@ if "editing_point_idx" not in st.session_state:
 if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
 
+# PERSISTENT ZOOM / VIEWPORT RANGE STATE
+if "current_x_range" not in st.session_state:
+    st.session_state.current_x_range = None
+if "current_y_range" not in st.session_state:
+    st.session_state.current_y_range = None
+
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking = st.tabs([
@@ -106,6 +112,8 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
+                    st.session_state.current_x_range = None
+                    st.session_state.current_y_range = None
                     st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
@@ -130,6 +138,8 @@ with tab_import:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = wall_lines
+                    st.session_state.current_x_range = None
+                    st.session_state.current_y_range = None
                     st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
@@ -191,6 +201,8 @@ with tab_region:
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
                 st.session_state.processed_click_sig = None
+                st.session_state.current_x_range = None
+                st.session_state.current_y_range = None
                 st.rerun()
 
         with col_btn2:
@@ -293,23 +305,17 @@ with tab_region:
                 )
             )
 
-        # 2. Add Dense Click Target Grid & Fixed Boundary Anchors
+        # Determine Initial Bounds if not user-customized yet
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
+            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
+            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
 
-            # Invisible Fixed Corner Anchors so total canvas frame stays 100% constant
-            fig.add_trace(
-                go.Scatter(
-                    x=[minx, minx, maxx, maxx],
-                    y=[miny, maxy, miny, maxy],
-                    mode="markers",
-                    marker=dict(size=1, color="rgba(0,0,0,0)"),
-                    hoverinfo="none",
-                    showlegend=False,
-                    name="anchor_bounds",
-                )
-            )
+            if st.session_state.current_x_range is None:
+                st.session_state.current_x_range = [minx - pad_x, maxx + pad_x]
+            if st.session_state.current_y_range is None:
+                st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
 
             grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
             grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
@@ -329,6 +335,11 @@ with tab_region:
                     name="click_sensor_grid",
                 )
             )
+        else:
+            if st.session_state.current_x_range is None:
+                st.session_state.current_x_range = [-1, 10]
+            if st.session_state.current_y_range is None:
+                st.session_state.current_y_range = [-1, 10]
 
         # 3. Selected Corners & ROI Fill Area
         pts = st.session_state.four_corners
@@ -369,27 +380,27 @@ with tab_region:
                 )
             )
 
-        # Apply strict uirevision lock without overriding ranges
+        # Explicitly mandate range to current persisted zoom window
         fig.update_layout(
             template="plotly_dark",
             height=620,
             xaxis=dict(
                 title="X Coordinate",
+                range=st.session_state.current_x_range,
                 scaleanchor="y",
                 scaleratio=1,
                 showgrid=True,
-                autorange=True,
             ),
             yaxis=dict(
                 title="Y Coordinate",
+                range=st.session_state.current_y_range,
                 showgrid=True,
-                autorange=True,
             ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="PERMANENT_CANVAS_LOCK",  # Critical: Prevents layout reset across reruns
+            uirevision="PERMANENT_CANVAS_LOCK",
         )
 
         chart_events = st.plotly_chart(
@@ -399,6 +410,22 @@ with tab_region:
             selection_mode="points",
             key="roi_floorplan_canvas",
         )
+
+        # 🔍 CAPTURE RELAYOUT ZOOM / PAN EVENTS
+        # Whenever you zoom or pan, Plotly returns the new ranges in chart_events
+        if chart_events and isinstance(chart_events, dict):
+            # Inspect layout changes (zoom/pan)
+            relayout_data = chart_events.get("relayout", {})
+            if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
+                st.session_state.current_x_range = [
+                    relayout_data["xaxis.range[0]"],
+                    relayout_data["xaxis.range[1]"],
+                ]
+            if "yaxis.range[0]" in relayout_data and "yaxis.range[1]" in relayout_data:
+                st.session_state.current_y_range = [
+                    relayout_data["yaxis.range[0]"],
+                    relayout_data["yaxis.range[1]"],
+                ]
 
         # Click Event Dispatcher with deduplication
         if chart_events and "selection" in chart_events:
