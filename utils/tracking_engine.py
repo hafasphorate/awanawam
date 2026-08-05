@@ -1,155 +1,162 @@
 # utils/tracking_engine.py
+import os
 import tempfile
+import cv2
 import numpy as np
 import pandas as pd
-import cv2
-from typing import List, Tuple, Optional
 import streamlit as st
+from cv2 import VideoCapture
+
+# Try importing ultralytics YOLO; fallback gracefully if not installed
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+
+from utils.homography_engine import project_points
 
 
-def extract_frame_from_video(
-    uploaded_video_file, frame_number: int = 0
-) -> Optional[np.ndarray]:
-    """
-    Extracts a specific RGB frame from a Streamlit UploadedFile object.
-    
-    Uses a temporary file buffer since OpenCV's VideoCapture requires a disk path.
-    """
-    if uploaded_video_file is None:
+@st.cache_resource
+def load_yolo_model(model_name: str = "yolov8n.pt"):
+    """Loads and caches the YOLO model for detection."""
+    if not YOLO_AVAILABLE:
+        return None
+    try:
+        model = YOLO(model_name)
+        return model
+    except Exception as e:
+        st.error(f"Error loading YOLO model ({model_name}): {e}")
         return None
 
-    # Write video bytes to a temporary file on disk
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-        tmp_file.write(uploaded_video_file.getbuffer())
-        tmp_path = tmp_file.name
 
-    cap = cv2.VideoCapture(tmp_path)
-    if not cap.isOpened():
-        st.error("Error opening uploaded video file.")
+def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
+    """Extracts an RGB image frame from a Streamlit uploaded video file."""
+    if video_file is None:
         return None
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if total_frames <= 0:
-        st.error("Uploaded video contains no frames.")
-        cap.release()
-        return None
+    # Write video stream to temp file for OpenCV consumption
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
+        tmp_v.write(video_file.getvalue())
+        tmp_path = tmp_v.name
 
-    # Clamp frame_number to valid video index range
-    frame_number = max(0, min(frame_number, total_frames - 1))
-    
+    cap = VideoCapture(tmp_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
     ret, frame = cap.read()
     cap.release()
 
-    if not ret or frame is None:
-        st.error(f"Failed to read frame index {frame_number} from video.")
-        return None
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
 
-    # OpenCV defaults to BGR -> Convert to RGB for Plotly/Streamlit display
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-
-class HomographyCalibrator:
-    """Handles 3x3 Homography Matrix calculation and point transformations."""
-
-    def __init__(self, H_matrix: Optional[np.ndarray] = None):
-        self.H_matrix = H_matrix
-
-    def compute_homography(
-        self,
-        img_points: List[Tuple[float, float]],
-        cad_points: List[Tuple[float, float]],
-    ) -> np.ndarray:
-        """
-        Computes 3x3 Homography Matrix H from matching point pairs.
-        img_points: [(u1, v1), (u2, v2), ...]
-        cad_points: [(X1, Y1), (X2, Y2), ...]
-        """
-        if len(img_points) < 4 or len(cad_points) < 4:
-            raise ValueError("At least 4 corresponding point pairs are required.")
-
-        pts_src = np.array(img_points, dtype=np.float32)
-        pts_dst = np.array(cad_points, dtype=np.float32)
-
-        # Compute Homography using RANSAC for robustness against minor point inaccuracies
-        H, _ = cv2.findHomography(pts_src, pts_dst, cv2.RANSAC, 5.0)
-        self.H_matrix = H
-        return H
-
-    def transform_points(self, points: np.ndarray) -> np.ndarray:
-        """Transforms N x 2 pixel points (u, v) into CAD coordinates (X, Y)."""
-        if self.H_matrix is None:
-            raise RuntimeError("Homography matrix is not calibrated.")
-
-        pts_reshaped = points.reshape(-1, 1, 2).astype(np.float32)
-        cad_pts = cv2.perspectiveTransform(pts_reshaped, self.H_matrix)
-        return cad_pts.reshape(-1, 2)
+    if ret and frame is not None:
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return None
 
 
-class TrackingProcessor:
-    """Parses tracking logs and computes spatial occupancy heatmaps."""
+def process_video_frame(
+    frame_rgb: np.ndarray,
+    H_matrix: np.ndarray = None,
+    conf_threshold: float = 0.3,
+    detect_target: str = "Head",  # "Head" or "Feet / Ground"
+    model_name: str = "yolov8n.pt",
+) -> tuple:
+    """Detects people in a frame, estimates head/ground positions, and projects them 
 
-    def __init__(self, homography_matrix: np.ndarray):
-        if homography_matrix is None or homography_matrix.shape != (3, 3):
-            raise ValueError("A valid 3x3 Homography Matrix is required.")
-        self.calibrator = HomographyCalibrator(homography_matrix)
+    onto floorplan coordinates via Homography.
 
-    def parse_and_transform_csv(
-        self, df: pd.DataFrame, tracking_point: str = "Head (Top-Center)"
-    ) -> pd.DataFrame:
-        """
-        Parses tracking DataFrame and appends transformed CAD_X and CAD_Y.
-        Expected columns: ['frame_id', 'track_id', 'x1', 'y1', 'x2', 'y2']
-        """
-        required_cols = {"x1", "y1", "x2", "y2"}
-        if not required_cols.issubset(df.columns):
-            raise KeyError(
-                f"CSV missing required bounding box columns: {required_cols - set(df.columns)}"
-            )
+    Returns
+    -------
+    tuple: (annotated_frame_rgb, detections_df)
+        - annotated_frame_rgb: OpenCV frame with bounding boxes and keypoint markers
+        - detections_df: DataFrame containing track/detection IDs, pixel coordinates, and world coordinates (X, Y)
+    """
+    if frame_rgb is None:
+        return None, pd.DataFrame()
 
-        df = df.copy()
+    annotated_frame = frame_rgb.copy()
+    h, w, _ = annotated_frame.shape
+    model = load_yolo_model(model_name)
 
-        # Extract horizontal center
-        u = (df["x1"] + df["x2"]) / 2.0
+    detection_list = []
+    pixel_points = []
 
-        # Head mode picks top edge (y1) to handle crowded scenes; Feet picks bottom edge (y2)
-        if tracking_point == "Head (Top-Center)":
-            v = df["y1"]
-        else:
-            v = df["y2"]
-
-        pixel_pts = np.column_stack((u, v))
-        cad_pts = self.calibrator.transform_points(pixel_pts)
-
-        df["point_u"] = u
-        df["point_v"] = v
-        df["CAD_X"] = cad_pts[:, 0]
-        df["CAD_Y"] = cad_pts[:, 1]
-
-        return df
-
-    @staticmethod
-    def compute_occupancy_density(
-        cad_x: np.ndarray,
-        cad_y: np.ndarray,
-        grid_bounds: Tuple[float, float, float, float],
-        nbins: int = 80,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Computes a 2D spatial density histogram for Plotly contour mapping.
-        grid_bounds: (min_x, max_x, min_y, max_y)
-        """
-        min_x, max_x, min_y, max_y = grid_bounds
-
-        density, xedges, yedges = np.histogram2d(
-            cad_x,
-            cad_y,
-            bins=nbins,
-            range=[[min_x, max_x], [min_y, max_y]],
+    if model is not None and YOLO_AVAILABLE:
+        # Run tracking / detection with YOLO (classes 0 = person)
+        results = model.track(
+            annotated_frame,
+            classes=[0],
+            conf=conf_threshold,
+            persist=True,
+            verbose=False,
         )
 
-        x_centers = (xedges[:-1] + xedges[1:]) / 2
-        y_centers = (yedges[:-1] + yedges[1:]) / 2
+        if results and len(results) > 0:
+            boxes = results[0].boxes
+            for box in boxes:
+                # Get bounding box coordinates [x1, y1, x2, y2]
+                xyxy = box.xyxy[0].cpu().numpy()
+                x1, y1, x2, y2 = xyxy
+                
+                # Get tracking ID if present, otherwise default to 0
+                track_id = int(box.id[0].cpu().numpy()) if box.id is not None else 0
 
-        return x_centers, y_centers, density.T
+                # Target point calculation
+                if detect_target == "Head":
+                    # Center of top bounding box edge (head position)
+                    target_x = (x1 + x2) / 2.0
+                    target_y = y1
+                else:
+                    # Bottom center (feet/ground contact position)
+                    target_x = (x1 + x2) / 2.0
+                    target_y = y2
+
+                pixel_points.append([target_x, target_y])
+
+                # Draw bounding box on frame
+                cv2.rectangle(
+                    annotated_frame,
+                    (int(x1), int(y1)),
+                    (int(x2), int(y2)),
+                    (0, 255, 128),
+                    2,
+                )
+                
+                # Draw head/target point marker
+                cv2.circle(
+                    annotated_frame,
+                    (int(target_x), int(target_y)),
+                    5,
+                    (255, 0, 128),
+                    -1,
+                )
+
+                # Label text
+                label = f"ID:{track_id} ({detect_target})"
+                cv2.putText(
+                    annotated_frame,
+                    label,
+                    (int(x1), max(15, int(y1) - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 128),
+                    2,
+                )
+
+                detection_list.append({
+                    "track_id": track_id,
+                    "img_x": target_x,
+                    "img_y": target_y,
+                    "bbox": [x1, y1, x2, y2],
+                    "world_x": None,
+                    "world_y": None,
+                })
+
+    # Project pixel points into world coordinates if Homography matrix exists
+    if H_matrix is not None and len(pixel_points) > 0:
+        world_pts = project_points(pixel_points, H_matrix)
+        for idx, w_pt in enumerate(world_pts):
+            detection_list[idx]["world_x"] = w_pt[0]
+            detection_list[idx]["world_y"] = w_pt[1]
+
+    df_detections = pd.DataFrame(detection_list)
+    return annotated_frame, df_detections
