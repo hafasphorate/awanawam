@@ -11,28 +11,70 @@ import streamlit as st
 from utils.tracking_engine import HomographyCalibrator, extract_frame_from_video
 from views.tracking_view import render_tracking_view
 
-st.set_page_config(
-    page_title="Module 2: Video Homography & Tracking", layout="wide"
-)
+st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
 
 st.title("📹 Module 2: Video Homography & Region Selection")
 
-# Initialize Session State
+# Initialize Session State safely
 if "dxf_walls" not in st.session_state:
-  st.session_state.dxf_walls = []
+    st.session_state.dxf_walls = []
 if "vga_grid_df" not in st.session_state:
-  st.session_state.vga_grid_df = None
+    st.session_state.vga_grid_df = None
 if "selected_polygon_pts" not in st.session_state:
-  st.session_state.selected_polygon_pts = [
-      {"X (m)": 0.0, "Y (m)": 0.0},
-      {"X (m)": 10.0, "Y (m)": 0.0},
-      {"X (m)": 10.0, "Y (m)": 10.0},
-      {"X (m)": 0.0, "Y (m)": 10.0},
-  ]
+    st.session_state.selected_polygon_pts = [
+        {"X (m)": 0.0, "Y (m)": 0.0},
+        {"X (m)": 10.0, "Y (m)": 0.0},
+        {"X (m)": 10.0, "Y (m)": 10.0},
+        {"X (m)": 0.0, "Y (m)": 10.0},
+    ]
 if "homography_matrix" not in st.session_state:
-  st.session_state.homography_matrix = None
+    st.session_state.homography_matrix = None
 if "selected_frame_idx" not in st.session_state:
-  st.session_state.selected_frame_idx = 0
+    st.session_state.selected_frame_idx = 0
+
+
+# ==========================================
+# ROBUST DXF PARSER (HANDLES NESTED BLOCKS)
+# ==========================================
+def parse_dxf_bytes(file_bytes):
+    """Parses DXF bytes, expanding nested blocks and extracting all line geometries."""
+    doc = ezdxf.read(io.StringIO(file_bytes.decode("utf-8", errors="ignore")))
+    msp = doc.modelspace()
+    walls = []
+
+    # Iterates through modelspace and explodes/flattens block references if needed
+    for entity in msp:
+        entity_type = entity.dxftype()
+        
+        if entity_type == "LINE":
+            start, end = entity.dxf.start, entity.dxf.end
+            walls.append(LineString([(start.x, start.y), (end.x, end.y)]))
+            
+        elif entity_type in ["LWPOLYLINE", "POLYLINE"]:
+            pts = [(p[0], p[1]) for p in entity.get_points("xy")]
+            if len(pts) >= 2:
+                if entity.is_closed and len(pts) >= 3:
+                    walls.append(Polygon(pts))
+                else:
+                    walls.append(LineString(pts))
+                    
+        elif entity_type == "INSERT":
+            # Handle block references (nested geometry)
+            try:
+                block = doc.blocks.get(entity.dxf.name)
+                for b_entity in block:
+                    if b_entity.dxftype() == "LINE":
+                        start, end = b_entity.dxf.start, b_entity.dxf.end
+                        walls.append(LineString([(start.x, start.y), (end.x, end.y)]))
+                    elif b_entity.dxftype() in ["LWPOLYLINE", "POLYLINE"]:
+                        pts = [(p[0], p[1]) for p in b_entity.get_points("xy")]
+                        if len(pts) >= 2:
+                            walls.append(LineString(pts))
+            except Exception:
+                continue
+
+    return walls
+
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking = st.tabs([
@@ -41,264 +83,243 @@ tab_import, tab_region, tab_tracking = st.tabs([
     "🔥 2.3 Occupancy Analytics",
 ])
 
-
-def parse_dxf_bytes(file_bytes):
-  """Parses DXF bytes and extracts wall line geometries."""
-  doc = ezdxf.read(io.StringIO(file_bytes.decode("utf-8", errors="ignore")))
-  msp = doc.modelspace()
-  walls = []
-
-  for e in msp:
-    if e.dxftype() == "LINE":
-      start, end = e.dxf.start, e.dxf.end
-      walls.append(LineString([(start.x, start.y), (end.x, end.y)]))
-    elif e.dxftype() in ["LWPOLYLINE", "POLYLINE"]:
-      pts = [(p[0], p[1]) for p in e.get_points("xy")]
-      if len(pts) >= 2:
-        if e.is_closed and len(pts) >= 3:
-          walls.append(Polygon(pts))
-        else:
-          walls.append(LineString(pts))
-  return walls
-
-
 # ==========================================
 # TAB 1: FILE & VIDEO IMPORT
 # ==========================================
 with tab_import:
-  st.subheader("Step 2.1: Load DXF/JSON Config & Surveillance Video")
+    st.subheader("Step 2.1: Load DXF/JSON Config & Surveillance Video")
 
-  col_json, col_dxf = st.columns(2)
+    col_json, col_dxf = st.columns(2)
 
-  # 📄 Option A: JSON Import
-  with col_json:
-    st.markdown("### 📄 Option A: Import Exported JSON")
-    uploaded_json = st.file_uploader(
-        "Upload JSON Export (VGA + Polygon Config)",
-        type=["json"],
-        key="json_uploader",
-    )
-
-    if uploaded_json is not None:
-      try:
-        data = json.load(uploaded_json)
-
-        # 1. Parse VGA Grid Data
-        if "vga_grid" in data and data["vga_grid"]:
-          st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
-          st.success(
-              f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)"
-          )
-
-        # 2. Parse Saved Polygon Points
-        if "polygon_points" in data and data["polygon_points"]:
-          pts = data["polygon_points"]
-          # Convert list of lists [[x, y], ...] to dict list for dataframe editor
-          if isinstance(pts[0], list) or isinstance(pts[0], tuple):
-            st.session_state.selected_polygon_pts = [
-                {"X (m)": p[0], "Y (m)": p[1]} for p in pts
-            ]
-          else:
-            st.session_state.selected_polygon_pts = pts
-          st.success(
-              f"✅ Loaded {len(st.session_state.selected_polygon_pts)} polygon"
-              " vertices"
-          )
-
-        # 3. Parse Homography Matrix
-        if "homography_matrix" in data and data["homography_matrix"]:
-          st.session_state.homography_matrix = np.array(
-              data["homography_matrix"]
-          )
-          st.success("✅ Loaded pre-saved Homography Matrix")
-
-        # 4. Parse Walls if encoded in JSON
-        if "dxf_walls" in data and data["dxf_walls"]:
-          walls = []
-          for w in data["dxf_walls"]:
-            if len(w) >= 3:
-              walls.append(Polygon(w))
-            elif len(w) == 2:
-              walls.append(LineString(w))
-          st.session_state.dxf_walls = walls
-          st.success(
-              f"✅ Loaded {len(walls)} wall elements from JSON configuration"
-          )
-
-      except Exception as e:
-        st.error(f"Error parsing JSON: {e}")
-
-  # 📐 Option B: DXF Import
-  with col_dxf:
-    st.markdown("### 📐 Option B: Import Raw DXF File")
-    uploaded_dxf = st.file_uploader(
-        "Upload CAD DXF File", type=["dxf"], key="dxf_uploader"
-    )
-
-    if uploaded_dxf is not None:
-      try:
-        dxf_bytes = uploaded_dxf.read()
-        walls = parse_dxf_bytes(dxf_bytes)
-        st.session_state.dxf_walls = walls
-        st.success(
-            f"✅ Successfully parsed DXF! {len(walls)} wall geometries ready"
-            " for rendering."
+    # 📄 Option A: JSON Import
+    with col_json:
+        st.markdown("### 📄 Option A: Import Exported JSON")
+        uploaded_json = st.file_uploader(
+            "Upload JSON Export (VGA + Polygon Config)",
+            type=["json"],
+            key="json_uploader",
         )
-      except Exception as e:
-        st.error(f"Failed to parse DXF file: {e}")
 
-  st.markdown("---")
+        if uploaded_json is not None:
+            try:
+                data = json.load(uploaded_json)
 
-  # 📹 Surveillance Video Upload
-  st.markdown("### 📹 Video Stream Target")
-  uploaded_video = st.file_uploader(
-      "Upload Surveillance Video (.mp4, .avi, .mov)",
-      type=["mp4", "avi", "mov"],
-      key="video_uploader",
-  )
+                # 1. Parse VGA Grid
+                if "vga_grid" in data and data["vga_grid"]:
+                    st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
+                    st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-  if uploaded_video:
-    st.session_state.uploaded_video_file = uploaded_video
-    st.success("✅ Video file attached and ready for tracking calibration.")
+                # 2. Parse Polygon Points Safely (Handling diverse JSON structures)
+                if "polygon_points" in data and data["polygon_points"]:
+                    raw_pts = data["polygon_points"]
+                    formatted_pts = []
+                    
+                    for pt in raw_pts:
+                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                            formatted_pts.append({"X (m)": float(pt[0]), "Y (m)": float(pt[1])})
+                        elif isinstance(pt, dict):
+                            x_val = pt.get("X (m)", pt.get("x", pt.get("X", 0.0)))
+                            y_val = pt.get("Y (m)", pt.get("y", pt.get("Y", 0.0)))
+                            formatted_pts.append({"X (m)": float(x_val), "Y (m)": float(y_val)})
+                    
+                    if formatted_pts:
+                        st.session_state.selected_polygon_pts = formatted_pts
+                        st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
 
-    # Frame Picker
-    frame_idx = st.slider(
-        "Select Calibration Preview Frame",
-        min_value=0,
-        max_value=1000,
-        value=st.session_state.selected_frame_idx,
-        step=5,
+                # 3. Parse Homography Matrix
+                if "homography_matrix" in data and data["homography_matrix"]:
+                    st.session_state.homography_matrix = np.array(data["homography_matrix"])
+                    st.success("✅ Loaded pre-saved Homography Matrix")
+
+                # 4. Parse Walls
+                if "dxf_walls" in data and data["dxf_walls"]:
+                    walls = []
+                    for w in data["dxf_walls"]:
+                        if len(w) >= 3:
+                            walls.append(Polygon(w))
+                        elif len(w) == 2:
+                            walls.append(LineString(w))
+                    st.session_state.dxf_walls = walls
+                    st.success(f"✅ Loaded {len(walls)} wall elements")
+
+            except Exception as e:
+                st.error(f"Error parsing JSON: {e}")
+
+    # 📐 Option B: DXF Import
+    with col_dxf:
+        st.markdown("### 📐 Option B: Import Raw DXF File")
+        uploaded_dxf = st.file_uploader(
+            "Upload CAD DXF File", type=["dxf"], key="dxf_uploader"
+        )
+
+        if uploaded_dxf is not None:
+            try:
+                dxf_bytes = uploaded_dxf.read()
+                walls = parse_dxf_bytes(dxf_bytes)
+                if len(walls) > 0:
+                    st.session_state.dxf_walls = walls
+                    st.success(f"✅ Successfully parsed DXF! {len(walls)} wall geometries ready.")
+                else:
+                    st.warning("⚠️ DXF uploaded, but 0 line geometries were detected. Ensure the CAD walls are drawn using standard LINE or POLYLINE entities.")
+            except Exception as e:
+                st.error(f"Failed to parse DXF file: {e}")
+
+    st.markdown("---")
+
+    # 📹 Surveillance Video Upload
+    st.markdown("### 📹 Video Stream Target")
+    uploaded_video = st.file_uploader(
+        "Upload Surveillance Video (.mp4, .avi, .mov)",
+        type=["mp4", "avi", "mov"],
+        key="video_uploader",
     )
-    st.session_state.selected_frame_idx = frame_idx
 
-    raw_frame_rgb = extract_frame_from_video(
-        uploaded_video, frame_number=frame_idx
-    )
-    if raw_frame_rgb is not None:
-      st.image(
-          raw_frame_rgb,
-          caption=f"Preview Frame (Index #{frame_idx})",
-          use_container_width=True,
-      )
+    if uploaded_video:
+        st.session_state.uploaded_video_file = uploaded_video
+        st.success("✅ Video file attached successfully!")
 
+        frame_idx = st.slider(
+            "Select Calibration Preview Frame",
+            min_value=0,
+            max_value=1000,
+            value=st.session_state.selected_frame_idx,
+            step=5,
+        )
+        st.session_state.selected_frame_idx = frame_idx
+
+        raw_frame_rgb = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
+        if raw_frame_rgb is not None:
+            st.image(
+                raw_frame_rgb,
+                caption=f"Preview Frame (Index #{frame_idx})",
+                use_container_width=True,
+            )
 
 # ==========================================
 # TAB 2: REGION SELECTION & EDITING
 # ==========================================
 with tab_region:
-  st.subheader("Step 2.2: Define Analysis Polygon on Floorplan")
+    st.subheader("Step 2.2: Define Analysis Polygon on Floorplan")
 
-  col_controls, col_plot = st.columns([1, 2])
+    col_controls, col_plot = st.columns([1, 2])
 
-  with col_controls:
-    st.markdown("#### Polygon Vertices (CAD World m)")
+    with col_controls:
+        st.markdown("#### Polygon Vertices (CAD World m)")
 
-    default_df = pd.DataFrame(st.session_state.selected_polygon_pts)
+        # Ensure dataframe columns are standardized
+        default_df = pd.DataFrame(st.session_state.selected_polygon_pts)
+        if "X (m)" not in default_df.columns or "Y (m)" not in default_df.columns:
+            default_df = pd.DataFrame([{"X (m)": 0.0, "Y (m)": 0.0}, {"X (m)": 10.0, "Y (m)": 0.0}])
 
-    edited_df = st.data_editor(
-        default_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="poly_editor",
-    )
+        edited_df = st.data_editor(
+            default_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="poly_editor",
+        )
 
-    # Save to session state
-    poly_pts_dicts = edited_df.to_dict(orient="records")
-    st.session_state.selected_polygon_pts = poly_pts_dicts
+        # Robust dictionary mapping to prevent KeyError
+        poly_pts_dicts = edited_df.to_dict(orient="records")
+        st.session_state.selected_polygon_pts = poly_pts_dicts
 
-    st.markdown("---")
+        poly_list = []
+        for p in poly_pts_dicts:
+            x_val = p.get("X (m)", p.get("x", 0.0))
+            y_val = p.get("Y (m)", p.get("y", 0.0))
+            poly_list.append([float(x_val), float(y_val)])
 
-    # JSON Exporter Payload
-    poly_list = [[p["X (m)"], p["Y (m)"]] for p in poly_pts_dicts]
-    export_payload = {
-        "polygon_points": poly_list,
-        "vga_grid": (
-            st.session_state.vga_grid_df.to_dict(orient="records")
-            if st.session_state.vga_grid_df is not None
-            else []
-        ),
-        "homography_matrix": (
-            st.session_state.homography_matrix.tolist()
-            if st.session_state.homography_matrix is not None
-            else None
-        ),
-    }
+        st.markdown("---")
 
-    st.download_button(
-        label="💾 Export Updated JSON Config",
-        data=json.dumps(export_payload, indent=2),
-        file_name="floorplan_homography_config.json",
-        mime="application/json",
-        use_container_width=True,
-    )
+        # JSON Exporter
+        export_payload = {
+            "polygon_points": poly_list,
+            "vga_grid": (
+                st.session_state.vga_grid_df.to_dict(orient="records")
+                if st.session_state.vga_grid_df is not None
+                else []
+            ),
+            "homography_matrix": (
+                st.session_state.homography_matrix.tolist()
+                if st.session_state.homography_matrix is not None
+                else None
+            ),
+        }
 
-  with col_plot:
-    st.markdown("#### Live Floorplan & ROI Preview")
+        st.download_button(
+            label="💾 Export Updated JSON Config",
+            data=json.dumps(export_payload, indent=2),
+            file_name="floorplan_homography_config.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
-    fig = go.Figure()
+    with col_plot:
+        st.markdown("#### Live Floorplan & ROI Preview")
 
-    # 1. Render DXF Walls
-    for wall in st.session_state.get("dxf_walls", []):
-      if hasattr(wall, "exterior"):
-        wx, wy = wall.exterior.xy
-      else:
-        wx, wy = wall.xy
-      fig.add_trace(
-          go.Scatter(
-              x=list(wx),
-              y=list(wy),
-              mode="lines",
-              line=dict(color="black", width=1.5),
-              showlegend=False,
-          )
-      )
+        fig = go.Figure()
 
-    # 2. Render VGA Nodes
-    if st.session_state.vga_grid_df is not None:
-      fig.add_trace(
-          go.Scatter(
-              x=st.session_state.vga_grid_df["x"],
-              y=st.session_state.vga_grid_df["y"],
-              mode="markers",
-              marker=dict(size=4, color="lightgray"),
-              name="VGA Grid Nodes",
-          )
-      )
+        # 1. Render DXF Walls
+        for wall in st.session_state.get("dxf_walls", []):
+            if hasattr(wall, "exterior"):
+                wx, wy = wall.exterior.xy
+            else:
+                wx, wy = wall.xy
+            fig.add_trace(
+                go.Scatter(
+                    x=list(wx),
+                    y=list(wy),
+                    mode="lines",
+                    line=dict(color="black", width=1.5),
+                    showlegend=False,
+                )
+            )
 
-    # 3. Render Polygon ROI
-    if len(poly_list) >= 3:
-      px = [p[0] for p in poly_list] + [poly_list[0][0]]
-      py = [p[1] for p in poly_list] + [poly_list[0][1]]
+        # 2. Render VGA Nodes
+        if st.session_state.vga_grid_df is not None:
+            fig.add_trace(
+                go.Scatter(
+                    x=st.session_state.vga_grid_df["x"],
+                    y=st.session_state.vga_grid_df["y"],
+                    mode="markers",
+                    marker=dict(size=4, color="lightgray"),
+                    name="VGA Grid Nodes",
+                )
+            )
 
-      fig.add_trace(
-          go.Scatter(
-              x=px,
-              y=py,
-              mode="lines+markers+text",
-              fill="toself",
-              fillcolor="rgba(255, 0, 0, 0.2)",
-              line=dict(color="red", width=2.5),
-              marker=dict(size=8, color="red"),
-              text=[f"P{i+1}" for i in range(len(poly_list))] + [""],
-              textposition="top right",
-              name="ROI Polygon",
-          )
-      )
+        # 3. Render Polygon ROI
+        if len(poly_list) >= 3:
+            px = [p[0] for p in poly_list] + [poly_list[0][0]]
+            py = [p[1] for p in poly_list] + [poly_list[0][1]]
 
-    fig.update_layout(
-        height=500,
-        xaxis=dict(title="X (meters)", scaleanchor="y", scaleratio=1),
-        yaxis=dict(title="Y (meters)"),
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
+            fig.add_trace(
+                go.Scatter(
+                    x=px,
+                    y=py,
+                    mode="lines+markers+text",
+                    fill="toself",
+                    fillcolor="rgba(255, 0, 0, 0.2)",
+                    line=dict(color="red", width=2.5),
+                    marker=dict(size=8, color="red"),
+                    text=[f"P{i+1}" for i in range(len(poly_list))] + [""],
+                    textposition="top right",
+                    name="ROI Polygon",
+                )
+            )
 
-    st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(
+            height=500,
+            xaxis=dict(title="X (meters)", scaleanchor="y", scaleratio=1),
+            yaxis=dict(title="Y (meters)"),
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
 # TAB 3: OCCUPANCY TRACKING VIEW
 # ==========================================
 with tab_tracking:
-  render_tracking_view(
-      st.session_state.get("dxf_walls", []),
-      st.session_state.get("vga_grid_df", None),
-  )
+    render_tracking_view(
+        st.session_state.get("dxf_walls", []),
+        st.session_state.get("vga_grid_df", None),
+    )
