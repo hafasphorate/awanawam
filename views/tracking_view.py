@@ -69,9 +69,9 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             model_name = st.selectbox(
                 "Select Model Architecture:",
                 [
-                    "yolov8n.pt",       # Fast & CPU-friendly
-                    "yolov8s.pt",       # Balanced Accuracy
-                    "rtdetr-l.pt",      # Transformer-based
+                    "yolov8n.pt",        # Fast & CPU-friendly
+                    "yolov8s.pt",        # Balanced Accuracy
+                    "rtdetr-l.pt",       # Transformer-based
                     "yolov8x-pose.pt",   # Pose/Keypoints
                 ],
                 index=0,
@@ -347,25 +347,12 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             full_df = pd.concat(all_tracking_results, ignore_index=True)
             st.session_state["full_tracking_df"] = full_df
 
-# Inside views/tracking_view.py, right after tracking finishes processing:
-
-# 1. Create/Format your tracking dataframe (e.g., results_df)
-st.session_state.tracking_results_df = results_df  # <--- ADD THIS LINE!
-
-# Now when the user downloads the CSV or changes tabs, the data stays in memory
-st.download_button(
-    label="📥 Download Tracking CSV",
-    data=results_df.to_csv(index=False),
-    file_name="tracking_results.csv",
-    mime="text/csv",
-)
-
     # 📥 Dual Export Options (CSV & JSON with VGA Metadata)
-full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
+    full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
 
-if not full_df.empty:
-    st.markdown("#### 📥 Export Tracking & VGA Analytics")
-    col_dl1, col_dl2 = st.columns(2)
+    if not full_df.empty:
+        st.markdown("#### 📥 Export Tracking & VGA Analytics")
+        col_dl1, col_dl2 = st.columns(2)
 
         # 1. Standard CSV Export
         csv_bytes = full_df.to_csv(index=False).encode("utf-8")
