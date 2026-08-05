@@ -333,6 +333,7 @@ def _draw_cad_walls(fig, wall_lines):
                 wall_x.extend([x1, x2, None])
                 wall_y.extend([y1, y2, None])
 
+
     if wall_x:
         fig.add_trace(go.Scatter(
             x=wall_x, y=wall_y,
