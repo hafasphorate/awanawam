@@ -17,7 +17,7 @@ from utils.homography_engine import project_points
 
 
 @st.cache_resource
-def load_yolo_model(model_name: str = "yolov8n-pose.pt"):
+def load_yolo_model(model_name: str = "yolov8x-pose.pt"):
     """Loads and caches the YOLO model for detection."""
     if not YOLO_AVAILABLE:
         return None
@@ -85,13 +85,15 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
 def process_video_frame(
     frame_rgb: np.ndarray,
     H_matrix: np.ndarray = None,
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.15,
+    iou_threshold: float = 0.45,
+    inference_size: int = 1280,
     detect_target: str = "Head",
-    model_name: str = "yolov8n-pose.pt",
+    model_name: str = "yolov8x-pose.pt",
 ) -> tuple:
-    """Detects people in a frame using bounding boxes or pose keypoints, 
+    """Detects people in high-resolution, estimates head/ground positions, 
 
-    estimates head/ground positions, and projects them onto floorplan coordinates.
+    and projects them onto floorplan coordinates.
     """
     if frame_rgb is None:
         return None, pd.DataFrame()
@@ -116,11 +118,13 @@ def process_video_frame(
     pixel_points = []
 
     if model is not None:
-        # Run tracking if possible, fallback to standard prediction if lap is missing
+        # Run tracking with dynamic resolution and custom NMS IoU threshold
         try:
             results = model.track(
                 annotated_frame,
                 conf=conf_threshold,
+                iou=iou_threshold,
+                imgsz=inference_size,
                 persist=True,
                 verbose=False,
             )
@@ -128,13 +132,15 @@ def process_video_frame(
             results = model.predict(
                 annotated_frame,
                 conf=conf_threshold,
+                iou=iou_threshold,
+                imgsz=inference_size,
                 verbose=False,
             )
 
         if results and len(results) > 0:
             res = results[0]
 
-            # MODE A: Pose Model Detections (Best for Overhead/Heads)
+            # MODE A: Keypoint / Pose Detection (Head Keypoint Focus)
             if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
                 keypoints_data = res.keypoints.xy.cpu().numpy()
                 boxes = res.boxes if hasattr(res, "boxes") else None
@@ -144,7 +150,7 @@ def process_video_frame(
                     if boxes is not None and idx < len(boxes) and hasattr(boxes[idx], "id") and boxes[idx].id is not None:
                         track_id = int(boxes[idx].id[0].cpu().numpy())
 
-                    # Pose keypoint indices: 0 = Nose, 1 = Left Eye, 2 = Right Eye, 3 = Left Ear, 4 = Right Ear
+                    # Head keypoint indices: 0: Nose, 1: L-Eye, 2: R-Eye, 3: L-Ear, 4: R-Ear
                     valid_head_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]
 
                     if detect_target == "Head" and len(valid_head_pts) > 0:
@@ -159,13 +165,13 @@ def process_video_frame(
 
                     pixel_points.append([target_x, target_y])
 
-                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 7, (255, 0, 128), -1)
+                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 6, (255, 0, 128), -1)
                     cv2.putText(
                         annotated_frame,
                         f"ID:{track_id}",
-                        (int(target_x) + 8, int(target_y) - 8),
+                        (int(target_x) + 6, int(target_y) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
+                        0.5,
                         (0, 255, 128),
                         2,
                     )
@@ -178,7 +184,7 @@ def process_video_frame(
                         "world_y": None,
                     })
 
-            # MODE B: Standard Object Bounding Box Detections
+            # MODE B: Standard Object Bounding Boxes
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
@@ -215,7 +221,7 @@ def process_video_frame(
                         "world_y": None,
                     })
 
-    # Project pixel points into world coordinates if Homography matrix H exists
+    # Project pixel points into world coordinates
     if H_matrix is not None and len(pixel_points) > 0:
         world_pts = project_points(pixel_points, H_matrix)
         for idx, w_pt in enumerate(world_pts):

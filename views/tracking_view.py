@@ -1,4 +1,5 @@
 # views/tracking_view.py
+import os
 import tempfile
 import cv2
 import numpy as np
@@ -35,9 +36,6 @@ def get_video_frame_count(video_file) -> int:
         return 100
 
 
-import os
-
-
 def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     """Renders Tab 2.3: Video Homography and Live 2D Motion Mapping."""
     st.subheader("Step 2.3: Occupancy & Human Movement Analytics")
@@ -61,39 +59,55 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     max_frames = get_video_frame_count(uploaded_video)
 
-    # Sidebar / Configuration Controls
-    col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
+    # 🎛️ Advanced Precision Controls
+    with st.expander("🛠️ Detection Sensitivity & Resolution Tuning", expanded=True):
+        col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+        with col_cfg1:
+            model_name = st.selectbox(
+                "YOLO Model Architecture:",
+                ["yolov8x-pose.pt", "yolov8m-pose.pt", "yolov8x.pt", "yolov8n-pose.pt"],
+                index=0,
+                help="`yolov8x-pose.pt` is the largest model, providing maximal accuracy for small heads.",
+            )
+            detect_target = st.radio(
+                "Tracking Point Target:",
+                ["Head", "Feet / Ground"],
+                horizontal=True,
+            )
 
-    with col_cfg1:
-        model_name = st.selectbox(
-            "YOLO Model Engine:",
-            ["yolov8n-pose.pt", "yolov8n.pt", "yolov8m-pose.pt"],
-            index=0,
-            help="`yolov8n-pose.pt` is specialized for detecting human head/body keypoints from ceiling angles.",
-        )
-    with col_cfg2:
-        detect_target = st.radio(
-            "Tracking Target:",
-            ["Head", "Feet / Ground"],
-            horizontal=True,
-        )
-    with col_cfg3:
-        conf_threshold = st.slider(
-            "Confidence Threshold",
-            min_value=0.05,
-            max_value=0.80,
-            value=0.20,
-            step=0.05,
-        )
-    with col_cfg4:
-        frame_idx = st.slider(
-            "Frame Slider",
-            min_value=0,
-            max_value=max(1, max_frames - 1),
-            value=st.session_state.get("selected_frame_idx", 0),
-            step=1,
-            key="tracking_frame_slider",
-        )
+        with col_cfg2:
+            inference_size = st.selectbox(
+                "Inference Resolution (px):",
+                [1280, 1920, 960, 640],
+                index=0,
+                help="Higher resolution preserves small top-down head features in wide surveillance shots.",
+            )
+            conf_threshold = st.slider(
+                "Confidence Threshold",
+                min_value=0.01,
+                max_value=0.50,
+                value=0.12,
+                step=0.01,
+                help="Lower confidence reveals faint/partially occluded individuals.",
+            )
+
+        with col_cfg3:
+            iou_threshold = st.slider(
+                "NMS IoU Overlap Threshold",
+                min_value=0.10,
+                max_value=0.90,
+                value=0.50,
+                step=0.05,
+                help="Higher IoU threshold prevents adjacent crowded people from being merged together.",
+            )
+            frame_idx = st.slider(
+                "Frame Timeline Slider",
+                min_value=0,
+                max_value=max(1, max_frames - 1),
+                value=st.session_state.get("selected_frame_idx", 0),
+                step=1,
+                key="tracking_frame_slider",
+            )
 
     # Extract frame
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
@@ -120,6 +134,8 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         raw_frame,
         H_matrix=H,
         conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+        inference_size=inference_size,
         detect_target=detect_target,
         model_name=model_name,
     )
