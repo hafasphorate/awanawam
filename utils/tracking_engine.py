@@ -110,7 +110,7 @@ def process_video_frame(
             annotated_frame,
             conf=conf_threshold,
             iou=iou_threshold,
-            imgsz=inference_size,
+            imgsz=640, #Lowering from 1280 to 640 dramatically saves CPU
             verbose=False,
         )
 

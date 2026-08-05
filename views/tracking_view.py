@@ -59,20 +59,20 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     max_frames = get_video_frame_count(uploaded_video)
 
-    # 🎛️ Advanced Precision Controls
-    with st.expander("🛠️ Detection Sensitivity & Resolution Tuning", expanded=True):
+    # 🎛️ Advanced Precision & CPU Controls
+    with st.expander("🛠️ Detection Sensitivity & CPU Optimization Controls", expanded=True):
         col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
         with col_cfg1:
             model_name = st.selectbox(
                 "Select Model Architecture:",
-                    [
-                    "keremberke/yolov8n-head",  # Pretrained Crowd Head Detector
+                [
+                    "keremberke/yolov8n-head",  # Lightweight Pretrained Crowd Head Detector
                     "rtdetr-l.pt",              # Real-Time Detection Transformer
                     "yolov9e.pt",               # Dense YOLOv9
                     "yolov8x-pose.pt"
                 ],
                 index=0,
-                help="`yolov8x-pose.pt` is the largest model, providing maximal accuracy for small heads.",
+                help="`keremberke/yolov8n-head` is recommended for high-density, top-down crowd tracking.",
             )
             detect_target = st.radio(
                 "Tracking Point Target:",
@@ -83,9 +83,9 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         with col_cfg2:
             inference_size = st.selectbox(
                 "Inference Resolution (px):",
-                [1280, 1920, 960, 640],
+                [640, 960, 1280, 320],
                 index=0,
-                help="Higher resolution preserves small top-down head features in wide surveillance shots.",
+                help="640px drastically cuts CPU load while retaining solid detection accuracy.",
             )
             conf_threshold = st.slider(
                 "Confidence Threshold",
@@ -103,18 +103,28 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
                 max_value=0.90,
                 value=0.50,
                 step=0.05,
-                help="Higher IoU threshold prevents adjacent crowded people from being merged together.",
+                help="Higher IoU threshold prevents adjacent crowded people from being merged.",
             )
-            frame_idx = st.slider(
-                "Frame Timeline Slider",
-                min_value=0,
-                max_value=max(1, max_frames - 1),
-                value=st.session_state.get("selected_frame_idx", 0),
+            frame_skip = st.slider(
+                "Frame Skip (CPU Saver)",
+                min_value=1,
+                max_value=10,
+                value=3,
                 step=1,
-                key="tracking_frame_slider",
+                help="Process 1 out of N frames during video playback to prevent CPU throttling.",
             )
 
-    # Extract frame
+    st.markdown("### 🎞️ Single Frame Preview")
+    frame_idx = st.slider(
+        "Frame Timeline Slider",
+        min_value=0,
+        max_value=max(1, max_frames - 1),
+        value=st.session_state.get("selected_frame_idx", 0),
+        step=1,
+        key="tracking_frame_slider",
+    )
+
+    # Extract single frame for preview
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
     if raw_frame is None:
         st.error("❌ Failed to decode frame from video. Try re-uploading the video file in Tab 2.1.")
@@ -134,7 +144,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     H = compute_homography_matrix(video_src_pts, four_corners[:4])
     st.session_state.homography_matrix = H
 
-    # Process detections with YOLO + Homography Projection
+    # Process preview frame with YOLO + Homography Projection
     annotated_frame, df_detections = process_video_frame(
         raw_frame,
         H_matrix=H,
@@ -250,7 +260,78 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     # Position table
     if not df_detections.empty:
-        st.markdown("### 📊 Live Position Coordinates")
+        st.markdown("### 📊 Single Frame Position Coordinates")
         display_df = df_detections[["track_id", "img_x", "img_y", "world_x", "world_y"]].copy()
         display_df.columns = ["Track ID", "Image X (px)", "Image Y (px)", "Floorplan X (m)", "Floorplan Y (m)"]
         st.dataframe(display_df, use_container_width=True)
+
+    # 🚀 Batch Video Sequence Execution
+    st.markdown("---")
+    st.markdown("### 🎬 Full Video Tracking Execution")
+
+    if st.button("▶️ Run Batch Video Tracking"):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        video_placeholder = st.empty()
+
+        uploaded_video.seek(0)
+        video_bytes = uploaded_video.read()
+        uploaded_video.seek(0)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
+            tmp_v.write(video_bytes)
+            tmp_path = tmp_v.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        curr_frame_idx = 0
+        all_tracking_results = []
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Frame Skipping Logic to prevent CPU limit exceed
+            if curr_frame_idx % frame_skip != 0:
+                curr_frame_idx += 1
+                continue
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            ann_frame, df_dets = process_video_frame(
+                frame_rgb,
+                H_matrix=H,
+                conf_threshold=conf_threshold,
+                iou_threshold=iou_threshold,
+                inference_size=inference_size,
+                detect_target=detect_target,
+                model_name=model_name,
+            )
+
+            if not df_dets.empty:
+                df_dets["frame_idx"] = curr_frame_idx
+                all_tracking_results.append(df_dets)
+
+            video_placeholder.image(
+                ann_frame,
+                caption=f"Processing Frame {curr_frame_idx}/{total_frames} (Frame Skip: {frame_skip})",
+                use_container_width=True,
+            )
+
+            progress_bar.progress(min(1.0, curr_frame_idx / max(1, total_frames)))
+            status_text.text(f"Processed frame {curr_frame_idx} of {total_frames}...")
+
+            curr_frame_idx += 1
+
+        cap.release()
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        st.success("✅ Full Video Batch Tracking Completed!")
+
+        if all_tracking_results:
+            full_df = pd.concat(all_tracking_results, ignore_index=True)
+            st.markdown("#### 📈 Accumulated Motion Data")
+            st.dataframe(full_df, use_container_width=True)
