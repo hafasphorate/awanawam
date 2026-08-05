@@ -30,25 +30,32 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     st.markdown("---")
 
     # Sidebar / Configuration Controls
-    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+    col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
+    
     with col_cfg1:
-        detect_target = st.radio(
-            "Tracking Point Target:",
-            ["Head", "Feet / Ground"],
-            horizontal=True,
-            help="Select whether to map top bounding box center (head) or bottom center (feet)",
+        model_name = st.selectbox(
+            "YOLO Model Engine:",
+            ["yolov8n-pose.pt", "yolov8n.pt", "yolov8m-pose.pt"],
+            index=0,
+            help="`yolov8n-pose.pt` is specialized for detecting human head/body keypoints from ceiling angles.",
         )
     with col_cfg2:
-        conf_threshold = st.slider(
-            "YOLO Confidence Threshold",
-            min_value=0.1,
-            max_value=0.9,
-            value=0.35,
-            step=0.05,
+        detect_target = st.radio(
+            "Tracking Target:",
+            ["Head", "Feet / Ground"],
+            horizontal=True,
         )
     with col_cfg3:
+        conf_threshold = st.slider(
+            "Confidence Threshold",
+            min_value=0.05,
+            max_value=0.80,
+            value=0.20,
+            step=0.05,
+        )
+    with col_cfg4:
         frame_idx = st.slider(
-            "Video Frame Timeline",
+            "Frame Slider",
             min_value=0,
             max_value=1000,
             value=st.session_state.get("selected_frame_idx", 0),
@@ -56,8 +63,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             key="tracking_frame_slider",
         )
 
-    # Define standard pixel corners for the homography source (Video Frame)
-    # Defaulting to 4 corners of the video frame bounding rectangle
+    # Extract frame
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
     if raw_frame is None:
         st.error("❌ Failed to decode frame from video.")
@@ -65,7 +71,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     img_h, img_w, _ = raw_frame.shape
 
-    # Video corners matching standard 4-point order (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
+    # Video corners matching standard 4-point order
     video_src_pts = [
         [0, 0],
         [img_w, 0],
@@ -83,6 +89,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         H_matrix=H,
         conf_threshold=conf_threshold,
         detect_target=detect_target,
+        model_name=model_name,
     )
 
     st.markdown("---")
@@ -92,7 +99,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     # 🎥 Left Column: Video Detection Stream
     with col_video:
-        st.markdown("#### 📹 Camera Feed (YOLO Detections)")
+        st.markdown("#### 📹 Camera Feed (Detections)")
         st.image(
             annotated_frame,
             caption=f"Frame #{frame_idx} | Detected People: {len(df_detections)}",
@@ -188,7 +195,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
         st.plotly_chart(fig_2d, use_container_width=True)
 
-    # Detection Table Details
+    # Position table
     if not df_detections.empty:
         st.markdown("### 📊 Live Position Coordinates")
         display_df = df_detections[["track_id", "img_x", "img_y", "world_x", "world_y"]].copy()

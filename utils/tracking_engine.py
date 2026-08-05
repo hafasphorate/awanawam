@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from cv2 import VideoCapture
 
-# Try importing ultralytics YOLO; fallback gracefully if not installed
+# Try importing ultralytics YOLO
 try:
     from ultralytics import YOLO
     YOLO_AVAILABLE = True
@@ -18,7 +18,7 @@ from utils.homography_engine import project_points
 
 
 @st.cache_resource
-def load_yolo_model(model_name: str = "yolov8n.pt"):
+def load_yolo_model(model_name: str = "yolov8n-pose.pt"):
     """Loads and caches the YOLO model for detection."""
     if not YOLO_AVAILABLE:
         return None
@@ -35,7 +35,6 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
     if video_file is None:
         return None
 
-    # Write video stream to temp file for OpenCV consumption
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
         tmp_v.write(video_file.getvalue())
         tmp_path = tmp_v.name
@@ -56,102 +55,133 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
 def process_video_frame(
     frame_rgb: np.ndarray,
     H_matrix: np.ndarray = None,
-    conf_threshold: float = 0.3,
-    detect_target: str = "Head",  # "Head" or "Feet / Ground"
-    model_name: str = "yolov8n.pt",
+    conf_threshold: float = 0.25,
+    detect_target: str = "Head",
+    model_name: str = "yolov8n-pose.pt",
 ) -> tuple:
-    """Detects people in a frame, estimates head/ground positions, and projects them 
+    """Detects people in a frame using bounding boxes or pose keypoints, 
 
-    onto floorplan coordinates via Homography.
-
-    Returns
-    -------
-    tuple: (annotated_frame_rgb, detections_df)
-        - annotated_frame_rgb: OpenCV frame with bounding boxes and keypoint markers
-        - detections_df: DataFrame containing track/detection IDs, pixel coordinates, and world coordinates (X, Y)
+    estimates head/ground positions, and projects them onto floorplan coordinates.
     """
     if frame_rgb is None:
         return None, pd.DataFrame()
 
     annotated_frame = frame_rgb.copy()
     h, w, _ = annotated_frame.shape
-    model = load_yolo_model(model_name)
 
+    if not YOLO_AVAILABLE:
+        cv2.putText(
+            annotated_frame,
+            "Ultralytics YOLO not installed!",
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 0, 0),
+            2,
+        )
+        return annotated_frame, pd.DataFrame()
+
+    model = load_yolo_model(model_name)
     detection_list = []
     pixel_points = []
 
-    if model is not None and YOLO_AVAILABLE:
-        # Run tracking / detection with YOLO (classes 0 = person)
+    if model is not None:
+        # Run inference / tracking
         results = model.track(
             annotated_frame,
-            classes=[0],
             conf=conf_threshold,
             persist=True,
             verbose=False,
         )
 
         if results and len(results) > 0:
-            boxes = results[0].boxes
-            for box in boxes:
-                # Get bounding box coordinates [x1, y1, x2, y2]
-                xyxy = box.xyxy[0].cpu().numpy()
-                x1, y1, x2, y2 = xyxy
-                
-                # Get tracking ID if present, otherwise default to 0
-                track_id = int(box.id[0].cpu().numpy()) if box.id is not None else 0
+            res = results[0]
 
-                # Target point calculation
-                if detect_target == "Head":
-                    # Center of top bounding box edge (head position)
+            # MODE A: Pose Model Detections (Best for Overhead/Heads)
+            if hasattr(res, "keypoints") and res.keypoints is not None and len(res.keypoints) > 0:
+                keypoints_data = res.keypoints.xy.cpu().numpy()
+                boxes = res.boxes if hasattr(res, "boxes") else None
+
+                for idx, kpts in enumerate(keypoints_data):
+                    track_id = idx + 1
+                    if boxes is not None and idx < len(boxes) and boxes[idx].id is not None:
+                        track_id = int(boxes[idx].id[0].cpu().numpy())
+
+                    # Pose keypoint indices: 0 = Nose, 1 = Left Eye, 2 = Right Eye, 3 = Left Ear, 4 = Right Ear
+                    valid_head_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]
+
+                    if detect_target == "Head" and len(valid_head_pts) > 0:
+                        target_x = float(np.mean([pt[0] for pt in valid_head_pts]))
+                        target_y = float(np.mean([pt[1] for pt in valid_head_pts]))
+                    elif boxes is not None and idx < len(boxes):
+                        # Fallback to bbox
+                        xyxy = boxes[idx].xyxy[0].cpu().numpy()
+                        target_x = float((xyxy[0] + xyxy[2]) / 2.0)
+                        target_y = float(xyxy[1] if detect_target == "Head" else xyxy[3])
+                    else:
+                        continue
+
+                    pixel_points.append([target_x, target_y])
+
+                    # Draw head point
+                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 7, (255, 0, 128), -1)
+                    cv2.putText(
+                        annotated_frame,
+                        f"ID:{track_id}",
+                        (int(target_x) + 8, int(target_y) - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 128),
+                        2,
+                    )
+
+                    detection_list.append({
+                        "track_id": track_id,
+                        "img_x": target_x,
+                        "img_y": target_y,
+                        "world_x": None,
+                        "world_y": None,
+                    })
+
+            # MODE B: Standard Object Bounding Box Detections
+            elif hasattr(res, "boxes") and res.boxes is not None:
+                boxes = res.boxes
+                for box in boxes:
+                    # Filter for Person class (class_id == 0)
+                    cls_id = int(box.cls[0].cpu().numpy()) if box.cls is not None else 0
+                    if cls_id != 0:
+                        continue
+
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = xyxy
+                    track_id = int(box.id[0].cpu().numpy()) if box.id is not None else 0
+
                     target_x = (x1 + x2) / 2.0
-                    target_y = y1
-                else:
-                    # Bottom center (feet/ground contact position)
-                    target_x = (x1 + x2) / 2.0
-                    target_y = y2
+                    target_y = y1 if detect_target == "Head" else y2
 
-                pixel_points.append([target_x, target_y])
+                    pixel_points.append([target_x, target_y])
 
-                # Draw bounding box on frame
-                cv2.rectangle(
-                    annotated_frame,
-                    (int(x1), int(y1)),
-                    (int(x2), int(y2)),
-                    (0, 255, 128),
-                    2,
-                )
-                
-                # Draw head/target point marker
-                cv2.circle(
-                    annotated_frame,
-                    (int(target_x), int(target_y)),
-                    5,
-                    (255, 0, 128),
-                    -1,
-                )
+                    cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 128), 2)
+                    cv2.circle(annotated_frame, (int(target_x), int(target_y)), 6, (255, 0, 128), -1)
+                    cv2.putText(
+                        annotated_frame,
+                        f"ID:{track_id}",
+                        (int(x1), max(15, int(y1) - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 128),
+                        2,
+                    )
 
-                # Label text
-                label = f"ID:{track_id} ({detect_target})"
-                cv2.putText(
-                    annotated_frame,
-                    label,
-                    (int(x1), max(15, int(y1) - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 128),
-                    2,
-                )
+                    detection_list.append({
+                        "track_id": track_id,
+                        "img_x": target_x,
+                        "img_y": target_y,
+                        "world_x": None,
+                        "world_y": None,
+                    })
 
-                detection_list.append({
-                    "track_id": track_id,
-                    "img_x": target_x,
-                    "img_y": target_y,
-                    "bbox": [x1, y1, x2, y2],
-                    "world_x": None,
-                    "world_y": None,
-                })
-
-    # Project pixel points into world coordinates if Homography matrix exists
+    # Project pixel points into world coordinates if Homography matrix H exists
     if H_matrix is not None and len(pixel_points) > 0:
         world_pts = project_points(pixel_points, H_matrix)
         for idx, w_pt in enumerate(world_pts):
