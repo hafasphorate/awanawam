@@ -1,479 +1,438 @@
-# pages/2_Video_Homography.py
+import io
 import json
-import os
-import tempfile
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from shapely.geometry import LineString, Polygon
 import streamlit as st
 
-# Reuse CAD engine and tracking functions
-from utils.vga_engine import process_cad_file
-from utils.tracking_engine import extract_frame_from_video
-from views.tracking_view import render_tracking_view
+# Optional DXF parsing support
+try:
+    import ezdxf
 
-st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
+    HAS_EZDXF = True
+except ImportError:
+    HAS_EZDXF = False
 
-st.title("📹 Module 2: Video Homography & Region Selection")
 
-# Initialize Session State safely
+# ==============================================================================
+# PAGE CONFIG & STYLES
+# ==============================================================================
+st.set_page_config(
+    page_title="CAD Point & Tracking Alignment Workspace",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+    .stButton > button { font-weight: 600; }
+    div[data-testid="stMetricValue"] { font-size: 1.4rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ==============================================================================
+# SESSION STATE INITIALIZATION
+# ==============================================================================
 if "dxf_walls" not in st.session_state:
     st.session_state.dxf_walls = []
-if "wall_lines" not in st.session_state:
-    st.session_state.wall_lines = []
 if "vga_grid_df" not in st.session_state:
     st.session_state.vga_grid_df = None
-if "selected_polygon_pts" not in st.session_state:
-    st.session_state.selected_polygon_pts = [
-        {"X (m)": 0.0, "Y (m)": 0.0},
-        {"X (m)": 10.0, "Y (m)": 0.0},
-        {"X (m)": 10.0, "Y (m)": 10.0},
-        {"X (m)": 0.0, "Y (m)": 10.0},
-    ]
-if "homography_matrix" not in st.session_state:
-    st.session_state.homography_matrix = None
-if "selected_frame_idx" not in st.session_state:
-    st.session_state.selected_frame_idx = 0
-if "four_corners" not in st.session_state:
-    st.session_state.four_corners = []
+if "calibration_points" not in st.session_state:
+    st.session_state.calibration_points = []
 if "editing_point_idx" not in st.session_state:
     st.session_state.editing_point_idx = None
 if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
 
-# PERSISTENT ZOOM / VIEWPORT RANGE STATE
-if "current_x_range" not in st.session_state:
-    st.session_state.current_x_range = None
-if "current_y_range" not in st.session_state:
-    st.session_state.current_y_range = None
+
+# ==============================================================================
+# HELPER FUNCTIONS & DRAWING UTILS
+# ==============================================================================
+def parse_dxf_bytes(file_bytes):
+    """Parse DXF file bytes into line segments [(x1, y1, x2, y2), ...]."""
+    if not HAS_EZDXF:
+        st.error(
+            "ezdxf library is not installed. Please install ezdxf to import DXF files."
+        )
+        return []
+
+    try:
+        doc = ezdxf.read(io.BytesIO(file_bytes))
+        msp = doc.modelspace()
+        walls = []
+
+        for entity in msp:
+            if entity.dxftype() == "LINE":
+                start = entity.dxf.start
+                end = entity.dxf.end
+                walls.append((start.x, start.y, end.x, end.y))
+            elif entity.dxftype() == "LWPOLYLINE":
+                points = entity.get_points("xy")
+                for i in range(len(points) - 1):
+                    walls.append(
+                        (points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+                    )
+                if entity.closed and len(points) > 1:
+                    walls.append(
+                        (
+                            points[-1][0],
+                            points[-1][1],
+                            points[0][0],
+                            points[0][1],
+                        )
+                    )
+            elif entity.dxftype() == "POLYLINE":
+                points = [v.dxf.location[:2] for v in entity.vertices]
+                for i in range(len(points) - 1):
+                    walls.append(
+                        (points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+                    )
+                if entity.is_closed and len(points) > 1:
+                    walls.append(
+                        (
+                            points[-1][0],
+                            points[-1][1],
+                            points[0][0],
+                            points[0][1],
+                        )
+                    )
+
+        return walls
+    except Exception as e:
+        st.error(f"Failed to parse DXF file: {str(e)}")
+        return []
 
 
-# Navigation Tabs
-tab_import, tab_region, tab_tracking = st.tabs([
-    "📂 2.1 Import DXF / JSON & Video",
-    "📐 2.2 Define ROI Polygon",
-    "🔥 2.3 Occupancy Analytics",
-])
+def create_base_cad_figure(walls, vga_df=None):
+    """Generate basic Plotly figure with DXF walls and optional VGA grid data."""
+    fig = go.Figure()
 
-# ==========================================
-# TAB 1: FILE & VIDEO IMPORT
-# ==========================================
-with tab_import:
-    st.subheader("Step 2.1: Load CAD (DXF/DWG) or JSON Config & Video")
+    # Draw DXF Walls
+    if walls:
+        x_coords, y_coords = [], []
+        for x1, y1, x2, y2 in walls:
+            x_coords.extend([x1, x2, None])
+            y_coords.extend([y1, y2, None])
 
-    col_json, col_dxf = st.columns(2)
-
-    # 📄 Option A: JSON Import
-    with col_json:
-        st.markdown("### 📄 Option A: Import Exported JSON Session")
-        uploaded_json = st.file_uploader(
-            "Upload JSON Floorplan / Export (VGA + Polygon Config)",
-            type=["json"],
-            key="json_uploader",
+        fig.add_trace(
+            go.Scatter(
+                x=x_coords,
+                y=y_coords,
+                mode="lines",
+                line=dict(color="#4A5568", width=1),
+                name="CAD Walls",
+                hoverinfo="none",
+            )
         )
 
-        if uploaded_json is not None:
-            try:
-                data = json.load(uploaded_json)
+    # Draw VGA Grid points if available
+    if vga_df is not None and not vga_df.empty:
+        if "x" in vga_df.columns and "y" in vga_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=vga_df["x"],
+                    y=vga_df["y"],
+                    mode="markers",
+                    marker=dict(size=4, color="#3182CE", opacity=0.5),
+                    name="VGA Grid",
+                    hoverinfo="x+y",
+                )
+            )
 
-                # 1. Parse VGA Grid (handles `vga_results` or `vga_grid`)
+    return fig
+
+
+# ==============================================================================
+# APP LAYOUT & TABS
+# ==============================================================================
+st.title("🏗️ CAD Point & Tracking Alignment Workspace")
+
+tab_import, tab_canvas, tab_tracking = st.tabs(
+    ["📥 1. Data Import", "🎯 2. Point Calibration Canvas", "🎥 3. Tracking View"]
+)
+
+# ------------------------------------------------------------------------------
+# TAB 1: DATA IMPORT
+# ------------------------------------------------------------------------------
+with tab_import:
+    st.subheader("Import Floorplan & Analysis Data")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### DXF CAD Floorplan")
+        dxf_file = st.file_uploader("Upload DXF File", type=["dxf"])
+        if dxf_file is not None:
+            walls = parse_dxf_bytes(dxf_file.getvalue())
+            if walls:
+                st.session_state.dxf_walls = walls
+                st.success(f"Loaded {len(walls)} wall segments from DXF.")
+
+    with col2:
+        st.markdown("#### VGA / Analysis JSON Data")
+        json_file = st.file_uploader("Upload VGA JSON Data", type=["json"])
+        if json_file is not None:
+            try:
+                data = json.load(json_file)
                 vga_data = data.get("vga_results", data.get("vga_grid", []))
                 if vga_data:
                     st.session_state.vga_grid_df = pd.DataFrame(vga_data)
-                    st.session_state["vga_df"] = st.session_state.vga_grid_df
-                    st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
-
-                # 2. Parse Polygon Points
-                if "polygon_points" in data and data["polygon_points"]:
-                    raw_pts = data["polygon_points"]
-                    formatted_pts = []
-
-                    for pt in raw_pts:
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                            formatted_pts.append({"X (m)": float(pt[0]), "Y (m)": float(pt[1])})
-                        elif isinstance(pt, dict):
-                            x_val = pt.get("X (m)", pt.get("x", pt.get("X", 0.0)))
-                            y_val = pt.get("Y (m)", pt.get("y", pt.get("Y", 0.0)))
-                            formatted_pts.append({"X (m)": float(x_val), "Y (m)": float(y_val)})
-
-                    if formatted_pts:
-                        st.session_state.selected_polygon_pts = formatted_pts
-                        st.session_state.four_corners = [[p["X (m)"], p["Y (m)"]] for p in formatted_pts]
-                        st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
-
-                # 3. Parse Homography Matrix
-                if "homography_matrix" in data and data["homography_matrix"]:
-                    st.session_state.homography_matrix = np.array(data["homography_matrix"])
-                    st.success("✅ Loaded pre-saved Homography Matrix")
-
-                # 4. Parse Wall Geometries (nested `data["floorplan"]["wall_lines"]` or root keys)
-                raw_walls = None
-                if "floorplan" in data and isinstance(data["floorplan"], dict):
-                    raw_walls = data["floorplan"].get("wall_lines", [])
-                if not raw_walls:
-                    raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
-
-                if raw_walls:
-                    walls = []
-                    for w in raw_walls:
-                        if hasattr(w, "xy"):
-                            walls.append(w)
-                        elif isinstance(w, (list, tuple)) and len(w) >= 2:
-                            walls.append(LineString(w))
-
-                    if walls:
-                        st.session_state.dxf_walls = walls
-                        st.session_state.wall_lines = walls
-                        st.session_state.current_x_range = None
-                        st.session_state.current_y_range = None
-                        st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
-
+                    st.success(
+                        f"Loaded {len(st.session_state.vga_grid_df)} grid nodes."
+                    )
+                else:
+                    st.warning(
+                        "JSON loaded, but 'vga_results' or 'vga_grid' key was empty."
+                    )
             except Exception as e:
-                st.error(f"Error parsing JSON: {e}")
+                st.error(f"Error parsing JSON: {str(e)}")
 
-    # 📐 Option B: Raw CAD Import (DXF / DWG)
-    with col_dxf:
-        st.markdown("### 📐 Option B: Import Raw CAD File")
-        uploaded_cad = st.file_uploader(
-            "Upload CAD Floorplan (DXF or DWG)",
-            type=["dxf", "dwg"],
-            key="cad_uploader",
-        )
 
-        if uploaded_cad is not None:
-            file_ext = "." + uploaded_cad.name.split(".")[-1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                tmp_file.write(uploaded_cad.getvalue())
-                tmp_path = tmp_file.name
+# ------------------------------------------------------------------------------
+# TAB 2: POINT CALIBRATION CANVAS
+# ------------------------------------------------------------------------------
+with tab_canvas:
+    st.subheader("Interactive Point Placement & Target Alignment")
 
-            try:
-                with st.spinner("Processing CAD file via VGA Engine..."):
-                    wall_lines = process_cad_file(tmp_path)
-                    st.session_state.dxf_walls = wall_lines
-                    st.session_state.wall_lines = wall_lines
-                    st.session_state.current_x_range = None
-                    st.session_state.current_y_range = None
-                    st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
-            except Exception as e:
-                st.error(f"Failed to parse CAD file: {e}")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-
-    st.markdown("---")
-
-    # 📹 Surveillance Video Upload
-    st.markdown("### 📹 Video Stream Target")
-    uploaded_video = st.file_uploader(
-        "Upload Surveillance Video (.mp4, .avi, .mov)",
-        type=["mp4", "avi", "mov"],
-        key="video_uploader",
+    # Render Base Figure
+    fig = create_base_cad_figure(
+        st.session_state.dxf_walls, st.session_state.vga_grid_df
     )
 
-    if uploaded_video:
-        st.session_state.uploaded_video_file = uploaded_video
-        st.success("✅ Video file attached successfully!")
+    # Add existing calibration points
+    for idx, pt in enumerate(st.session_state.calibration_points):
+        is_editing = idx == st.session_state.editing_point_idx
+        color = "#E53E3E" if is_editing else "#38A169"
+        marker_symbol = "cross" if is_editing else "circle"
 
-        frame_idx = st.slider(
-            "Select Calibration Preview Frame",
-            min_value=0,
-            max_value=1000,
-            value=st.session_state.selected_frame_idx,
-            step=5,
-        )
-        st.session_state.selected_frame_idx = frame_idx
-
-        raw_frame_rgb = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
-        if raw_frame_rgb is not None:
-            st.image(
-                raw_frame_rgb,
-                caption=f"Preview Frame (Index #{frame_idx})",
-                use_container_width=True,
+        fig.add_trace(
+            go.Scatter(
+                x=[pt["x"]],
+                y=[pt["y"]],
+                mode="markers+text",
+                marker=dict(size=12, color=color, symbol=marker_symbol),
+                text=[f" P{idx+1}"],
+                textposition="top right",
+                name=f"Point {idx+1}",
+                showlegend=False,
             )
+        )
 
-# ==========================================
-# TAB 2: REGION SELECTION & EDITING
-# ==========================================
-with tab_region:
-    st.subheader("Step 2.2: Define 4 ROI Camera Corners on Floorplan")
-    st.info(
-        "💡 **4-Point Click Selection:** Click **4 points** on the floorplan canvas to define the ROI corners. "
-        "Zoom or pan anywhere — your zoom position will remain completely locked between clicks!"
+    # --------------------------------------------------------------------------
+    # FIX #1: Plotly Zoom/Pan persistence using uirevision
+    # --------------------------------------------------------------------------
+    fig.update_layout(
+        template="plotly_dark",
+        height=620,
+        xaxis=dict(
+            title="X Coordinate",
+            scaleanchor="y",
+            scaleratio=1,
+            showgrid=True,
+        ),
+        yaxis=dict(
+            title="Y Coordinate",
+            showgrid=True,
+        ),
+        margin=dict(l=10, r=10, t=30, b=10),
+        dragmode="pan",
+        hovermode="closest",
+        # uirevision keeps current zoom/pan active across st.rerun()
+        uirevision="PERMANENT_CANVAS_LOCK",
     )
 
-    col_controls, col_plot = st.columns([1.1, 2.4])
+    # Render Plotly chart with click tracking
+    chart_events = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="points",
+        key="cad_interactive_canvas",
+    )
 
-    with col_controls:
-        st.markdown("#### Corner Coordinates (CAD World)")
+    # Detect & Handle Point Click Selection
+    if chart_events and "selection" in chart_events:
+        points = chart_events["selection"].get("points", [])
+        if points:
+            click_pt = points[0]
+            click_sig = f"{click_pt.get('x')}_{click_pt.get('y')}"
 
-        # Global Control Buttons
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("🔴 Reset All", use_container_width=True):
-                st.session_state.four_corners = []
-                st.session_state.selected_polygon_pts = []
-                st.session_state.editing_point_idx = None
-                st.session_state.processed_click_sig = None
-                st.session_state.current_x_range = None
-                st.session_state.current_y_range = None
+            if click_sig != st.session_state.processed_click_sig:
+                st.session_state.processed_click_sig = click_sig
+                new_x = click_pt.get("x")
+                new_y = click_pt.get("y")
+
+                if (
+                    st.session_state.editing_point_idx is not None
+                    and st.session_state.editing_point_idx
+                    < len(st.session_state.calibration_points)
+                ):
+                    # Update target point
+                    idx = st.session_state.editing_point_idx
+                    st.session_state.calibration_points[idx]["x"] = new_x
+                    st.session_state.calibration_points[idx]["y"] = new_y
+                    st.session_state.editing_point_idx = None
+                else:
+                    # Append new calibration point
+                    st.session_state.calibration_points.append(
+                        {
+                            "name": f"P{len(st.session_state.calibration_points)+1}",
+                            "x": new_x,
+                            "y": new_y,
+                        }
+                    )
                 st.rerun()
 
-        with col_btn2:
-            if st.session_state.editing_point_idx is not None:
-                if st.button("❌ Cancel Edit", use_container_width=True):
-                    st.session_state.editing_point_idx = None
-                    st.rerun()
+    # --------------------------------------------------------------------------
+    # POINT MANAGEMENT TABLE & FIX #2: Toggle Edit Mode
+    # --------------------------------------------------------------------------
+    st.markdown("### Calibration Points List")
 
-        # Selection Status
-        num_pts = len(st.session_state.four_corners)
-        if st.session_state.editing_point_idx is not None:
-            edit_num = st.session_state.editing_point_idx + 1
-            st.warning(f"🎯 **Editing P{edit_num}:** Click anywhere on the map to set its new position.")
-        elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map.")
-        else:
-            st.success("✅ All 4 Corners Selected!")
+    if not st.session_state.calibration_points:
+        st.info("Click anywhere on the plot above to place calibration points.")
+    else:
+        cols = st.columns([1, 2, 2, 2, 1])
+        cols[0].markdown("**Point**")
+        cols[1].markdown("**X Coordinate**")
+        cols[2].markdown("**Y Coordinate**")
+        cols[3].markdown("**Actions**")
+        cols[4].markdown("**Remove**")
 
-        # Point Table with Edit Controls
-        corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
-        
-        if len(st.session_state.four_corners) > 0:
-            st.markdown("---")
-            st.markdown("##### Selected Points & Individual Redo")
-            for idx, pt in enumerate(st.session_state.four_corners[:4]):
-                c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
-                col_info, col_act = st.columns([2.5, 1])
+        for idx, pt in enumerate(st.session_state.calibration_points):
+            c_idx, c_x, c_y, c_act, c_del = st.columns([1, 2, 2, 2, 1])
 
-                with col_info:
-                    st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
-                with col_act:
-                    is_editing = (st.session_state.editing_point_idx == idx)
-                    btn_label = "🎯 Target" if is_editing else "✏️ Edit"
-                    if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
-                        st.session_state.editing_point_idx = idx
-                        st.session_state.processed_click_sig = None
-                        st.rerun()
+            is_editing = idx == st.session_state.editing_point_idx
 
+            c_idx.write(f"**{pt.get('name', f'P{idx+1}')}**")
+
+            new_x = c_x.number_input(
+                f"X P{idx+1}",
+                value=float(pt["x"]),
+                key=f"x_val_{idx}",
+                label_visibility="collapsed",
+            )
+            new_y = c_y.number_input(
+                f"Y P{idx+1}",
+                value=float(pt["y"]),
+                key=f"y_val_{idx}",
+                label_visibility="collapsed",
+            )
+
+            # Update if manually edited in numeric box
+            st.session_state.calibration_points[idx]["x"] = new_x
+            st.session_state.calibration_points[idx]["y"] = new_y
+
+            # FIX #2: Edit Button Toggle Logic
+            btn_label = "🎯 Target Mode" if is_editing else "✏️ Click & Reposition"
+            if c_act.button(
+                btn_label,
+                key=f"edit_btn_{idx}",
+                use_container_width=True,
+                type="primary" if is_editing else "secondary",
+            ):
+                if is_editing:
+                    st.session_state.editing_point_idx = None  # Toggle off
+                else:
+                    st.session_state.editing_point_idx = idx  # Toggle on
+                st.session_state.processed_click_sig = None
+                st.rerun()
+
+            # Remove point button
+            if c_del.button("🗑️", key=f"del_btn_{idx}", use_container_width=True):
+                st.session_state.calibration_points.pop(idx)
+                st.session_state.editing_point_idx = None
+                st.rerun()
+
+        # Download Config Export
         st.markdown("---")
-
-        # Config Exporter
         export_payload = {
-            "polygon_points": st.session_state.four_corners[:4],
+            "calibration_points": st.session_state.calibration_points,
             "vga_grid": (
                 st.session_state.vga_grid_df.to_dict(orient="records")
-                if st.session_state.vga_grid_df is not None
+                if (
+                    st.session_state.vga_grid_df is not None
+                    and not st.session_state.vga_grid_df.empty
+                )
                 else []
             ),
-            "homography_matrix": (
-                st.session_state.homography_matrix.tolist()
-                if st.session_state.homography_matrix is not None
-                else None
-            ),
         }
-
         st.download_button(
-            label="💾 Export JSON Config",
+            "💾 Download Calibration Setup (JSON)",
             data=json.dumps(export_payload, indent=2),
-            file_name="floorplan_homography_config.json",
+            file_name="calibration_config.json",
             mime="application/json",
-            use_container_width=True,
         )
 
-    with col_plot:
-        st.markdown("#### Click Floorplan Canvas")
 
-        fig = go.Figure()
-
-        # 1. Unpack CAD Walls
-        wall_x, wall_y = [], []
-        all_x, all_y = [], []
-
-        # Check both keys for loaded wall objects
-        dxf_walls = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
-        for line in dxf_walls:
-            if hasattr(line, "xy"):
-                x, y = line.xy
-                wall_x.extend([x[0], x[1], None])
-                wall_y.extend([y[0], y[1], None])
-                all_x.extend(x)
-                all_y.extend(y)
-            elif isinstance(line, (list, tuple)):
-                for pt in line:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        all_x.append(pt[0])
-                        all_y.append(pt[1])
-                for i in range(len(line) - 1):
-                    wall_x.extend([line[i][0], line[i+1][0], None])
-                    wall_y.extend([line[i][1], line[i+1][1], None])
-
-        if wall_x:
-            fig.add_trace(
-                go.Scatter(
-                    x=wall_x,
-                    y=wall_y,
-                    mode="lines",
-                    line=dict(color="#00ADB5", width=1.5),
-                    name="CAD Walls",
-                    hoverinfo="none",
-                    showlegend=False,
-                )
-            )
-
-        # Determine Initial Bounds if not user-customized yet
-        if all_x and all_y:
-            minx, maxx = min(all_x), max(all_x)
-            miny, maxy = min(all_y), max(all_y)
-            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
-            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
-
-            if st.session_state.current_x_range is None:
-                st.session_state.current_x_range = [minx - pad_x, maxx + pad_x]
-            if st.session_state.current_y_range is None:
-                st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
-
-            grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
-            grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
-
-            gx = np.arange(minx, maxx, grid_step_x)
-            gy = np.arange(miny, maxy, grid_step_y)
-            g_xx, g_yy = np.meshgrid(gx, gy)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=g_xx.flatten(),
-                    y=g_yy.flatten(),
-                    mode="markers",
-                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
-                    hoverinfo="none",
-                    showlegend=False,
-                    name="click_sensor_grid",
-                )
-            )
-        else:
-            if st.session_state.current_x_range is None:
-                st.session_state.current_x_range = [-1, 10]
-            if st.session_state.current_y_range is None:
-                st.session_state.current_y_range = [-1, 10]
-
-        # 3. Selected Corners & ROI Fill Area
-        pts = st.session_state.four_corners
-        if len(pts) > 0:
-            px = [p[0] for p in pts]
-            py = [p[1] for p in pts]
-
-            if len(pts) == 4:
-                px_closed = px + [px[0]]
-                py_closed = py + [py[0]]
-                fig.add_trace(
-                    go.Scatter(
-                        x=px_closed,
-                        y=py_closed,
-                        mode="lines",
-                        fill="toself",
-                        fillcolor="rgba(0, 230, 118, 0.35)",
-                        line=dict(color="#00FF66", width=2.5),
-                        name="Camera ROI Zone",
-                    )
-                )
-
-            marker_colors = [
-                "#FFD700" if (st.session_state.editing_point_idx == i) else "#00FF66"
-                for i in range(len(pts))
-            ]
-
-            fig.add_trace(
-                go.Scatter(
-                    x=px,
-                    y=py,
-                    mode="markers+text",
-                    marker=dict(size=14, color=marker_colors, symbol="circle"),
-                    text=[f"P{i+1}" for i in range(len(pts))],
-                    textposition="top right",
-                    textfont=dict(size=14, color="#FFFFFF"),
-                    name="Selected Corners",
-                )
-            )
-
-        # Explicitly mandate range to current persisted zoom window
-        fig.update_layout(
-            template="plotly_dark",
-            height=620,
-            xaxis=dict(
-                title="X Coordinate",
-                range=st.session_state.current_x_range,
-                scaleanchor="y",
-                scaleratio=1,
-                showgrid=True,
-            ),
-            yaxis=dict(
-                title="Y Coordinate",
-                range=st.session_state.current_y_range,
-                showgrid=True,
-            ),
-            margin=dict(l=10, r=10, t=30, b=10),
-            clickmode="event+select",
-            dragmode="pan",
-            hovermode="closest",
-            uirevision="PERMANENT_CANVAS_LOCK",
-        )
-
-        chart_events = st.plotly_chart(
-            fig,
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="points",
-            key="roi_floorplan_canvas",
-        )
-
-        # 🔍 CAPTURE RELAYOUT ZOOM / PAN EVENTS
-        if chart_events and isinstance(chart_events, dict):
-            relayout_data = chart_events.get("relayout", {})
-            if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
-                st.session_state.current_x_range = [
-                    relayout_data["xaxis.range[0]"],
-                    relayout_data["xaxis.range[1]"],
-                ]
-            if "yaxis.range[0]" in relayout_data and "yaxis.range[1]" in relayout_data:
-                st.session_state.current_y_range = [
-                    relayout_data["yaxis.range[0]"],
-                    relayout_data["yaxis.range[1]"],
-                ]
-
-        # Click Event Dispatcher with deduplication
-        if chart_events and "selection" in chart_events:
-            event_pts = chart_events["selection"].get("points", [])
-            if event_pts:
-                click_x = float(event_pts[0]["x"])
-                click_y = float(event_pts[0]["y"])
-                click_sig = f"{click_x:.4f}_{click_y:.4f}_{st.session_state.editing_point_idx}"
-
-                if click_sig != st.session_state.processed_click_sig:
-                    st.session_state.processed_click_sig = click_sig
-
-                    # Mode A: Editing an existing corner
-                    if st.session_state.editing_point_idx is not None:
-                        target_idx = st.session_state.editing_point_idx
-                        st.session_state.four_corners[target_idx] = [click_x, click_y]
-                        st.session_state.editing_point_idx = None
-                        st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                        ]
-                        st.rerun()
-
-                    # Mode B: Adding a new corner (up to 4)
-                    elif len(st.session_state.four_corners) < 4:
-                        st.session_state.four_corners.append([click_x, click_y])
-                        st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                        ]
-                        st.rerun()
-
-# ==========================================
-# TAB 3: OCCUPANCY TRACKING VIEW
-# ==========================================
+# ------------------------------------------------------------------------------
+# TAB 3: TRACKING VIEW (FIX #3: Safeguard Empty DataFrame Checks)
+# ------------------------------------------------------------------------------
 with tab_tracking:
-    render_tracking_view(
-        st.session_state.get("dxf_walls", []),
-        st.session_state.get("vga_grid_df", None),
-    )
+    st.subheader("Real-Time Tracking & Homography Projection View")
+
+    vga_df = st.session_state.get("vga_grid_df")
+
+    # FIX #3: Empty DataFrame check before passing to view
+    if vga_df is not None and vga_df.empty:
+        vga_df = None
+
+    if len(st.session_state.calibration_points) < 4:
+        st.warning(
+            f"Homography calculation requires at least 4 point correspondences. Current points: {len(st.session_state.calibration_points)}/4"
+        )
+
+    t_col1, t_col2 = st.columns([2, 1])
+
+    with t_col1:
+        st.markdown("#### Projected CAD World View")
+        track_fig = create_base_cad_figure(st.session_state.dxf_walls, vga_df)
+
+        # Plot active tracking points
+        if st.session_state.calibration_points:
+            pts_x = [p["x"] for p in st.session_state.calibration_points]
+            pts_y = [p["y"] for p in st.session_state.calibration_points]
+            track_fig.add_trace(
+                go.Scatter(
+                    x=pts_x,
+                    y=pts_y,
+                    mode="markers+lines",
+                    line=dict(color="#ED8936", dash="dot"),
+                    marker=dict(size=10, color="#ED8936"),
+                    name="Calibrated Quadrilateral",
+                )
+            )
+
+        track_fig.update_layout(
+            template="plotly_dark",
+            height=500,
+            xaxis=dict(scaleanchor="y", scaleratio=1),
+            margin=dict(l=10, r=10, t=30, b=10),
+            uirevision="TRACKING_CANVAS_LOCK",
+        )
+        st.plotly_chart(track_fig, use_container_width=True)
+
+    with t_col2:
+        st.markdown("#### Alignment Status")
+        st.metric(
+            label="Walls Loaded",
+            value=len(st.session_state.dxf_walls),
+        )
+        st.metric(
+            label="Active Points",
+            value=len(st.session_state.calibration_points),
+        )
+        st.metric(
+            label="VGA Nodes",
+            value=(
+                len(st.session_state.vga_grid_df)
+                if (
+                    st.session_state.vga_grid_df is not None
+                    and not st.session_state.vga_grid_df.empty
+                )
+                else 0
+            ),
+        )
