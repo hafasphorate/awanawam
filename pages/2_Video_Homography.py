@@ -1,14 +1,16 @@
 # pages/2_Video_Homography.py
-import io
 import json
-import ezdxf
+import os
+import tempfile
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from shapely.geometry import LineString, Polygon
 import streamlit as st
 
-from utils.tracking_engine import HomographyCalibrator, extract_frame_from_video
+# Reuse your working CAD engine and tracking functions
+from utils.vga_engine import process_cad_file
+from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
@@ -33,49 +35,6 @@ if "selected_frame_idx" not in st.session_state:
     st.session_state.selected_frame_idx = 0
 
 
-# ==========================================
-# ROBUST DXF PARSER (HANDLES NESTED BLOCKS)
-# ==========================================
-def parse_dxf_bytes(file_bytes):
-    """Parses DXF bytes, expanding nested blocks and extracting all line geometries."""
-    doc = ezdxf.read(io.StringIO(file_bytes.decode("utf-8", errors="ignore")))
-    msp = doc.modelspace()
-    walls = []
-
-    # Iterates through modelspace and explodes/flattens block references if needed
-    for entity in msp:
-        entity_type = entity.dxftype()
-        
-        if entity_type == "LINE":
-            start, end = entity.dxf.start, entity.dxf.end
-            walls.append(LineString([(start.x, start.y), (end.x, end.y)]))
-            
-        elif entity_type in ["LWPOLYLINE", "POLYLINE"]:
-            pts = [(p[0], p[1]) for p in entity.get_points("xy")]
-            if len(pts) >= 2:
-                if entity.is_closed and len(pts) >= 3:
-                    walls.append(Polygon(pts))
-                else:
-                    walls.append(LineString(pts))
-                    
-        elif entity_type == "INSERT":
-            # Handle block references (nested geometry)
-            try:
-                block = doc.blocks.get(entity.dxf.name)
-                for b_entity in block:
-                    if b_entity.dxftype() == "LINE":
-                        start, end = b_entity.dxf.start, b_entity.dxf.end
-                        walls.append(LineString([(start.x, start.y), (end.x, end.y)]))
-                    elif b_entity.dxftype() in ["LWPOLYLINE", "POLYLINE"]:
-                        pts = [(p[0], p[1]) for p in b_entity.get_points("xy")]
-                        if len(pts) >= 2:
-                            walls.append(LineString(pts))
-            except Exception:
-                continue
-
-    return walls
-
-
 # Navigation Tabs
 tab_import, tab_region, tab_tracking = st.tabs([
     "📂 2.1 Import DXF / JSON & Video",
@@ -87,7 +46,7 @@ tab_import, tab_region, tab_tracking = st.tabs([
 # TAB 1: FILE & VIDEO IMPORT
 # ==========================================
 with tab_import:
-    st.subheader("Step 2.1: Load DXF/JSON Config & Surveillance Video")
+    st.subheader("Step 2.1: Load CAD (DXF/DWG) or JSON Config & Video")
 
     col_json, col_dxf = st.columns(2)
 
@@ -109,11 +68,11 @@ with tab_import:
                     st.session_state.vga_grid_df = pd.DataFrame(data["vga_grid"])
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Parse Polygon Points Safely (Handling diverse JSON structures)
+                # 2. Parse Polygon Points Safely (Prevents KeyError "X (m)")
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
-                    
+
                     for pt in raw_pts:
                         if isinstance(pt, (list, tuple)) and len(pt) >= 2:
                             formatted_pts.append({"X (m)": float(pt[0]), "Y (m)": float(pt[1])})
@@ -121,7 +80,7 @@ with tab_import:
                             x_val = pt.get("X (m)", pt.get("x", pt.get("X", 0.0)))
                             y_val = pt.get("Y (m)", pt.get("y", pt.get("Y", 0.0)))
                             formatted_pts.append({"X (m)": float(x_val), "Y (m)": float(y_val)})
-                    
+
                     if formatted_pts:
                         st.session_state.selected_polygon_pts = formatted_pts
                         st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
@@ -140,29 +99,36 @@ with tab_import:
                         elif len(w) == 2:
                             walls.append(LineString(w))
                     st.session_state.dxf_walls = walls
-                    st.success(f"✅ Loaded {len(walls)} wall elements")
+                    st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: DXF Import
+    # 📐 Option B: CAD Import (DXF / DWG) - Uses same backend as VGA Page
     with col_dxf:
-        st.markdown("### 📐 Option B: Import Raw DXF File")
-        uploaded_dxf = st.file_uploader(
-            "Upload CAD DXF File", type=["dxf"], key="dxf_uploader"
+        st.markdown("### 📐 Option B: Import Raw CAD File")
+        uploaded_cad = st.file_uploader(
+            "Upload CAD Floorplan (DXF or DWG)",
+            type=["dxf", "dwg"],
+            key="cad_uploader",
         )
 
-        if uploaded_dxf is not None:
+        if uploaded_cad is not None:
+            file_ext = "." + uploaded_cad.name.split(".")[-1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                tmp_file.write(uploaded_cad.getvalue())
+                tmp_path = tmp_file.name
+
             try:
-                dxf_bytes = uploaded_dxf.read()
-                walls = parse_dxf_bytes(dxf_bytes)
-                if len(walls) > 0:
-                    st.session_state.dxf_walls = walls
-                    st.success(f"✅ Successfully parsed DXF! {len(walls)} wall geometries ready.")
-                else:
-                    st.warning("⚠️ DXF uploaded, but 0 line geometries were detected. Ensure the CAD walls are drawn using standard LINE or POLYLINE entities.")
+                with st.spinner("Processing CAD file via VGA Engine..."):
+                    wall_lines = process_cad_file(tmp_path)
+                    st.session_state.dxf_walls = wall_lines
+                    st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
             except Exception as e:
-                st.error(f"Failed to parse DXF file: {e}")
+                st.error(f"Failed to parse CAD file: {e}")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
     st.markdown("---")
 
@@ -204,9 +170,9 @@ with tab_region:
     col_controls, col_plot = st.columns([1, 2])
 
     with col_controls:
-        st.markdown("#### Polygon Vertices (CAD World m)")
+        st.markdown("#### Polygon Vertices (CAD World)")
 
-        # Ensure dataframe columns are standardized
+        # Ensure dataframe columns are standardized and fallback if key missing
         default_df = pd.DataFrame(st.session_state.selected_polygon_pts)
         if "X (m)" not in default_df.columns or "Y (m)" not in default_df.columns:
             default_df = pd.DataFrame([{"X (m)": 0.0, "Y (m)": 0.0}, {"X (m)": 10.0, "Y (m)": 0.0}])
@@ -218,14 +184,14 @@ with tab_region:
             key="poly_editor",
         )
 
-        # Robust dictionary mapping to prevent KeyError
+        # Safe key extraction prevents KeyError
         poly_pts_dicts = edited_df.to_dict(orient="records")
         st.session_state.selected_polygon_pts = poly_pts_dicts
 
         poly_list = []
         for p in poly_pts_dicts:
-            x_val = p.get("X (m)", p.get("x", 0.0))
-            y_val = p.get("Y (m)", p.get("y", 0.0))
+            x_val = p.get("X (m)", p.get("x", p.get("X", 0.0)))
+            y_val = p.get("Y (m)", p.get("y", p.get("Y", 0.0)))
             poly_list.append([float(x_val), float(y_val)])
 
         st.markdown("---")
@@ -258,19 +224,23 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Render DXF Walls
-        for wall in st.session_state.get("dxf_walls", []):
-            if hasattr(wall, "exterior"):
-                wx, wy = wall.exterior.xy
-            else:
-                wx, wy = wall.xy
+        # 1. Render DXF/DWG Walls
+        wall_x, wall_y = [], []
+        for line in st.session_state.get("dxf_walls", []):
+            if hasattr(line, "xy"):
+                x, y = line.xy
+                wall_x.extend([x[0], x[1], None])
+                wall_y.extend([y[0], y[1], None])
+
+        if wall_x:
             fig.add_trace(
                 go.Scatter(
-                    x=list(wx),
-                    y=list(wy),
+                    x=wall_x,
+                    y=wall_y,
                     mode="lines",
-                    line=dict(color="black", width=1.5),
-                    showlegend=False,
+                    line=dict(color="#00ADB5", width=1.5),
+                    name="CAD Walls",
+                    showlegend=True,
                 )
             )
 
@@ -307,9 +277,10 @@ with tab_region:
             )
 
         fig.update_layout(
+            template="plotly_dark",
             height=500,
-            xaxis=dict(title="X (meters)", scaleanchor="y", scaleratio=1),
-            yaxis=dict(title="Y (meters)"),
+            xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1),
+            yaxis=dict(title="Y Coordinate"),
             margin=dict(l=10, r=10, t=10, b=10),
         )
 
