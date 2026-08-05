@@ -1,4 +1,6 @@
 # views/tracking_view.py
+import tempfile
+import cv2
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -6,6 +8,34 @@ import streamlit as st
 
 from utils.homography_engine import compute_homography_matrix
 from utils.tracking_engine import extract_frame_from_video, process_video_frame
+
+
+def get_video_frame_count(video_file) -> int:
+    """Helper to get total frame count of uploaded video."""
+    if video_file is None:
+        return 100
+    try:
+        video_file.seek(0)
+        video_bytes = video_file.read()
+        video_file.seek(0)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
+            tmp_v.write(video_bytes)
+            tmp_path = tmp_v.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        return total if total > 0 else 100
+    except Exception:
+        return 100
+
+
+import os
 
 
 def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
@@ -29,9 +59,11 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     st.markdown("---")
 
+    max_frames = get_video_frame_count(uploaded_video)
+
     # Sidebar / Configuration Controls
     col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
-    
+
     with col_cfg1:
         model_name = st.selectbox(
             "YOLO Model Engine:",
@@ -57,16 +89,16 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         frame_idx = st.slider(
             "Frame Slider",
             min_value=0,
-            max_value=1000,
+            max_value=max(1, max_frames - 1),
             value=st.session_state.get("selected_frame_idx", 0),
-            step=2,
+            step=1,
             key="tracking_frame_slider",
         )
 
     # Extract frame
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
     if raw_frame is None:
-        st.error("❌ Failed to decode frame from video.")
+        st.error("❌ Failed to decode frame from video. Try re-uploading the video file in Tab 2.1.")
         return
 
     img_h, img_w, _ = raw_frame.shape

@@ -5,7 +5,6 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-from cv2 import VideoCapture
 
 # Try importing ultralytics YOLO
 try:
@@ -31,24 +30,61 @@ def load_yolo_model(model_name: str = "yolov8n-pose.pt"):
 
 
 def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
-    """Extracts an RGB image frame from a Streamlit uploaded video file."""
+    """Extracts an RGB image frame safely from a Streamlit uploaded video file."""
     if video_file is None:
         return None
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
-        tmp_v.write(video_file.getvalue())
-        tmp_path = tmp_v.name
+    try:
+        # Reset stream pointer to beginning
+        video_file.seek(0)
+        video_bytes = video_file.read()
+        video_file.seek(0)
 
-    cap = VideoCapture(tmp_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ret, frame = cap.read()
-    cap.release()
+        if not video_bytes:
+            return None
 
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
+        # Create a named temp file and explicitly close it so OpenCV can open it cleanly
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_v:
+            tmp_v.write(video_bytes)
+            tmp_path = tmp_v.name
 
-    if ret and frame is not None:
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        cap = cv2.VideoCapture(tmp_path)
+        
+        if not cap.isOpened():
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            return None
+
+        # Get total frames to prevent out-of-bounds frame seeking
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        target_frame = min(max(0, frame_number), max(0, total_frames - 1))
+
+        # Set position
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+
+        # Fallback: If position seek failed, read sequentially
+        if not ret or frame is None:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            curr = 0
+            while cap.isOpened() and curr <= target_frame:
+                ret, frame = cap.read()
+                if curr == target_frame:
+                    break
+                curr += 1
+
+        cap.release()
+
+        # Clean up temporary file safely
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        if ret and frame is not None:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    except Exception as e:
+        st.error(f"Video Decoding Error: {e}")
+
     return None
 
 
