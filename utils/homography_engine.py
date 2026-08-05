@@ -1,57 +1,65 @@
 # utils/homography_engine.py
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict
 
-class HomographyCalibrator:
-    def __init__(self):
-        self.H_matrix: np.ndarray = None
 
-    def compute_homography(
-        self, 
-        img_points: List[Tuple[float, float]], 
-        cad_points: List[Tuple[float, float]]
-    ) -> np.ndarray:
-        """
-        Computes 3x3 Homography Matrix H from matching point pairs.
-        img_points: [(u1, v1), (u2, v2), (u3, v3), (u4, v4)]
-        cad_points: [(X1, Y1), (X2, Y2), (X3, Y3), (X4, Y4)]
-        """
-        if len(img_points) < 4 or len(cad_points) < 4:
-            raise ValueError("At least 4 corresponding point pairs are required.")
+def compute_homography_matrix(src_points: list, dst_points: list) -> np.ndarray:
+    """Calculates the 3x3 Homography Matrix given source (camera image) 
 
-        pts_src = np.array(img_points, dtype=np.float32)
-        pts_dst = np.array(cad_points, dtype=np.float32)
+    and destination (world floorplan) point pairs.
 
-        # Compute Homography using RANSAC for robustness against minor point inaccuracies
-        H, mask = cv2.findHomography(pts_src, pts_dst, cv2.RANSAC, 5.0)
-        self.H_matrix = H
-        return H
+    Parameters
+    ----------
+    src_points : list
+        List of [x, y] coordinates selected on the video frame (pixels).
+    dst_points : list
+        List of [x, y] coordinates corresponding on the floorplan (meters/CAD units).
 
-    def transform_point(self, u: float, v: float) -> Tuple[float, float]:
-        """Transforms a single (u, v) video pixel coordinate to (X, Y) CAD space."""
-        if self.H_matrix is None:
-            raise RuntimeError("Homography matrix not calibrated yet.")
+    Returns
+    -------
+    np.ndarray or None
+        3x3 Homography transformation matrix H.
+    """
+    if len(src_points) < 4 or len(dst_points) < 4:
+        return None
 
-        pt_pixel = np.array([[[u, v]]], dtype=np.float32)
-        pt_cad = cv2.perspectiveTransform(pt_pixel, self.H_matrix)
-        
-        return float(pt_cad[0][0][0]), float(pt_cad[0][0][1])
+    src_pts = np.float32(src_points[:4]).reshape(-1, 1, 2)
+    dst_pts = np.float32(dst_points[:4]).reshape(-1, 1, 2)
 
-    def transform_batch_feet(self, bboxes: List[Tuple[float, float, float, float]]) -> List[Tuple[float, float]]:
-        """
-        Takes bounding boxes [x1, y1, x2, y2] from object detector,
-        extracts bottom-center (foot position: (x1+x2)/2, y2),
-        and returns CAD coordinates [(X, Y), ...].
-        """
-        if not bboxes or self.H_matrix is None:
-            return []
+    H, status = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    return H
 
-        # Foot positions (bottom center of bounding boxes)
-        feet_pixels = np.array([
-            [[(box[0] + box[2]) / 2.0, box[3]]] for box in bboxes
-        ], dtype=np.float32)
 
-        cad_coords = cv2.perspectiveTransform(feet_pixels, self.H_matrix)
-        
-        return [(float(pt[0][0]), float(pt[0][1])) for pt in cad_coords]
+def project_points(points: list, H: np.ndarray) -> list:
+    """Transforms 2D points from source frame coordinates to floorplan world coordinates
+
+    using homography matrix H.
+
+    Parameters
+    ----------
+    points : list
+        List of [x, y] points (e.g. detected head/feet locations in pixels).
+    H : np.ndarray
+        3x3 Homography matrix.
+
+    Returns
+    -------
+    list
+        List of transformed [X, Y] world coordinates on the floorplan.
+    """
+    if H is None or len(points) == 0:
+        return []
+
+    pts_array = np.float32(points).reshape(-1, 1, 2)
+    transformed_pts = cv2.perspectiveTransform(pts_array, H)
+
+    # Flatten back to list of [X, Y]
+    return transformed_pts.reshape(-1, 2).tolist()
+
+
+def project_single_point(x: float, y: float, H: np.ndarray) -> tuple:
+    """Convenience helper to project a single (x, y) point."""
+    res = project_points([[x, y]], H)
+    if res:
+        return res[0][0], res[0][1]
+    return None, None
