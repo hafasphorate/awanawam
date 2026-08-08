@@ -251,7 +251,7 @@ if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
 
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING
+# TAB 2: REGION SELECTION & MASKING (ROI)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
