@@ -431,26 +431,37 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Render CAD Wall Geometry
+        # 1. Render CAD Wall Geometry (Compatible with Shapely LineStrings, Tuples, and Lists)
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
-        dxf_walls = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
+        dxf_walls = st.session_state.get("wall_lines") or st.session_state.get("dxf_walls") or []
+
         for line in dxf_walls:
+            # Case A: Shapely LineString / Geometry object
             if hasattr(line, "xy"):
                 x, y = line.xy
-                wall_x.extend([x[0], x[1], None])
-                wall_y.extend([y[0], y[1], None])
-                all_x.extend(x)
-                all_y.extend(y)
+                x_list, y_list = list(x), list(y)
+                wall_x.extend([x_list[0], x_list[1], None])
+                wall_y.extend([y_list[0], y_list[1], None])
+                all_x.extend(x_list)
+                all_y.extend(y_list)
+
+            # Case B: Raw coordinate pairs [(x1, y1), (x2, y2)]
             elif isinstance(line, (list, tuple)):
+                pts = []
                 for pt in line:
-                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        all_x.append(pt[0])
-                        all_y.append(pt[1])
-                for i in range(len(line) - 1):
-                    wall_x.extend([line[i][0], line[i+1][0], None])
-                    wall_y.extend([line[i][1], line[i+1][1], None])
+                    if hasattr(pt, "x") and hasattr(pt, "y"):
+                        pts.append((pt.x, pt.y))
+                    elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        pts.append((float(pt[0]), float(pt[1])))
+                
+                if len(pts) >= 2:
+                    for i in range(len(pts) - 1):
+                        wall_x.extend([pts[i][0], pts[i+1][0], None])
+                        wall_y.extend([pts[i][1], pts[i+1][1], None])
+                        all_x.extend([pts[i][0], pts[i+1][0]])
+                        all_y.extend([pts[i][1], pts[i+1][1]])
 
         if wall_x:
             fig.add_trace(
@@ -465,7 +476,7 @@ with tab_region:
                 )
             )
 
-        # 2. Dynamic Invisible Click Mesh Sensor
+        # 2. Dynamic Invisible Click Mesh Sensor (Bound to Wall Extents)
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
@@ -477,8 +488,8 @@ with tab_region:
             if st.session_state.get("current_y_range") is None:
                 st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
 
-            grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
-            grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
+            grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
 
             gx = np.arange(minx, maxx, grid_step_x)
             gy = np.arange(miny, maxy, grid_step_y)
@@ -489,17 +500,18 @@ with tab_region:
                     x=g_xx.flatten(),
                     y=g_yy.flatten(),
                     mode="markers",
-                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                    marker=dict(size=16, color="rgba(0,0,0,0.001)"),
                     hoverinfo="none",
                     showlegend=False,
                     name="click_sensor_grid",
                 )
             )
         else:
+            # Default fallback canvas bounds if no CAD file is loaded
             if st.session_state.get("current_x_range") is None:
-                st.session_state.current_x_range = [-1, 10]
+                st.session_state.current_x_range = [-5, 60]
             if st.session_state.get("current_y_range") is None:
-                st.session_state.current_y_range = [-1, 10]
+                st.session_state.current_y_range = [-5, 60]
 
             grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
             fig.add_trace(go.Scatter(
@@ -549,7 +561,7 @@ with tab_region:
                 )
             )
 
-        # 4. Update Layout with Axis Ranges and Canvas Locks
+        # 4. Layout & Range Lock Configuration
         fig.update_layout(
             template="plotly_dark",
             height=550,
