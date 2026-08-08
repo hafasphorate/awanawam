@@ -223,7 +223,7 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & POINT MASKING
+# TAB 2: REGION SELECTION & POINT MASKING (FIXED)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
@@ -267,14 +267,41 @@ with tab_region:
                     st.rerun()
 
         raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
+        
         if raw_frame_rgb is not None:
-            fig_img = px.imshow(raw_frame_rgb)
-            img_h, img_w = raw_frame_rgb.shape[0], raw_frame_rgb.shape[1]
+            img_h, img_w, _ = raw_frame_rgb.shape
+
+            # Build Figure with Base Frame
+            fig_img = px.imshow(raw_frame_rgb, binary_string=True)
 
             shapes_list = []
-            for mask in st.session_state.exclusion_masks:
+
+            # --- 1. RENDER LOCKED EXCLUSION MASKS ---
+            for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
-                    path_str = f"M {mask[0][0]},{mask[0][1]} " + " ".join([f"L {p[0]},{p[1]}" for p in mask[1:]]) + " Z"
+                    mx = [float(p[0]) for p in mask]
+                    my = [float(p[1]) for p in mask]
+                    
+                    # Close the polygon loop
+                    mx_closed = mx + [mx[0]]
+                    my_closed = my + [my[0]]
+
+                    # Method A: Direct Scatter Overlay (Guaranteed Visual Visibility)
+                    fig_img.add_trace(go.Scatter(
+                        x=mx_closed,
+                        y=my_closed,
+                        mode="lines+markers",
+                        fill="toself",
+                        fillcolor="rgba(255, 0, 0, 0.45)",
+                        line=dict(color="#FF0000", width=3),
+                        marker=dict(size=6, color="#FF0000"),
+                        name=f"Mask #{idx+1}",
+                        hoverinfo="name",
+                        showlegend=True
+                    ))
+
+                    # Method B: SVG Path Backup
+                    path_str = f"M {mx[0]},{my[0]} " + " ".join([f"L {p[0]},{p[1]}" for p in mask[1:]]) + " Z"
                     shapes_list.append(dict(
                         type="path",
                         path=path_str,
@@ -283,29 +310,36 @@ with tab_region:
                         line=dict(color="#FF0000", width=3),
                     ))
 
+            # --- 2. RENDER ACTIVE (IN-PROGRESS) MASK ---
             if len(st.session_state.active_mask_pts) > 0:
-                amx = [p[0] for p in st.session_state.active_mask_pts]
-                amy = [p[1] for p in st.session_state.active_mask_pts]
+                amx = [float(p[0]) for p in st.session_state.active_mask_pts]
+                amy = [float(p[1]) for p in st.session_state.active_mask_pts]
+                
                 amx_line = amx + ([amx[0]] if len(amx) > 1 else [])
                 amy_line = amy + ([amy[0]] if len(amy) > 1 else [])
 
                 fig_img.add_trace(go.Scatter(
-                    x=amx_line, y=amy_line,
+                    x=amx_line, 
+                    y=amy_line,
                     mode="markers+lines",
-                    marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1)),
+                    fill="toself" if len(amx) >= 3 else "none",
+                    fillcolor="rgba(255, 255, 0, 0.25)",
+                    marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1.5)),
                     line=dict(color="#FFFF00", width=3, dash="dash"),
-                    name="Active Mask Boundary",
+                    name="Active Polygon",
                     showlegend=False
                 ))
 
+            # Layout Settings
             fig_img.update_layout(
                 shapes=shapes_list,
                 margin=dict(l=0, r=0, t=10, b=10),
-                height=600,
-                xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False),
-                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False),
+                height=650,
+                xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
+                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
                 clickmode="event+select",
                 dragmode="pan",
+                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(0,0,0,0.5)"),
                 uirevision="VIDEO_CANVAS_PRESERVE"
             )
 
@@ -317,6 +351,7 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
+            # Capture Interactive Clicks
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
                 if v_pts:
