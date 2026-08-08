@@ -222,6 +222,10 @@ with tab_import:
         st.session_state.uploaded_video_file = uploaded_video
         st.success("✅ Video file attached successfully!")
 
+# Initialize key version counter in session state if not already set
+if "mask_canvas_key_ver" not in st.session_state:
+    st.session_state.mask_canvas_key_ver = 0
+
 # ==========================================
 # TAB 2: REGION SELECTION & MASKING (FULLY FIXED)
 # ==========================================
@@ -229,7 +233,7 @@ with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **Instructions:** Click and drag on the video frame to draw your exclusion zone. Release to finish the shape!")
+    st.info("💡 **Instructions:** Draw shapes using the video toolbar (top right). Click **🔥 Reset All Masks** to clear.")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -246,18 +250,13 @@ with tab_region:
 
         with col_m_btns:
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            c_btn1, c_btn2 = st.columns(2)
-            with c_btn1:
-                if st.button("🗑️ Clear Active", use_container_width=True):
-                    st.session_state.active_mask_pts = []
-                    st.session_state.mask_click_sig = None
-                    st.rerun()
-            with c_btn2:
-                if st.button("🔥 Reset All Masks", use_container_width=True):
-                    st.session_state.exclusion_masks = []
-                    st.session_state.active_mask_pts = []
-                    st.session_state.mask_click_sig = None
-                    st.rerun()
+            if st.button("🔥 Reset All Masks", use_container_width=True):
+                st.session_state.exclusion_masks = []
+                st.session_state.active_mask_pts = []
+                st.session_state.mask_click_sig = None
+                # Force Plotly canvas re-mount to purge frontend drawn shapes
+                st.session_state.mask_canvas_key_ver += 1
+                st.rerun()
 
         # Extract Video Frame
         raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
@@ -286,7 +285,7 @@ with tab_region:
                 )
             )
 
-            # 2. Render Existing Locked Exclusion Masks
+            # 2. Render Existing Exclusion Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -302,25 +301,20 @@ with tab_region:
                         name=f"Mask Zone #{idx+1}",
                     ))
 
-            # Config layout for native freehand closed path drawing
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
-                dragmode="drawclosedpath",  # Enables native freehand shape drawing
+                dragmode="drawclosedpath",
                 showlegend=False,
-                uirevision="PERMANENT_VIDEO_LOCK"
+                # Dynamic revision ID to clear client-side shapes when reset is clicked
+                uirevision=f"MASK_REV_{st.session_state.mask_canvas_key_ver}"
             )
 
-            # Pass modeBar buttons so user can switch between freehand path and rectangle
             plotly_config = {
-                "modeBarButtonsToAdd": [
-                    "drawclosedpath",
-                    "drawrect",
-                    "eraseshape"
-                ],
+                "modeBarButtonsToAdd": ["drawclosedpath", "drawrect", "eraseshape"],
                 "displayModeBar": True
             }
 
@@ -329,7 +323,7 @@ with tab_region:
                 use_container_width=True,
                 on_select="rerun",
                 config=plotly_config,
-                key="video_mask_canvas"
+                key=f"video_mask_canvas_{st.session_state.mask_canvas_key_ver}"
             )
 
             # Extract SVG Shapes Directly from Selection Event
@@ -339,29 +333,22 @@ with tab_region:
                     parsed_masks = []
                     for shape in shapes:
                         shape_type = shape.get("type")
-                        
-                        # Handle Freehand Closed Paths
                         if shape_type == "path":
                             path_str = shape.get("path", "")
                             pts = []
-                            # Parse SVG path format: M x y L x y L x y Z
                             clean_path = path_str.replace("Z", "").strip()
                             for cmd in clean_path.split("L"):
                                 coords = cmd.replace("M", "").strip().split()
                                 if len(coords) >= 2:
                                     pts.append([float(coords[0]), float(coords[1])])
-                            
                             if len(pts) >= 3:
-                                # Subsample dense freehand points to keep clean polygon vertices
                                 step = max(1, len(pts) // 15)
                                 parsed_masks.append(pts[::step])
 
-                        # Handle Bounding Rectangles
                         elif shape_type == "rect":
                             x0, x1 = float(shape["x0"]), float(shape["x1"])
                             y0, y1 = float(shape["y0"]), float(shape["y1"])
-                            rect_pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-                            parsed_masks.append(rect_pts)
+                            parsed_masks.append([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
 
                     if parsed_masks and parsed_masks != st.session_state.exclusion_masks:
                         st.session_state.exclusion_masks = parsed_masks
@@ -402,7 +389,7 @@ with tab_region:
         if st.session_state.editing_point_idx is not None:
             st.warning(f"🎯 **Editing P{st.session_state.editing_point_idx + 1}:** Click map to re-position.")
         elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click floorplan map.")
+            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the map.")
         else:
             st.success("✅ All 4 ROI Corners Configured!")
 
@@ -429,6 +416,19 @@ with tab_region:
 
         # Add normalized CAD walls
         fig = add_cad_walls_to_fig(fig)
+
+        # 🎯 FIX FOR CLICKING: Invisible background grid mesh to intercept clicks across the entire canvas area
+        # Assuming floorplan space spans 0-50m (adjust range if your CAD floorplan size differs)
+        grid_x, grid_y = np.meshgrid(np.linspace(-5, 55, 30), np.linspace(-5, 55, 30))
+        fig.add_trace(go.Scatter(
+            x=grid_x.flatten(),
+            y=grid_y.flatten(),
+            mode="markers",
+            marker=dict(size=12, color="rgba(0,0,0,0.001)"),
+            hoverinfo="none",
+            showlegend=False,
+            name="ClickMesh"
+        ))
 
         # Plot ROI corners
         pts = st.session_state.four_corners
@@ -467,7 +467,6 @@ with tab_region:
                 )
             )
 
-        # FIXED LAYOUT CONFIGURATION FOR MAP CLICKING
         fig.update_layout(
             template="plotly_dark",
             height=550,
@@ -475,7 +474,6 @@ with tab_region:
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
-            dragmode="select", # Enables point selection events directly on click/select
             hovermode="closest",
             uirevision="PERMANENT_CANVAS_LOCK",
         )
@@ -488,6 +486,7 @@ with tab_region:
             key="roi_floorplan_canvas",
         )
 
+        # Process floorplan clicks
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
