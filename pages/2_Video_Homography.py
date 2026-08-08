@@ -5,14 +5,13 @@ import tempfile
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 from shapely.geometry import LineString, Polygon
 import streamlit as st
 
-# Reuse CAD engine, tracking functions, and views
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
-from views.playback_view import render_playback_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
 
@@ -28,12 +27,7 @@ if "wall_lines" not in st.session_state:
 if "vga_grid_df" not in st.session_state:
     st.session_state.vga_grid_df = None
 if "selected_polygon_pts" not in st.session_state:
-    st.session_state.selected_polygon_pts = [
-        {"X (m)": 0.0, "Y (m)": 0.0},
-        {"X (m)": 10.0, "Y (m)": 0.0},
-        {"X (m)": 10.0, "Y (m)": 10.0},
-        {"X (m)": 0.0, "Y (m)": 10.0},
-    ]
+    st.session_state.selected_polygon_pts = []
 if "homography_matrix" not in st.session_state:
     st.session_state.homography_matrix = None
 if "selected_frame_idx" not in st.session_state:
@@ -47,14 +41,18 @@ if "processed_click_sig" not in st.session_state:
 if "tracking_results_df" not in st.session_state:
     st.session_state.tracking_results_df = None
 
-# Exclusion Masking Polygons State (e.g., Voids, Escalators)
+# Exclusion Masking State (Interactive Clicking)
 if "exclusion_masks" not in st.session_state:
-    st.session_state.exclusion_masks = []  # List of lists of [x, y] coordinates
+    st.session_state.exclusion_masks = []  # Completed masks
+if "active_mask_pts" not in st.session_state:
+    st.session_state.active_mask_pts = []  # In-progress mask points
+if "mask_click_sig" not in st.session_state:
+    st.session_state.mask_click_sig = None
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
     "📂 2.1 Import CAD / Session & Video",
-    "📐 2.2 Define ROI & Polygon Masking",
+    "📐 2.2 Define ROI & Video Masking",
     "🔥 2.3 Occupancy Analytics",
     "🎬 2.4 2D Playback & Crowd Heatmaps",
 ])
@@ -67,31 +65,27 @@ with tab_import:
 
     col_json, col_dxf = st.columns(2)
 
-    # 📄 Option A: JSON Import
     with col_json:
         st.markdown("### 📄 Option A: Import Exported JSON Session")
         uploaded_json = st.file_uploader(
-            "Upload JSON Floorplan / Export (VGA + Polygon + Tracking Data)",
+            "Upload JSON Floorplan / Export (VGA + Polygon Config)",
             type=["json"],
-            key="json_uploader",
+            key="json_uploader_tab1",
         )
 
         if uploaded_json is not None:
             try:
                 data = json.load(uploaded_json)
 
-                # 1. Parse VGA Grid
                 vga_data = data.get("vga_results", data.get("vga_grid", []))
                 if vga_data:
                     st.session_state.vga_grid_df = pd.DataFrame(vga_data)
                     st.session_state["vga_df"] = st.session_state.vga_grid_df
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Parse Polygon Points
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
-
                     for pt in raw_pts:
                         if isinstance(pt, (list, tuple)) and len(pt) >= 2:
                             formatted_pts.append({"X (m)": float(pt[0]), "Y (m)": float(pt[1])})
@@ -103,48 +97,21 @@ with tab_import:
                     if formatted_pts:
                         st.session_state.selected_polygon_pts = formatted_pts
                         st.session_state.four_corners = [[p["X (m)"], p["Y (m)"]] for p in formatted_pts]
-                        st.success(f"✅ Loaded {len(formatted_pts)} polygon vertices")
+                        st.success(f"✅ Loaded {len(formatted_pts)} ROI corner points")
 
-                # 3. Parse Homography Matrix
                 if "homography_matrix" in data and data["homography_matrix"]:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
-                    st.success("✅ Loaded pre-saved Homography Matrix")
 
-                # 4. Parse Wall Geometries
-                raw_walls = None
-                if "floorplan" in data and isinstance(data["floorplan"], dict):
-                    raw_walls = data["floorplan"].get("wall_lines", [])
-                if not raw_walls:
-                    raw_walls = data.get("wall_lines", data.get("dxf_walls", data.get("walls", [])))
-
-                if raw_walls:
-                    walls = []
-                    for w in raw_walls:
-                        if hasattr(w, "xy"):
-                            walls.append(w)
-                        elif isinstance(w, (list, tuple)) and len(w) >= 2:
-                            walls.append(LineString(w))
-
-                    if walls:
-                        st.session_state.dxf_walls = walls
-                        st.session_state.wall_lines = walls
-                        st.success(f"✅ Loaded {len(walls)} wall geometries from JSON")
-
-                # 5. Parse Exclusion Masks
                 if "exclusion_masks" in data and data["exclusion_masks"]:
                     st.session_state.exclusion_masks = data["exclusion_masks"]
-                    st.success(f"✅ Loaded {len(data['exclusion_masks'])} exclusion mask zones")
 
-                # 6. Parse Tracking Results for Playback (Fix for Tab 2.4)
                 tracking_data = data.get("tracking_results", data.get("tracking_data", None))
                 if tracking_data is not None:
                     st.session_state.tracking_results_df = pd.DataFrame(tracking_data)
-                    st.success(f"✅ Loaded {len(st.session_state.tracking_results_df)} tracking detection frames")
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
 
-    # 📐 Option B: Raw CAD Import (DXF / DWG)
     with col_dxf:
         st.markdown("### 📐 Option B: Import Raw CAD File")
         uploaded_cad = st.file_uploader(
@@ -172,8 +139,6 @@ with tab_import:
                     os.remove(tmp_path)
 
     st.markdown("---")
-
-    # 📹 Surveillance Video Upload
     st.markdown("### 📹 Surveillance Video Target")
     uploaded_video = st.file_uploader(
         "Upload Surveillance Video (.mp4, .avi, .mov)",
@@ -183,59 +148,17 @@ with tab_import:
 
     if uploaded_video:
         st.session_state.uploaded_video_file = uploaded_video
-        st.success("✅ Video file attached successfully! Proceed to Tab 2.2 to set points and ROI.")
+        st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION, EDITING & MASKING
+# TAB 2: REGION SELECTION & POINT MASKING
 # ==========================================
 with tab_region:
-    st.subheader("Step 2.2: Define 4 ROI Camera Corners & Exclusion Masking")
+    st.subheader("Step 2.2: Define 4 ROI Camera Corners & Click Video Masking")
 
-    # Expandable Section for Polygon Masking
-    with st.expander("🚫 Configure Polygon Exclusion Zones (Escalators, Voids, Unused Floors)", expanded=False):
-        st.markdown(
-            "Define spatial polygons in world coordinates (X, Y) to mask out irrelevant or non-walkable areas."
-        )
-        col_mask_input, col_mask_list = st.columns([2, 1])
+    col_controls, col_video_preview, col_plot = st.columns([1.1, 1.8, 2.2])
 
-        with col_mask_input:
-            mask_coords_str = st.text_area(
-                "Enter Polygon Coordinates (Format: X1,Y1; X2,Y2; X3,Y3...)",
-                value="2.0,2.0; 4.0,2.0; 4.0,4.0; 2.0,4.0",
-                help="Enter points separated by semicolons. Minimum 3 points required to define a polygon.",
-            )
-            if st.button("➕ Add Exclusion Mask Zone"):
-                try:
-                    pts = []
-                    for pair in mask_coords_str.split(";"):
-                        if pair.strip():
-                            x, y = map(float, pair.split(","))
-                            pts.append([x, y])
-                    if len(pts) >= 3:
-                        st.session_state.exclusion_masks.append(pts)
-                        st.success(f"Added exclusion zone with {len(pts)} vertices.")
-                        st.rerun()
-                    else:
-                        st.warning("A polygon mask must have at least 3 points.")
-                except Exception as ex:
-                    st.error(f"Invalid coordinate string format: {ex}")
-
-        with col_mask_list:
-            st.markdown("**Active Exclusion Masks:**")
-            if not st.session_state.exclusion_masks:
-                st.caption("No active masks defined.")
-            else:
-                for idx, mask_pts in enumerate(st.session_state.exclusion_masks):
-                    st.text(f"Mask {idx+1}: {len(mask_pts)} points")
-                if st.button("🗑️ Clear All Masks"):
-                    st.session_state.exclusion_masks = []
-                    st.rerun()
-
-    st.markdown("---")
-
-    col_controls, col_video_preview, col_plot = st.columns([1.1, 1.5, 2.4])
-
-    # Left Column: Controls & Coordinates
+    # --- LEFT COLUMN: CONTROLS & ROI CORNERS ---
     with col_controls:
         st.markdown("#### Corner Coordinates")
 
@@ -257,9 +180,9 @@ with tab_region:
         num_pts = len(st.session_state.four_corners)
         if st.session_state.editing_point_idx is not None:
             edit_num = st.session_state.editing_point_idx + 1
-            st.warning(f"🎯 **Editing P{edit_num}:** Click on map to update position.")
+            st.warning(f"🎯 **Editing P{edit_num}:** Click map to update position.")
         elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s).")
+            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click map.")
         else:
             st.success("✅ All 4 Corners Selected!")
 
@@ -282,41 +205,31 @@ with tab_region:
                         st.rerun()
 
         st.markdown("---")
+        st.markdown("#### Masking Controls")
+        if st.button("💾 Save Active Mask Zone", use_container_width=True):
+            if len(st.session_state.active_mask_pts) >= 3:
+                st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
+                st.session_state.active_mask_pts = []
+                st.success("Mask Saved!")
+                st.rerun()
+            else:
+                st.warning("Mask requires at least 3 points.")
 
-        export_payload = {
-            "polygon_points": st.session_state.four_corners[:4],
-            "exclusion_masks": st.session_state.exclusion_masks,
-            "vga_grid": (
-                st.session_state.vga_grid_df.to_dict(orient="records")
-                if st.session_state.vga_grid_df is not None
-                else []
-            ),
-            "homography_matrix": (
-                st.session_state.homography_matrix.tolist()
-                if st.session_state.homography_matrix is not None
-                else None
-            ),
-            "tracking_results": (
-                st.session_state.tracking_results_df.to_dict(orient="records")
-                if st.session_state.tracking_results_df is not None
-                else []
-            ),
-        }
+        if st.button("🗑️ Clear Active Mask", use_container_width=True):
+            st.session_state.active_mask_pts = []
+            st.rerun()
 
-        st.download_button(
-            label="💾 Export JSON Config",
-            data=json.dumps(export_payload, indent=2),
-            file_name="floorplan_homography_config.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+        if st.button("🔥 Clear All Mask Zones", use_container_width=True):
+            st.session_state.exclusion_masks = []
+            st.session_state.active_mask_pts = []
+            st.rerun()
 
-    # Middle Column: Video Preview Reference
+    # --- MIDDLE COLUMN: INTERACTIVE VIDEO FRAME MASKING ---
     with col_video_preview:
-        st.markdown("#### Video Calibration Frame")
+        st.markdown("#### Video Calibration Frame & Click Masking")
         if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
             frame_idx = st.slider(
-                "Calibration Frame Index",
+                "Preview Frame Index",
                 min_value=0,
                 max_value=1000,
                 value=st.session_state.selected_frame_idx,
@@ -326,15 +239,45 @@ with tab_region:
 
             raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
             if raw_frame_rgb is not None:
-                st.image(
-                    raw_frame_rgb,
-                    caption=f"Frame #{frame_idx}",
-                    use_container_width=True,
-                )
-        else:
-            st.warning("⚠️ No video uploaded yet. Please upload a surveillance video in Tab 2.1 to enable frame preview.")
+                fig_img = px.imshow(raw_frame_rgb)
 
-    # Right Column: Interactive Plotly Canvas
+                # Overlay Saved Masks
+                for m_idx, mask in enumerate(st.session_state.exclusion_masks):
+                    mx = [p[0] for p in mask] + [mask[0][0]]
+                    my = [p[1] for p in mask] + [mask[0][1]]
+                    fig_img.add_trace(go.Scatter(x=mx, y=my, mode="lines", fill="toself", fillcolor="rgba(255, 0, 0, 0.4)", line=dict(color="red"), name=f"Mask {m_idx+1}"))
+
+                # Overlay Active Masking Points
+                if len(st.session_state.active_mask_pts) > 0:
+                    amx = [p[0] for p in st.session_state.active_mask_pts]
+                    amy = [p[1] for p in st.session_state.active_mask_pts]
+                    fig_img.add_trace(go.Scatter(x=amx, y=amy, mode="markers+lines", marker=dict(color="yellow", size=10), line=dict(color="yellow", dash="dash"), name="Active Mask Points"))
+
+                fig_img.update_layout(
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    height=450,
+                    clickmode="event+select",
+                    dragmode="drawclosedpath",
+                    uirevision="VIDEO_LOCKED",
+                )
+
+                v_events = st.plotly_chart(fig_img, use_container_width=True, on_select="rerun", selection_mode="points", key="video_mask_canvas")
+
+                # Handle clicks on video frame for polygon masking
+                if v_events and "selection" in v_events:
+                    v_pts = v_events["selection"].get("points", [])
+                    if v_pts:
+                        vx, vy = float(v_pts[0]["x"]), float(v_pts[0]["y"])
+                        sig = f"vmask_{vx:.2f}_{vy:.2f}"
+                        if sig != st.session_state.mask_click_sig:
+                            st.session_state.mask_click_sig = sig
+                            st.session_state.active_mask_pts.append([vx, vy])
+                            st.rerun()
+
+        else:
+            st.warning("⚠️ Upload video in Tab 2.1 to enable interactive point masking.")
+
+    # --- RIGHT COLUMN: MAP CANVAS (FIXED ZOOM RESET) ---
     with col_plot:
         st.markdown("#### Interactive Floorplan Map")
 
@@ -365,31 +308,14 @@ with tab_region:
                 )
             )
 
-        # Draw Masking Zones (Red Polygons)
-        for m_idx, mask_pts in enumerate(st.session_state.exclusion_masks):
-            mx = [p[0] for p in mask_pts] + [mask_pts[0][0]]
-            my = [p[1] for p in mask_pts] + [mask_pts[0][1]]
-            fig.add_trace(
-                go.Scatter(
-                    x=mx,
-                    y=my,
-                    mode="lines",
-                    fill="toself",
-                    fillcolor="rgba(255, 82, 82, 0.4)",
-                    line=dict(color="#FF5252", width=1.5, dash="dash"),
-                    name=f"Mask Zone {m_idx+1}",
-                )
-            )
-
-        # Draw Selected ROI Points and Polygon (Green Polygon)
         pts = st.session_state.four_corners
         if len(pts) > 0:
-            px = [p[0] for p in pts]
-            py = [p[1] for p in pts]
+            px_pts = [p[0] for p in pts]
+            py_pts = [p[1] for p in pts]
 
             if len(pts) == 4:
-                px_closed = px + [px[0]]
-                py_closed = py + [py[0]]
+                px_closed = px_pts + [px_pts[0]]
+                py_closed = py_pts + [py_pts[0]]
                 fig.add_trace(
                     go.Scatter(
                         x=px_closed,
@@ -409,8 +335,8 @@ with tab_region:
 
             fig.add_trace(
                 go.Scatter(
-                    x=px,
-                    y=py,
+                    x=px_pts,
+                    y=py_pts,
                     mode="markers+text",
                     marker=dict(size=14, color=marker_colors, symbol="circle"),
                     text=[f"P{i+1}" for i in range(len(pts))],
@@ -420,26 +346,17 @@ with tab_region:
                 )
             )
 
-        # Layout configuration:
-        # NOTE: Omitting explicit range forcing here allows Plotly's uirevision to lock the zoom state!
+        # STRICT ZOOM LOCK: uirevision constant + NO RANGE OVERWRITES
         fig.update_layout(
             template="plotly_dark",
-            height=620,
-            xaxis=dict(
-                title="X Coordinate",
-                scaleanchor="y",
-                scaleratio=1,
-                showgrid=True,
-            ),
-            yaxis=dict(
-                title="Y Coordinate",
-                showgrid=True,
-            ),
+            height=600,
+            xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
+            yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="PERMANENT_CANVAS_LOCK",  # Locks viewport across reruns
+            uirevision="PERMANENT_CANVAS_LOCK",
         )
 
         chart_events = st.plotly_chart(
@@ -450,7 +367,7 @@ with tab_region:
             key="roi_floorplan_canvas",
         )
 
-        # Handle Plotly Click Events
+        # Handle Plotly Clicks
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
@@ -491,13 +408,162 @@ with tab_tracking:
 # ==========================================
 with tab_playback:
     st.subheader("Step 2.4: 2D Playback & Crowd Trajectory Analytics")
-    
-    # Check if tracking dataset is populated in session state
-    if st.session_state.tracking_results_df is not None and not st.session_state.tracking_results_df.empty:
-        st.success(f"✅ Tracking dataset ready with {len(st.session_state.tracking_results_df)} records.")
-        render_playback_view(
-            st.session_state.get("dxf_walls", []),
-            st.session_state.get("tracking_results_df", None),
-        )
+
+    # 1. IMPORT DATASET DIRECTLY IN 2.4
+    st.markdown("### 1. Import Tracking Dataset")
+    col_up1, col_up2 = st.columns(2)
+
+    with col_up1:
+        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 2.3)", type=["json"], key="tb_json_up")
+        if uploaded_tb_json is not None:
+            try:
+                raw_json = json.load(uploaded_tb_json)
+                tb_data = raw_json.get("tracking_results", raw_json.get("tracking_data", raw_json))
+                st.session_state.tracking_results_df = pd.DataFrame(tb_data)
+                st.success("✅ Imported JSON tracking records!")
+            except Exception as e:
+                st.error(f"Error reading JSON: {e}")
+
+    with col_up2:
+        uploaded_tb_csv = st.file_uploader("Upload CSV Tracking Export", type=["csv"], key="tb_csv_up")
+        if uploaded_tb_csv is not None:
+            try:
+                st.session_state.tracking_results_df = pd.read_csv(uploaded_tb_csv)
+                st.success("✅ Imported CSV tracking records!")
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
+
+    st.markdown("---")
+
+    # DISPLAY PLAYBACK AND HEATMAPS IF DATA AVAILABLE
+    df_track = st.session_state.get("tracking_results_df")
+
+    if df_track is not None and not df_track.empty:
+        # Standardize column naming
+        df_track.columns = [c.lower().strip() for c in df_track.columns]
+
+        # Resolve column keys
+        frame_col = next((c for c in ["frame", "frame_idx", "timestamp"] if c in df_track.columns), None)
+        x_col = next((c for c in ["x", "x (m)", "x_m", "pos_x"] if c in df_track.columns), None)
+        y_col = next((c for c in ["y", "y (m)", "y_m", "pos_y"] if c in df_track.columns), None)
+        id_col = next((c for c in ["track_id", "id", "person_id"] if c in df_track.columns), "track_id")
+
+        if frame_col and x_col and y_col:
+            # Generate Speed & Vector direction metrics if absent
+            if "speed" not in df_track.columns:
+                df_track = df_track.sort_values(by=[id_col, frame_col])
+                df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
+                df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
+                df_track["speed"] = np.sqrt(df_track["dx"]**2 + df_track["dy"]**2)
+
+            # --- SECTION 2: FRAME-BY-FRAME PLAYBACK & METRICS ---
+            st.markdown("### 2. Motion Playback & Frame Analytics")
+            frames_available = sorted(df_track[frame_col].unique())
+            selected_f = st.slider("Select Frame for Instant Inspection", min_value=int(min(frames_available)), max_value=int(max(frames_available)), value=int(min(frames_available)))
+
+            curr_frame_df = df_track[df_track[frame_col] == selected_f]
+
+            col_fb1, col_fb2 = st.columns(2)
+
+            with col_fb1:
+                st.markdown(f"**Human Movement Scatter Plan (Frame #{selected_f})**")
+                fig_play = go.Figure()
+
+                # Add CAD Walls
+                for line in st.session_state.get("dxf_walls", []):
+                    if hasattr(line, "xy"):
+                        wx, wy = line.xy
+                        fig_play.add_trace(go.Scatter(x=list(wx), y=list(wy), mode="lines", line=dict(color="#00ADB5", width=1), showlegend=False, hoverinfo="none"))
+
+                # Add Active People (Dots)
+                fig_play.add_trace(go.Scatter(
+                    x=curr_frame_df[x_col],
+                    y=curr_frame_df[y_col],
+                    mode="markers+text",
+                    marker=dict(size=12, color="#FF5722"),
+                    text=curr_frame_df[id_col].astype(str),
+                    textposition="top center",
+                    name="Pedestrians"
+                ))
+                fig_play.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
+                st.plotly_chart(fig_play, use_container_width=True)
+
+            with col_fb2:
+                st.markdown(f"**Frame Density / Volume Heatmap (Frame #{selected_f})**")
+                fig_f_hm = px.density_mapbox if False else px.scatter_density if False else None
+                fig_f_hm = go.Figure(go.Histogram2dContour(
+                    x=curr_frame_df[x_col],
+                    y=curr_frame_df[y_col],
+                    colorscale="Jet",
+                    showscale=True
+                ))
+                fig_f_hm.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
+                st.plotly_chart(fig_f_hm, use_container_width=True)
+
+            st.markdown("---")
+
+            # --- SECTION 3: AGGREGATED VIDEO-WIDE CROWD METRICS ---
+            st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
+
+            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs(["📊 Crowd Volume", "🔥 Density Heatmap", "⚡ Speed Analysis", "🧭 Vector Direction/Flow"])
+
+            with m_tab1:
+                st.markdown("#### Cumulative Crowd Volume Heatmap")
+                fig_vol = go.Figure(go.Histogram2dContour(
+                    x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
+                ))
+                fig_vol.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_vol, use_container_width=True)
+
+            with m_tab2:
+                st.markdown("#### Overall Pedestrian Occupancy Density")
+                fig_dens = go.Figure(go.Histogram2d(
+                    x=df_track[x_col], y=df_track[y_col], colorscale="Hot", showscale=True, nbinsx=30, nbinsy=30
+                ))
+                fig_dens.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_dens, use_container_width=True)
+
+            with m_tab3:
+                st.markdown("#### Spatial Velocity & Speed Distribution (m/s)")
+                fig_spd = px.scatter(
+                    df_track, x=x_col, y=y_col, color="speed", color_continuous_scale="Plasma",
+                    title="Pedestrian Speed Distribution"
+                )
+                fig_spd.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_spd, use_container_width=True)
+
+            with m_tab4:
+                st.markdown("#### Flow Direction Field (Movement Vectors)")
+                fig_dir = px.scatter(
+                    df_track, x=x_col, y=y_col, color="dx", color_continuous_scale="Coolwarm",
+                    title="Directional Velocity Field (X-Vector Shift)"
+                )
+                fig_dir.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_dir, use_container_width=True)
+
+            # --- SECTION 4: EXPORT CROWD METRICS JSON ---
+            st.markdown("---")
+            st.markdown("### 4. Export Aggregated Analytics")
+
+            crowd_metrics_export = {
+                "total_frames": int(df_track[frame_col].nunique()),
+                "total_unique_pedestrians": int(df_track[id_col].nunique()),
+                "average_speed": float(df_track["speed"].mean()),
+                "max_speed": float(df_track["speed"].max()),
+                "frame_density_summary": df_track.groupby(frame_col)[id_col].count().to_dict(),
+                "pedestrian_trajectories": df_track[[frame_col, id_col, x_col, y_col, "speed"]].to_dict(orient="records")
+            }
+
+            st.download_button(
+                label="💾 Export Crowd Metrics JSON",
+                data=json.dumps(crowd_metrics_export, indent=2),
+                file_name="crowd_analytics_metrics.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+        else:
+            st.error(f"Missing required coordinate/frame columns in tracking data. Found columns: {list(df_track.columns)}")
+
     else:
-        st.info("ℹ️ No active tracking session found. Please import a JSON export containing tracking data in Step 2.1 or process a video stream in Step 2.3.")
+        st.info("💡 Upload a JSON/CSV tracking file above or execute Module 2.3 to view movement playback and analytics.")
