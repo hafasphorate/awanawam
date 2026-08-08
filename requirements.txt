@@ -16,3 +16,4 @@ torchvision
 
 matplotlib
 streamlit-plotly-events
+streamlit-drawable-canvas

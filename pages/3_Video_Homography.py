@@ -223,13 +223,13 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & POINT MASKING (GUARANTEED CLICK ENGINE)
+# TAB 2: REGION SELECTION (NATIVE PLOTLY POLYGON DRAWING)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 Click points directly on the video frame to draw a polygon. Click **💾 Lock Mask** when done with a zone.")
+    st.info("💡 **Instructions:** Click on the video frame to add points. **Double-click** to close and complete the polygon shape!")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -246,28 +246,9 @@ with tab_region:
 
         with col_m_btns:
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            c_btn1, c_btn2, c_btn3 = st.columns(3)
-            with c_btn1:
-                if st.button("💾 Lock Mask", use_container_width=True):
-                    if len(st.session_state.active_mask_pts) >= 3:
-                        st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
-                        st.session_state.active_mask_pts = []
-                        st.session_state.mask_click_sig = None
-                        st.success("Mask Saved!")
-                        st.rerun()
-                    else:
-                        st.warning("Needs ≥3 points to lock.")
-            with c_btn2:
-                if st.button("🗑️ Clear Active", use_container_width=True):
-                    st.session_state.active_mask_pts = []
-                    st.session_state.mask_click_sig = None
-                    st.rerun()
-            with c_btn3:
-                if st.button("🔥 Reset All", use_container_width=True):
-                    st.session_state.exclusion_masks = []
-                    st.session_state.active_mask_pts = []
-                    st.session_state.mask_click_sig = None
-                    st.rerun()
+            if st.button("🔥 Clear All Masks", use_container_width=True):
+                st.session_state.exclusion_masks = []
+                st.rerun()
 
         # Extract Video Frame
         raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
@@ -280,7 +261,7 @@ with tab_region:
 
             fig_img = go.Figure()
 
-            # 1. Background Video Frame
+            # 1. Add Video Frame
             fig_img.add_layout_image(
                 dict(
                     source=pil_img,
@@ -296,23 +277,7 @@ with tab_region:
                 )
             )
 
-            # 2. INVISIBLE CLICK INTERCEPTOR GRID
-            # This forces Plotly to capture clicks everywhere on the image
-            grid_x, grid_y = np.meshgrid(
-                np.linspace(0, img_w, 30),
-                np.linspace(0, img_h, 30)
-            )
-            fig_img.add_trace(go.Scatter(
-                x=grid_x.flatten(),
-                y=grid_y.flatten(),
-                mode="markers",
-                marker=dict(size=20, color="rgba(0,0,0,0.001)"), # Transparent click field
-                hoverinfo="none",
-                showlegend=False,
-                name="ClickGrid"
-            ))
-
-            # 3. Render Locked Masks
+            # 2. Render Existing/Saved Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -324,68 +289,70 @@ with tab_region:
                         fill="toself",
                         fillcolor="rgba(255, 0, 0, 0.45)",
                         line=dict(color="#FF0000", width=3),
-                        marker=dict(size=8, color="#FF0000"),
+                        marker=dict(size=6, color="#FF0000"),
                         name=f"Mask Zone #{idx+1}",
-                        hoverinfo="name"
                     ))
 
-            # 4. Render Active Points & Dynamic Polygon Lines
-            if len(st.session_state.active_mask_pts) > 0:
-                amx = [p[0] for p in st.session_state.active_mask_pts]
-                amy = [p[1] for p in st.session_state.active_mask_pts]
-                
-                amx_line = amx + ([amx[0]] if len(amx) >= 3 else [])
-                amy_line = amy + ([amy[0]] if len(amy) >= 3 else [])
-
-                fig_img.add_trace(go.Scatter(
-                    x=amx_line,
-                    y=amy_line,
-                    mode="markers+lines",
-                    fill="toself" if len(amx) >= 3 else "none",
-                    fillcolor="rgba(255, 255, 0, 0.35)",
-                    marker=dict(color="#FFFF00", size=12, symbol="circle", line=dict(color="#000000", width=2)),
-                    line=dict(color="#FFFF00", width=3, dash="dash"),
-                    name="Active Polygon"
-                ))
-
-            # Canvas Formatting
+            # 3. Canvas Settings configured for Polygon Drawing
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
-                clickmode="event+select",
-                dragmode="pan",
+                dragmode="drawpolygon",  # Enables native polygon tool on hover/click
+                newshape=dict(
+                    fillcolor="rgba(255, 255, 0, 0.35)",
+                    line=dict(color="#FFFF00", width=3)
+                ),
                 showlegend=False,
                 uirevision="PERMANENT_VIDEO_LOCK"
             )
+
+            # Enable Plotly Toolbar Polygon & Erase Buttons
+            plotly_config = {
+                "modeBarButtonsToAdd": [
+                    "drawpolygon",
+                    "eraseshape"
+                ],
+                "displayModeBar": True
+            }
 
             v_events = st.plotly_chart(
                 fig_img,
                 use_container_width=True,
                 on_select="rerun",
-                selection_mode="points",
+                config=plotly_config,
                 key="video_mask_canvas"
             )
 
-            # Capture Point Selections
+            # Extract Drawn Polygon Shapes
             if v_events and "selection" in v_events:
-                v_pts = v_events["selection"].get("points", [])
-                if v_pts:
-                    click_x = float(v_pts[0]["x"])
-                    click_y = float(v_pts[0]["y"])
+                drawn_shapes = v_events["selection"].get("shapes", [])
+                if drawn_shapes:
+                    new_masks = []
+                    for shape in drawn_shapes:
+                        # Extract SVG path coordinates from Plotly shape string
+                        if shape.get("type") == "path":
+                            path_str = shape.get("path", "")
+                            # Parse SVG path coordinates (M x y L x y ...)
+                            pts = []
+                            for cmd in path_str.replace("Z", "").strip().split("L"):
+                                clean_cmd = cmd.replace("M", "").strip()
+                                if clean_cmd:
+                                    coords = clean_cmd.split()
+                                    if len(coords) >= 2:
+                                        pts.append([float(coords[0]), float(coords[1])])
+                            if len(pts) >= 3:
+                                new_masks.append(pts)
                     
-                    sig = f"vmask_{click_x:.2f}_{click_y:.2f}"
-                    if sig != st.session_state.mask_click_sig:
-                        st.session_state.mask_click_sig = sig
-                        st.session_state.active_mask_pts.append([click_x, click_y])
+                    if new_masks and new_masks != st.session_state.exclusion_masks:
+                        st.session_state.exclusion_masks = new_masks
                         st.rerun()
 
-            # Real-Time Point Indicator Debugging Banner
-            num_pts = len(st.session_state.active_mask_pts)
-            if num_pts > 0:
-                st.info(f"📍 Active Mask Points Captured: **{num_pts}** | Click **💾 Lock Mask** when finished.")
+            num_masks = len(st.session_state.exclusion_masks)
+            if num_masks > 0:
+                st.success(f"✅ **{num_masks}** Polygon Zone(s) Masked!")
 
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
