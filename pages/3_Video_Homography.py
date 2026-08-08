@@ -104,13 +104,15 @@ with tab_import:
                 if "exclusion_masks" in data and data["exclusion_masks"]:
                     st.session_state.exclusion_masks = data["exclusion_masks"]
 
-                # Safe Extraction of Tracking Results
-                tracking_data = data.get("tracking_results", data.get("tracking_data", data.get("pedestrian_trajectories", None)))
-                if tracking_data is not None:
-                    if isinstance(tracking_data, list):
-                        st.session_state.tracking_results_df = pd.DataFrame(tracking_data)
-                    elif isinstance(tracking_data, dict):
-                        st.session_state.tracking_results_df = pd.json_normalize(tracking_data)
+                # Extract tracking points
+                tracking_data = None
+                for key in ["tracking_points", "tracking_results", "tracking_data", "pedestrian_trajectories", "trajectories"]:
+                    if key in data and data[key]:
+                        tracking_data = data[key]
+                        break
+
+                if tracking_data is not None and isinstance(tracking_data, list):
+                    st.session_state.tracking_results_df = pd.DataFrame(tracking_data)
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
@@ -161,7 +163,7 @@ with tab_region:
 
     # --- TOP HERO SECTION: LARGE INTERACTIVE VIDEO MASKING ---
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **Instructions:** Click points directly on the image to create a polygon surrounding regions to **EXCLUDE from human tracking** (e.g., static displays, reflections, or off-limits areas).")
+    st.info("💡 **Instructions:** Click points directly on the frame to draw a polygon surrounding regions to **EXCLUDE from human tracking** (e.g. static displays or reflections).")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -202,32 +204,38 @@ with tab_region:
         if raw_frame_rgb is not None:
             fig_img = px.imshow(raw_frame_rgb)
 
-            # Overlay Saved Exclusion Masks (Semi-transparent Red)
+            # Build SVG shapes for completed exclusion zones
+            shapes_list = []
             for m_idx, mask in enumerate(st.session_state.exclusion_masks):
-                mx = [p[0] for p in mask] + [mask[0][0]]
-                my = [p[1] for p in mask] + [mask[0][1]]
-                fig_img.add_trace(go.Scatter(
-                    x=mx, y=my,
-                    mode="lines",
-                    fill="toself",
-                    fillcolor="rgba(255, 0, 0, 0.45)",
-                    line=dict(color="#FF0000", width=2),
-                    name=f"Exclusion Zone {m_idx+1}"
-                ))
+                if len(mask) >= 3:
+                    path_str = f"M {mask[0][0]},{mask[0][1]} " + " ".join([f"L {p[0]},{p[1]}" for p in mask[1:]]) + " Z"
+                    shapes_list.append(dict(
+                        type="path",
+                        path=path_str,
+                        fillcolor="rgba(255, 0, 0, 0.45)",
+                        line=dict(color="#FF0000", width=3),
+                    ))
 
-            # Overlay Active Mask Points (Yellow Dots & Lines)
+            # Render Scatter overlay for active in-progress points
             if len(st.session_state.active_mask_pts) > 0:
                 amx = [p[0] for p in st.session_state.active_mask_pts]
                 amy = [p[1] for p in st.session_state.active_mask_pts]
+                if len(st.session_state.active_mask_pts) > 1:
+                    amx_line = amx + [amx[0]]
+                    amy_line = amy + [amy[0]]
+                else:
+                    amx_line, amy_line = amx, amy
+
                 fig_img.add_trace(go.Scatter(
-                    x=amx, y=amy,
+                    x=amx_line, y=amy_line,
                     mode="markers+lines",
-                    marker=dict(color="#FFFF00", size=10),
-                    line=dict(color="#FFFF00", width=2, dash="dash"),
-                    name="Active Polygon Points"
+                    marker=dict(color="#FFFF00", size=12, symbol="circle"),
+                    line=dict(color="#FFFF00", width=3, dash="dash"),
+                    name="Active Mask Boundary"
                 ))
 
             fig_img.update_layout(
+                shapes=shapes_list,
                 margin=dict(l=0, r=0, t=10, b=10),
                 height=650,
                 clickmode="event+select",
@@ -243,7 +251,7 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
-            # Handle Clicks on Video Canvas
+            # Handle clicks on video frame for polygon points
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
                 if v_pts:
@@ -449,17 +457,20 @@ with tab_playback:
             try:
                 raw_json = json.load(uploaded_tb_json)
 
-                # Robust JSON Parsing handling dictionary or array root formats
+                # Extract tracking array directly
+                tracking_list = None
                 if isinstance(raw_json, list):
-                    df_loaded = pd.DataFrame(raw_json)
+                    tracking_list = raw_json
                 elif isinstance(raw_json, dict):
-                    inner_key = next((k for k in ["tracking_results", "tracking_data", "pedestrian_trajectories", "trajectories"] if k in raw_json), None)
-                    if inner_key and isinstance(raw_json[inner_key], list):
-                        df_loaded = pd.DataFrame(raw_json[inner_key])
-                    elif inner_key and isinstance(raw_json[inner_key], dict):
-                        df_loaded = pd.json_normalize(raw_json[inner_key])
-                    else:
-                        df_loaded = pd.json_normalize(raw_json)
+                    for k in ["tracking_points", "tracking_results", "tracking_data", "pedestrian_trajectories", "trajectories"]:
+                        if k in raw_json and isinstance(raw_json[k], list):
+                            tracking_list = raw_json[k]
+                            break
+
+                if tracking_list is not None:
+                    df_loaded = pd.DataFrame(tracking_list)
+                else:
+                    df_loaded = pd.json_normalize(raw_json)
 
                 st.session_state.tracking_results_df = df_loaded
                 st.success(f"✅ Successfully imported {len(df_loaded)} tracking records!")
@@ -483,10 +494,10 @@ with tab_playback:
     if df_track is not None and not df_track.empty:
         df_track.columns = [c.lower().strip() for c in df_track.columns]
 
-        # Resolve column keys
-        frame_col = next((c for c in ["frame", "frame_idx", "timestamp"] if c in df_track.columns), None)
-        x_col = next((c for c in ["x", "x (m)", "x_m", "pos_x"] if c in df_track.columns), None)
-        y_col = next((c for c in ["y", "y (m)", "y_m", "pos_y"] if c in df_track.columns), None)
+        # Resolve column keys with alternative mappings
+        frame_col = next((c for c in ["frame", "frame_idx", "frame_number", "timestamp"] if c in df_track.columns), None)
+        x_col = next((c for c in ["x", "x (m)", "x_m", "pos_x", "x_canvas"] if c in df_track.columns), None)
+        y_col = next((c for c in ["y", "y (m)", "y_m", "pos_y", "y_canvas"] if c in df_track.columns), None)
         id_col = next((c for c in ["track_id", "id", "person_id"] if c in df_track.columns), "track_id")
 
         if frame_col and x_col and y_col:
