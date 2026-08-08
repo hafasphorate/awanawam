@@ -223,7 +223,7 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING (LASSO POLYGON FIXED)
+# TAB 2: REGION SELECTION & MASKING (POLYGON GEOMETRY FIX)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
@@ -250,12 +250,7 @@ with tab_region:
             with c_btn1:
                 if st.button("💾 Lock Active Mask", use_container_width=True):
                     if len(st.session_state.active_mask_pts) >= 3:
-                        # Downsample dense lasso points to clean polygon vertices
-                        pts = st.session_state.active_mask_pts
-                        step = max(1, len(pts) // 12) # keep max ~12 vertices for clean geometry
-                        clean_pts = pts[::step]
-                        
-                        st.session_state.exclusion_masks.append(clean_pts)
+                        st.session_state.exclusion_masks.append(st.session_state.active_mask_pts)
                         st.session_state.active_mask_pts = []
                         st.session_state.mask_click_sig = None
                         st.success("Mask Zone Locked & Saved!")
@@ -301,7 +296,7 @@ with tab_region:
                 )
             )
 
-            # Add invisible grid so lasso tool picks up space everywhere
+            # Add invisible grid for click interception
             grid_x, grid_y = np.meshgrid(
                 np.linspace(0, img_w, 40),
                 np.linspace(0, img_h, 40)
@@ -370,24 +365,34 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
-            # Process Lasso Selection
+            # Process Lasso Selection & Clean Up Geometry
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
                 if v_pts and len(v_pts) >= 3:
-                    # Capture full shape boundary points
-                    new_pts = [[float(p["x"]), float(p["y"])] for p in v_pts]
+                    raw_pts = np.array([[float(p["x"]), float(p["y"])] for p in v_pts])
                     
-                    # Generate unique signature for this lasso trace
-                    sig = f"lasso_{len(new_pts)}_{new_pts[0][0]:.1f}_{new_pts[-1][1]:.1f}"
+                    # Fix Zigzag: Use Convex Hull or Angular Sort around centroid
+                    try:
+                        from scipy.spatial import ConvexHull
+                        hull = ConvexHull(raw_pts)
+                        clean_pts = raw_pts[hull.vertices].tolist()
+                    except Exception:
+                        # Fallback polar angle sort
+                        cx, cy = np.mean(raw_pts[:, 0]), np.mean(raw_pts[:, 1])
+                        angles = np.arctan2(raw_pts[:, 1] - cy, raw_pts[:, 0] - cx)
+                        sort_idx = np.argsort(angles)
+                        clean_pts = raw_pts[sort_idx].tolist()
+
+                    sig = f"lasso_{len(clean_pts)}_{clean_pts[0][0]:.1f}_{clean_pts[-1][1]:.1f}"
                     
                     if sig != st.session_state.mask_click_sig:
                         st.session_state.mask_click_sig = sig
-                        st.session_state.active_mask_pts = new_pts
+                        st.session_state.active_mask_pts = clean_pts
                         st.rerun()
 
             num_active = len(st.session_state.active_mask_pts)
             if num_active > 0:
-                st.info(f"📍 **{num_active} points captured!** Click **💾 Lock Active Mask** to finalize this zone.")
+                st.info(f"📍 **{num_active} vertex region generated!** Click **💾 Lock Active Mask** to save.")
 
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
