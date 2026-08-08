@@ -3,13 +3,14 @@ import os
 import tempfile
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
+import PIL.Image
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from shapely.geometry import LineString, Polygon
 
-from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
+from utils.vga_engine import process_cad_file
 from views.tracking_view import render_tracking_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
@@ -40,6 +41,12 @@ if "processed_click_sig" not in st.session_state:
 if "tracking_results_df" not in st.session_state:
     st.session_state.tracking_results_df = None
 
+# Canvas Zoom & Axis Range State Fix
+if "current_x_range" not in st.session_state:
+    st.session_state.current_x_range = None
+if "current_y_range" not in st.session_state:
+    st.session_state.current_y_range = None
+
 # Exclusion Masking State
 if "exclusion_masks" not in st.session_state:
     st.session_state.exclusion_masks = []
@@ -47,6 +54,8 @@ if "active_mask_pts" not in st.session_state:
     st.session_state.active_mask_pts = []
 if "mask_click_sig" not in st.session_state:
     st.session_state.mask_click_sig = None
+if "mask_canvas_key_ver" not in st.session_state:
+    st.session_state.mask_canvas_key_ver = 0
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
@@ -81,11 +90,9 @@ def extract_walls_from_session(data):
     raw_found = []
 
     if isinstance(data, dict):
-        # Path 1: session_data["floorplan"]["wall_lines"]
         if "floorplan" in data and isinstance(data["floorplan"], dict):
             raw_found.extend(data["floorplan"].get("wall_lines", []))
 
-        # Path 2: Root level keys
         for key in ["wall_lines", "dxf_walls", "walls", "cad_walls", "geometry_lines"]:
             if key in data and isinstance(data[key], list):
                 raw_found.extend(data[key])
@@ -221,34 +228,6 @@ with tab_import:
     if uploaded_video:
         st.session_state.uploaded_video_file = uploaded_video
         st.success("✅ Video file attached successfully!")
-
-# Initialize key version counter in session state if not already set
-if "mask_canvas_key_ver" not in st.session_state:
-    st.session_state.mask_canvas_key_ver = 0
-
-import streamlit as st
-import plotly.graph_objects as go
-import numpy as np
-import PIL.Image
-
-# Initialize key version counter in session state if not already set
-if "mask_canvas_key_ver" not in st.session_state:
-    st.session_state.mask_canvas_key_ver = 0
-
-import streamlit as st
-import plotly.graph_objects as go
-import numpy as np
-import PIL.Image
-
-# Ensure session state variables exist
-if "mask_canvas_key_ver" not in st.session_state:
-    st.session_state.mask_canvas_key_ver = 0
-if "four_corners" not in st.session_state:
-    st.session_state.four_corners = []
-if "editing_point_idx" not in st.session_state:
-    st.session_state.editing_point_idx = None
-if "processed_click_sig" not in st.session_state:
-    st.session_state.processed_click_sig = None
 
 # ==========================================
 # TAB 2: REGION SELECTION & MASKING (ROI)
@@ -448,29 +427,80 @@ with tab_region:
 
         fig = go.Figure()
 
-        # Add CAD background walls
-        fig = add_cad_walls_to_fig(fig)
+        wall_x, wall_y = [], []
+        all_x, all_y = [], []
 
-        # 🎯 CRITICAL FIX: Invisible 50x50 scatter grid spanning floorplan bounds.
-        # This catches clicks anywhere on empty floorplan space!
-        grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
-        fig.add_trace(go.Scatter(
-            x=grid_x.flatten(),
-            y=grid_y.flatten(),
-            mode="markers",
-            marker=dict(size=18, color="rgba(0,0,0,0.001)"), # Invisible
-            hoverinfo="none",
-            showlegend=False,
-            name="ClickMesh"
-        ))
+        dxf_walls = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
+        for line in dxf_walls:
+            if hasattr(line, "xy"):
+                x, y = line.xy
+                wall_x.extend([x[0], x[1], None])
+                wall_y.extend([y[0], y[1], None])
+                all_x.extend(x)
+                all_y.extend(y)
+            elif isinstance(line, (list, tuple)):
+                for pt in line:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        all_x.append(pt[0])
+                        all_y.append(pt[1])
+                for i in range(len(line) - 1):
+                    wall_x.extend([line[i][0], line[i+1][0], None])
+                    wall_y.extend([line[i][1], line[i+1][1], None])
 
-        # Render Active Corner Points & Bounding ROI Polygon
+        if wall_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=wall_x,
+                    y=wall_y,
+                    mode="lines",
+                    line=dict(color="#00ADB5", width=1.5),
+                    name="CAD Walls",
+                    hoverinfo="none",
+                    showlegend=False,
+                )
+            )
+
+        if all_x and all_y:
+            minx, maxx = min(all_x), max(all_x)
+            miny, maxy = min(all_y), max(all_y)
+            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
+            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
+
+            if st.session_state.get("current_x_range") is None:
+                st.session_state.current_x_range = [minx - pad_x, maxx + pad_x]
+            if st.session_state.get("current_y_range") is None:
+                st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
+
+            grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
+
+            gx = np.arange(minx, maxx, grid_step_x)
+            gy = np.arange(miny, maxy, grid_step_y)
+            g_xx, g_yy = np.meshgrid(gx, gy)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=g_xx.flatten(),
+                    y=g_yy.flatten(),
+                    mode="markers",
+                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                    hoverinfo="none",
+                    showlegend=False,
+                    name="click_sensor_grid",
+                )
+            )
+        else:
+            if st.session_state.get("current_x_range") is None:
+                st.session_state.current_x_range = [-1, 10]
+            if st.session_state.get("current_y_range") is None:
+                st.session_state.current_y_range = [-1, 10]
+
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px_pts = [p[0] for p in pts]
             py_pts = [p[1] for p in pts]
 
-            if len(pts) >= 3:
+            if len(pts) == 4:
                 px_closed = px_pts + [px_pts[0]]
                 py_closed = py_pts + [py_pts[0]]
                 fig.add_trace(
@@ -491,7 +521,8 @@ with tab_region:
 
             fig.add_trace(
                 go.Scatter(
-                    x=px_pts, y=py_pts,
+                    x=px_pts,
+                    y=py_pts,
                     mode="markers+text",
                     marker=dict(size=14, color=marker_colors, symbol="circle", line=dict(color="#000000", width=1.5)),
                     text=[f"P{i+1}" for i in range(len(pts))],
