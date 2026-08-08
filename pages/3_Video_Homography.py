@@ -311,7 +311,7 @@ with tab_region:
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
                 dragmode="drawclosedpath",
                 showlegend=False,
-                uirevision=f"MASK_REV_{st.session_state.mask_canvas_key_ver}"
+                uirevision=f"MASK_REV_{st.session_state.get('mask_canvas_key_ver', 0)}"
             )
 
             plotly_config = {
@@ -324,7 +324,7 @@ with tab_region:
                 use_container_width=True,
                 on_select="rerun",
                 config=plotly_config,
-                key=f"video_mask_canvas_{st.session_state.mask_canvas_key_ver}"
+                key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}"
             )
 
             # Extract SVG Shapes Directly from Selection Event
@@ -379,6 +379,8 @@ with tab_region:
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
                 st.session_state.processed_click_sig = None
+                st.session_state.current_x_range = None
+                st.session_state.current_y_range = None
                 st.rerun()
 
         with col_btn2:
@@ -429,23 +431,88 @@ with tab_region:
 
         fig = go.Figure()
 
-        # Add CAD background walls
-        fig = add_cad_walls_to_fig(fig)
+        # 1. Render CAD Wall Geometry
+        wall_x, wall_y = [], []
+        all_x, all_y = [], []
 
-        # 🎯 CRITICAL FIX: Invisible 50x50 scatter grid spanning floorplan bounds.
-        # This catches clicks anywhere on empty floorplan space!
-        grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
-        fig.add_trace(go.Scatter(
-            x=grid_x.flatten(),
-            y=grid_y.flatten(),
-            mode="markers",
-            marker=dict(size=18, color="rgba(0,0,0,0.001)"), # Invisible
-            hoverinfo="none",
-            showlegend=False,
-            name="ClickMesh"
-        ))
+        dxf_walls = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
+        for line in dxf_walls:
+            if hasattr(line, "xy"):
+                x, y = line.xy
+                wall_x.extend([x[0], x[1], None])
+                wall_y.extend([y[0], y[1], None])
+                all_x.extend(x)
+                all_y.extend(y)
+            elif isinstance(line, (list, tuple)):
+                for pt in line:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        all_x.append(pt[0])
+                        all_y.append(pt[1])
+                for i in range(len(line) - 1):
+                    wall_x.extend([line[i][0], line[i+1][0], None])
+                    wall_y.extend([line[i][1], line[i+1][1], None])
 
-        # Render Active Corner Points & Bounding ROI Polygon
+        if wall_x:
+            fig.add_trace(
+                go.Scatter(
+                    x=wall_x,
+                    y=wall_y,
+                    mode="lines",
+                    line=dict(color="#00ADB5", width=1.5),
+                    name="CAD Walls",
+                    hoverinfo="none",
+                    showlegend=False,
+                )
+            )
+
+        # 2. Dynamic Invisible Click Mesh Sensor
+        if all_x and all_y:
+            minx, maxx = min(all_x), max(all_x)
+            miny, maxy = min(all_y), max(all_y)
+            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
+            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
+
+            if st.session_state.get("current_x_range") is None:
+                st.session_state.current_x_range = [minx - pad_x, maxx + pad_x]
+            if st.session_state.get("current_y_range") is None:
+                st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
+
+            grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
+            grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
+
+            gx = np.arange(minx, maxx, grid_step_x)
+            gy = np.arange(miny, maxy, grid_step_y)
+            g_xx, g_yy = np.meshgrid(gx, gy)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=g_xx.flatten(),
+                    y=g_yy.flatten(),
+                    mode="markers",
+                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                    hoverinfo="none",
+                    showlegend=False,
+                    name="click_sensor_grid",
+                )
+            )
+        else:
+            if st.session_state.get("current_x_range") is None:
+                st.session_state.current_x_range = [-1, 10]
+            if st.session_state.get("current_y_range") is None:
+                st.session_state.current_y_range = [-1, 10]
+
+            grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
+            fig.add_trace(go.Scatter(
+                x=grid_x.flatten(),
+                y=grid_y.flatten(),
+                mode="markers",
+                marker=dict(size=18, color="rgba(0,0,0,0.001)"),
+                hoverinfo="none",
+                showlegend=False,
+                name="ClickMesh"
+            ))
+
+        # 3. Render Active Corner Points & Bounding ROI Polygon
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px_pts = [p[0] for p in pts]
@@ -482,11 +549,22 @@ with tab_region:
                 )
             )
 
+        # 4. Update Layout with Axis Ranges and Canvas Locks
         fig.update_layout(
             template="plotly_dark",
             height=550,
-            xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
-            yaxis=dict(title="Y Coordinate", showgrid=True),
+            xaxis=dict(
+                title="X Coordinate",
+                range=st.session_state.current_x_range,
+                scaleanchor="y",
+                scaleratio=1,
+                showgrid=True
+            ),
+            yaxis=dict(
+                title="Y Coordinate",
+                range=st.session_state.current_y_range,
+                showgrid=True
+            ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
@@ -502,7 +580,21 @@ with tab_region:
             key="roi_floorplan_canvas",
         )
 
-        # Process Clicks Captured on the Floorplan
+        # 5. Capture Zoom/Pan Relayout State
+        if chart_events and isinstance(chart_events, dict):
+            relayout_data = chart_events.get("relayout", {})
+            if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
+                st.session_state.current_x_range = [
+                    relayout_data["xaxis.range[0]"],
+                    relayout_data["xaxis.range[1]"],
+                ]
+            if "yaxis.range[0]" in relayout_data and "yaxis.range[1]" in relayout_data:
+                st.session_state.current_y_range = [
+                    relayout_data["yaxis.range[0]"],
+                    relayout_data["yaxis.range[1]"],
+                ]
+
+        # 6. Process Clicks Captured on the Floorplan Mesh
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
