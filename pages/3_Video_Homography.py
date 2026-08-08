@@ -235,6 +235,21 @@ import PIL.Image
 if "mask_canvas_key_ver" not in st.session_state:
     st.session_state.mask_canvas_key_ver = 0
 
+import streamlit as st
+import plotly.graph_objects as go
+import numpy as np
+import PIL.Image
+
+# Ensure session state variables exist
+if "mask_canvas_key_ver" not in st.session_state:
+    st.session_state.mask_canvas_key_ver = 0
+if "four_corners" not in st.session_state:
+    st.session_state.four_corners = []
+if "editing_point_idx" not in st.session_state:
+    st.session_state.editing_point_idx = None
+if "processed_click_sig" not in st.session_state:
+    st.session_state.processed_click_sig = None
+
 # ==========================================
 # TAB 2: REGION SELECTION & MASKING
 # ==========================================
@@ -252,7 +267,7 @@ with tab_region:
                 "Calibration Video Frame",
                 min_value=0,
                 max_value=1000,
-                value=st.session_state.selected_frame_idx,
+                value=st.session_state.get("selected_frame_idx", 0),
                 step=5,
             )
             st.session_state.selected_frame_idx = frame_idx
@@ -263,7 +278,6 @@ with tab_region:
                 st.session_state.exclusion_masks = []
                 st.session_state.active_mask_pts = []
                 st.session_state.mask_click_sig = None
-                # Force Plotly canvas re-mount to purge frontend drawn shapes
                 st.session_state.mask_canvas_key_ver += 1
                 st.rerun()
 
@@ -276,7 +290,7 @@ with tab_region:
 
             fig_img = go.Figure()
 
-            # 1. Background Video Frame Image
+            # Background Video Frame Image
             fig_img.add_layout_image(
                 dict(
                     source=pil_img,
@@ -292,8 +306,8 @@ with tab_region:
                 )
             )
 
-            # 2. Render Existing Saved Exclusion Masks
-            for idx, mask in enumerate(st.session_state.exclusion_masks):
+            # Render Existing Saved Exclusion Masks
+            for idx, mask in enumerate(st.session_state.get("exclusion_masks", [])):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
                     my = [p[1] for p in mask] + [mask[0][1]]
@@ -339,8 +353,6 @@ with tab_region:
                     parsed_masks = []
                     for shape in shapes:
                         shape_type = shape.get("type")
-                        
-                        # Handle Freehand Closed Paths
                         if shape_type == "path":
                             path_str = shape.get("path", "")
                             pts = []
@@ -353,17 +365,16 @@ with tab_region:
                                 step = max(1, len(pts) // 15)
                                 parsed_masks.append(pts[::step])
 
-                        # Handle Bounding Rectangles
                         elif shape_type == "rect":
                             x0, x1 = float(shape["x0"]), float(shape["x1"])
                             y0, y1 = float(shape["y0"]), float(shape["y1"])
                             parsed_masks.append([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
 
-                    if parsed_masks and parsed_masks != st.session_state.exclusion_masks:
+                    if parsed_masks and parsed_masks != st.session_state.get("exclusion_masks", []):
                         st.session_state.exclusion_masks = parsed_masks
                         st.rerun()
 
-            num_masks = len(st.session_state.exclusion_masks)
+            num_masks = len(st.session_state.get("exclusion_masks", []))
             if num_masks > 0:
                 st.success(f"✅ **{num_masks}** Exclusion Zone(s) Saved!")
 
@@ -379,9 +390,10 @@ with tab_region:
 
     with col_controls:
         st.markdown("#### Corner Point Settings")
+        
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("🔴 Reset ROI", use_container_width=True):
+            if st.button("🔴 Clear All Corners", use_container_width=True):
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
@@ -402,19 +414,32 @@ with tab_region:
         else:
             st.success("✅ All 4 ROI Corners Configured!")
 
+        # Individual Corner Control Buttons
         corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
         if len(st.session_state.four_corners) > 0:
-            st.markdown("##### Current Corners")
-            for idx, pt in enumerate(st.session_state.four_corners[:4]):
+            st.markdown("##### Selected Corners")
+            for idx in range(len(st.session_state.four_corners)):
+                pt = st.session_state.four_corners[idx]
                 c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
-                col_info, col_act = st.columns([2.2, 1])
+                
+                col_info, col_edit, col_del = st.columns([2.0, 1.0, 0.8])
                 with col_info:
                     st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
-                with col_act:
+                with col_edit:
                     is_editing = (st.session_state.editing_point_idx == idx)
                     btn_label = "🎯 Target" if is_editing else "✏️ Edit"
                     if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
                         st.session_state.editing_point_idx = idx
+                        st.session_state.processed_click_sig = None
+                        st.rerun()
+                with col_del:
+                    if st.button("🗑️", key=f"del_btn_{idx}", help=f"Delete {c_lbl}", use_container_width=True):
+                        st.session_state.four_corners.pop(idx)
+                        if st.session_state.editing_point_idx == idx:
+                            st.session_state.editing_point_idx = None
+                        st.session_state.selected_polygon_pts = [
+                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                        ]
                         st.session_state.processed_click_sig = None
                         st.rerun()
 
@@ -423,35 +448,36 @@ with tab_region:
 
         fig = go.Figure()
 
-        # Add normalized CAD walls
+        # Add CAD background walls
         fig = add_cad_walls_to_fig(fig)
 
-        # 🎯 Invisible background mesh to intercept clicks on empty space
-        grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 40), np.linspace(-5, 60, 40))
+        # 🎯 CRITICAL FIX: Invisible 50x50 scatter grid spanning floorplan bounds.
+        # This catches clicks anywhere on empty floorplan space!
+        grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
         fig.add_trace(go.Scatter(
             x=grid_x.flatten(),
             y=grid_y.flatten(),
             mode="markers",
-            marker=dict(size=15, color="rgba(0,0,0,0.001)"),
+            marker=dict(size=18, color="rgba(0,0,0,0.001)"), # Invisible
             hoverinfo="none",
             showlegend=False,
             name="ClickMesh"
         ))
 
-        # Plot ROI corners
+        # Render Active Corner Points & Bounding ROI Polygon
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px_pts = [p[0] for p in pts]
             py_pts = [p[1] for p in pts]
 
-            if len(pts) == 4:
+            if len(pts) >= 3:
                 px_closed = px_pts + [px_pts[0]]
                 py_closed = py_pts + [py_pts[0]]
                 fig.add_trace(
                     go.Scatter(
                         x=px_closed, y=py_closed,
                         mode="lines",
-                        fill="toself",
+                        fill="toself" if len(pts) == 4 else "none",
                         fillcolor="rgba(0, 230, 118, 0.35)",
                         line=dict(color="#00FF66", width=2.5),
                         name="Camera ROI Zone",
@@ -467,7 +493,7 @@ with tab_region:
                 go.Scatter(
                     x=px_pts, y=py_pts,
                     mode="markers+text",
-                    marker=dict(size=14, color=marker_colors, symbol="circle"),
+                    marker=dict(size=14, color=marker_colors, symbol="circle", line=dict(color="#000000", width=1.5)),
                     text=[f"P{i+1}" for i in range(len(pts))],
                     textposition="top right",
                     textfont=dict(size=14, color="#FFFFFF"),
@@ -495,6 +521,7 @@ with tab_region:
             key="roi_floorplan_canvas",
         )
 
+        # Process Clicks Captured on the Floorplan
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
@@ -505,6 +532,7 @@ with tab_region:
                 if click_sig != st.session_state.processed_click_sig:
                     st.session_state.processed_click_sig = click_sig
 
+                    # Mode A: Editing an existing point
                     if st.session_state.editing_point_idx is not None:
                         target_idx = st.session_state.editing_point_idx
                         st.session_state.four_corners[target_idx] = [click_x, click_y]
@@ -514,6 +542,7 @@ with tab_region:
                         ]
                         st.rerun()
 
+                    # Mode B: Appending new points (up to 4)
                     elif len(st.session_state.four_corners) < 4:
                         st.session_state.four_corners.append([click_x, click_y])
                         st.session_state.selected_polygon_pts = [
