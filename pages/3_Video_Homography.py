@@ -231,6 +231,30 @@ with tab_import:
         st.session_state.uploaded_video_file = uploaded_video
         st.success("✅ Video file attached successfully!")
 
+import numpy as np
+import PIL.Image
+import plotly.graph_objects as go
+import re
+import streamlit as st
+
+# ==========================================
+# SAFE SESSION STATE INITIALIZATION
+# ==========================================
+for key, default in [
+    ("four_corners", []),
+    ("exclusion_masks", []),
+    ("active_mask_pts", []),
+    ("editing_point_idx", None),
+    ("processed_click_sig", None),
+    ("mask_canvas_key_ver", 0),
+    ("selected_frame_idx", 0),
+    ("current_x_range", None),
+    ("current_y_range", None),
+    ("selected_polygon_pts", []),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
 # ==========================================
 # TAB 2: REGION SELECTION & MASKING
 # ==========================================
@@ -238,9 +262,15 @@ with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **Instructions:** Draw freehand zones or rectangles using the Plotly toolbar (top right). Click **🔥 Reset All Masks** to clear all zones.")
+    st.info(
+        "💡 **Instructions:** Draw freehand zones or rectangles using the Plotly toolbar (top right). "
+        "Click **🔥 Reset All Masks** to clear all zones."
+    )
 
-    if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
+    if (
+        "uploaded_video_file" in st.session_state
+        and st.session_state.uploaded_video_file is not None
+    ):
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
 
         with col_m_slider:
@@ -254,7 +284,9 @@ with tab_region:
             st.session_state.selected_frame_idx = frame_idx
 
         with col_m_btns:
-            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='margin-top: 15px;'></div>", unsafe_allow_html=True
+            )
             if st.button("🔥 Reset All Masks", use_container_width=True):
                 st.session_state.exclusion_masks = []
                 st.session_state.active_mask_pts = []
@@ -263,8 +295,10 @@ with tab_region:
                 st.rerun()
 
         # Extract Video Frame
-        raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
-        
+        raw_frame_rgb = extract_frame_from_video(
+            st.session_state.uploaded_video_file, frame_number=frame_idx
+        )
+
         if raw_frame_rgb is not None:
             img_h, img_w, _ = raw_frame_rgb.shape
             pil_img = PIL.Image.fromarray(raw_frame_rgb)
@@ -283,40 +317,59 @@ with tab_region:
                     sizey=img_h,
                     sizing="stretch",
                     opacity=1,
-                    layer="below"
+                    layer="below",
                 )
             )
 
             # Render Existing Saved Exclusion Masks
-            for idx, mask in enumerate(st.session_state.get("exclusion_masks", [])):
+            for idx, mask in enumerate(
+                st.session_state.get("exclusion_masks", [])
+            ):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
                     my = [p[1] for p in mask] + [mask[0][1]]
-                    fig_img.add_trace(go.Scatter(
-                        x=mx,
-                        y=my,
-                        mode="lines+markers",
-                        fill="toself",
-                        fillcolor="rgba(255, 0, 0, 0.45)",
-                        line=dict(color="#FF0000", width=3),
-                        marker=dict(size=6, color="#FF0000"),
-                        name=f"Mask Zone #{idx+1}",
-                    ))
+                    fig_img.add_trace(
+                        go.Scatter(
+                            x=mx,
+                            y=my,
+                            mode="lines+markers",
+                            fill="toself",
+                            fillcolor="rgba(255, 0, 0, 0.45)",
+                            line=dict(color="#FF0000", width=3),
+                            marker=dict(size=6, color="#FF0000"),
+                            name=f"Mask Zone #{idx+1}",
+                        )
+                    )
 
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
-                xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
-                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
+                xaxis=dict(
+                    range=[0, img_w],
+                    showgrid=False,
+                    zeroline=False,
+                    constrain="domain",
+                ),
+                yaxis=dict(
+                    range=[img_h, 0],
+                    showgrid=False,
+                    zeroline=False,
+                    scaleanchor="x",
+                    scaleratio=1,
+                ),
                 dragmode="drawclosedpath",
                 showlegend=False,
-                uirevision=f"MASK_REV_{st.session_state.get('mask_canvas_key_ver', 0)}"
+                uirevision=f"MASK_REV_{st.session_state.get('mask_canvas_key_ver', 0)}",
             )
 
             plotly_config = {
-                "modeBarButtonsToAdd": ["drawclosedpath", "drawrect", "eraseshape"],
-                "displayModeBar": True
+                "modeBarButtonsToAdd": [
+                    "drawclosedpath",
+                    "drawrect",
+                    "eraseshape",
+                ],
+                "displayModeBar": True,
             }
 
             v_events = st.plotly_chart(
@@ -324,10 +377,10 @@ with tab_region:
                 use_container_width=True,
                 on_select="rerun",
                 config=plotly_config,
-                key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}"
+                key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}",
             )
 
-            # Extract SVG Shapes Directly from Selection Event
+            # Extract SVG Shapes Directly from Selection Event (Robust Parser)
             if v_events and "selection" in v_events:
                 shapes = v_events["selection"].get("shapes", [])
                 if shapes:
@@ -336,12 +389,19 @@ with tab_region:
                         shape_type = shape.get("type")
                         if shape_type == "path":
                             path_str = shape.get("path", "")
+                            # Robust SVG parsing for M, L, Z commands using Regex
+                            tokens = re.findall(
+                                r"([MLZz])\s*([-\d\.\,\s]*)", path_str
+                            )
                             pts = []
-                            clean_path = path_str.replace("Z", "").strip()
-                            for cmd in clean_path.split("L"):
-                                coords = cmd.replace("M", "").strip().split()
-                                if len(coords) >= 2:
-                                    pts.append([float(coords[0]), float(coords[1])])
+                            for cmd, coords_str in tokens:
+                                if cmd in ["M", "L", "m", "l"]:
+                                    nums = re.findall(r"[-\d\.]+", coords_str)
+                                    if len(nums) >= 2:
+                                        pts.append(
+                                            [float(nums[0]), float(nums[1])]
+                                        )
+
                             if len(pts) >= 3:
                                 step = max(1, len(pts) // 15)
                                 parsed_masks.append(pts[::step])
@@ -349,9 +409,13 @@ with tab_region:
                         elif shape_type == "rect":
                             x0, x1 = float(shape["x0"]), float(shape["x1"])
                             y0, y1 = float(shape["y0"]), float(shape["y1"])
-                            parsed_masks.append([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+                            parsed_masks.append(
+                                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                            )
 
-                    if parsed_masks and parsed_masks != st.session_state.get("exclusion_masks", []):
+                    if parsed_masks and parsed_masks != st.session_state.get(
+                        "exclusion_masks", []
+                    ):
                         st.session_state.exclusion_masks = parsed_masks
                         st.rerun()
 
@@ -360,7 +424,9 @@ with tab_region:
                 st.success(f"✅ **{num_masks}** Exclusion Zone(s) Saved!")
 
     else:
-        st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
+        st.warning(
+            "⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking."
+        )
 
     st.markdown("---")
 
@@ -371,7 +437,7 @@ with tab_region:
 
     with col_controls:
         st.markdown("#### Corner Point Settings")
-        
+
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("🔴 Clear All Corners", use_container_width=True):
@@ -391,37 +457,58 @@ with tab_region:
 
         num_pts = len(st.session_state.four_corners)
         if st.session_state.editing_point_idx is not None:
-            st.warning(f"🎯 **Editing P{st.session_state.editing_point_idx + 1}:** Click map to re-position.")
+            st.warning(
+                f"🎯 **Editing P{st.session_state.editing_point_idx + 1}:** Click map to re-position."
+            )
         elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the floorplan map.")
+            st.info(
+                f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the floorplan map."
+            )
         else:
             st.success("✅ All 4 ROI Corners Configured!")
 
         # Individual Corner Control Buttons
-        corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
+        corner_labels = [
+            "P1 (Top-Left)",
+            "P2 (Top-Right)",
+            "P3 (Bottom-Right)",
+            "P4 (Bottom-Left)",
+        ]
         if len(st.session_state.four_corners) > 0:
             st.markdown("##### Selected Corners")
             for idx in range(len(st.session_state.four_corners)):
                 pt = st.session_state.four_corners[idx]
                 c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
-                
+
                 col_info, col_edit, col_del = st.columns([2.0, 1.0, 0.8])
                 with col_info:
-                    st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
+                    st.markdown(
+                        f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`"
+                    )
                 with col_edit:
-                    is_editing = (st.session_state.editing_point_idx == idx)
+                    is_editing = st.session_state.editing_point_idx == idx
                     btn_label = "🎯 Target" if is_editing else "✏️ Edit"
-                    if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
+                    if st.button(
+                        btn_label,
+                        key=f"edit_btn_{idx}",
+                        use_container_width=True,
+                    ):
                         st.session_state.editing_point_idx = idx
                         st.session_state.processed_click_sig = None
                         st.rerun()
                 with col_del:
-                    if st.button("🗑️", key=f"del_btn_{idx}", help=f"Delete {c_lbl}", use_container_width=True):
+                    if st.button(
+                        "🗑️",
+                        key=f"del_btn_{idx}",
+                        help=f"Delete {c_lbl}",
+                        use_container_width=True,
+                    ):
                         st.session_state.four_corners.pop(idx)
                         if st.session_state.editing_point_idx == idx:
                             st.session_state.editing_point_idx = None
                         st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                            {"X (m)": p[0], "Y (m)": p[1]}
+                            for p in st.session_state.four_corners
                         ]
                         st.session_state.processed_click_sig = None
                         st.rerun()
@@ -431,14 +518,17 @@ with tab_region:
 
         fig = go.Figure()
 
-        # 1. Render CAD Wall Geometry (Compatible with Shapely LineStrings, Tuples, and Lists)
+        # 1. Render CAD Wall Geometry
         wall_x, wall_y = [], []
         all_x, all_y = [], []
 
-        dxf_walls = st.session_state.get("wall_lines") or st.session_state.get("dxf_walls") or []
+        dxf_walls = (
+            st.session_state.get("wall_lines")
+            or st.session_state.get("dxf_walls")
+            or []
+        )
 
         for line in dxf_walls:
-            # Case A: Shapely LineString / Geometry object
             if hasattr(line, "xy"):
                 x, y = line.xy
                 x_list, y_list = list(x), list(y)
@@ -447,7 +537,6 @@ with tab_region:
                 all_x.extend(x_list)
                 all_y.extend(y_list)
 
-            # Case B: Raw coordinate pairs [(x1, y1), (x2, y2)]
             elif isinstance(line, (list, tuple)):
                 pts = []
                 for pt in line:
@@ -455,13 +544,13 @@ with tab_region:
                         pts.append((pt.x, pt.y))
                     elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
                         pts.append((float(pt[0]), float(pt[1])))
-                
+
                 if len(pts) >= 2:
                     for i in range(len(pts) - 1):
-                        wall_x.extend([pts[i][0], pts[i+1][0], None])
-                        wall_y.extend([pts[i][1], pts[i+1][1], None])
-                        all_x.extend([pts[i][0], pts[i+1][0]])
-                        all_y.extend([pts[i][1], pts[i+1][1]])
+                        wall_x.extend([pts[i][0], pts[i + 1][0], None])
+                        wall_y.extend([pts[i][1], pts[i + 1][1], None])
+                        all_x.extend([pts[i][0], pts[i + 1][0]])
+                        all_y.extend([pts[i][1], pts[i + 1][1]])
 
         if wall_x:
             fig.add_trace(
@@ -476,7 +565,7 @@ with tab_region:
                 )
             )
 
-        # 2. Dynamic Invisible Click Mesh Sensor (Bound to Wall Extents)
+        # 2. Dynamic Invisible Click Mesh Sensor
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
@@ -484,15 +573,18 @@ with tab_region:
             pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
 
             if st.session_state.get("current_x_range") is None:
-                st.session_state.current_x_range = [minx - pad_x, maxx + pad_x]
+                st.session_state.current_x_range = [
+                    minx - pad_x,
+                    maxx + pad_x,
+                ]
             if st.session_state.get("current_y_range") is None:
-                st.session_state.current_y_range = [miny - pad_y, maxy + pad_y]
+                st.session_state.current_y_range = [
+                    miny - pad_y,
+                    maxy + pad_y,
+                ]
 
-            grid_step_x = (maxx - minx) / 60 if (maxx - minx) > 0 else 1.0
-            grid_step_y = (maxy - miny) / 60 if (maxy - miny) > 0 else 1.0
-
-            gx = np.arange(minx, maxx, grid_step_x)
-            gy = np.arange(miny, maxy, grid_step_y)
+            gx = np.linspace(minx, maxx, 60)
+            gy = np.linspace(miny, maxy, 60)
             g_xx, g_yy = np.meshgrid(gx, gy)
 
             fig.add_trace(
@@ -507,22 +599,25 @@ with tab_region:
                 )
             )
         else:
-            # Default fallback canvas bounds if no CAD file is loaded
             if st.session_state.get("current_x_range") is None:
                 st.session_state.current_x_range = [-5, 60]
             if st.session_state.get("current_y_range") is None:
                 st.session_state.current_y_range = [-5, 60]
 
-            grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 50), np.linspace(-5, 60, 50))
-            fig.add_trace(go.Scatter(
-                x=grid_x.flatten(),
-                y=grid_y.flatten(),
-                mode="markers",
-                marker=dict(size=18, color="rgba(0,0,0,0.001)"),
-                hoverinfo="none",
-                showlegend=False,
-                name="ClickMesh"
-            ))
+            grid_x, grid_y = np.meshgrid(
+                np.linspace(-5, 60, 50), np.linspace(-5, 60, 50)
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=grid_x.flatten(),
+                    y=grid_y.flatten(),
+                    mode="markers",
+                    marker=dict(size=18, color="rgba(0,0,0,0.001)"),
+                    hoverinfo="none",
+                    showlegend=False,
+                    name="ClickMesh",
+                )
+            )
 
         # 3. Render Active Corner Points & Bounding ROI Polygon
         pts = st.session_state.four_corners
@@ -535,7 +630,8 @@ with tab_region:
                 py_closed = py_pts + [py_pts[0]]
                 fig.add_trace(
                     go.Scatter(
-                        x=px_closed, y=py_closed,
+                        x=px_closed,
+                        y=py_closed,
                         mode="lines",
                         fill="toself" if len(pts) == 4 else "none",
                         fillcolor="rgba(0, 230, 118, 0.35)",
@@ -545,15 +641,25 @@ with tab_region:
                 )
 
             marker_colors = [
-                "#FFD700" if (st.session_state.editing_point_idx == i) else "#00FF66"
+                (
+                    "#FFD700"
+                    if (st.session_state.editing_point_idx == i)
+                    else "#00FF66"
+                )
                 for i in range(len(pts))
             ]
 
             fig.add_trace(
                 go.Scatter(
-                    x=px_pts, y=py_pts,
+                    x=px_pts,
+                    y=py_pts,
                     mode="markers+text",
-                    marker=dict(size=14, color=marker_colors, symbol="circle", line=dict(color="#000000", width=1.5)),
+                    marker=dict(
+                        size=14,
+                        color=marker_colors,
+                        symbol="circle",
+                        line=dict(color="#000000", width=1.5),
+                    ),
                     text=[f"P{i+1}" for i in range(len(pts))],
                     textposition="top right",
                     textfont=dict(size=14, color="#FFFFFF"),
@@ -570,12 +676,12 @@ with tab_region:
                 range=st.session_state.current_x_range,
                 scaleanchor="y",
                 scaleratio=1,
-                showgrid=True
+                showgrid=True,
             ),
             yaxis=dict(
                 title="Y Coordinate",
                 range=st.session_state.current_y_range,
-                showgrid=True
+                showgrid=True,
             ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
@@ -595,12 +701,18 @@ with tab_region:
         # 5. Capture Zoom/Pan Relayout State
         if chart_events and isinstance(chart_events, dict):
             relayout_data = chart_events.get("relayout", {})
-            if "xaxis.range[0]" in relayout_data and "xaxis.range[1]" in relayout_data:
+            if (
+                "xaxis.range[0]" in relayout_data
+                and "xaxis.range[1]" in relayout_data
+            ):
                 st.session_state.current_x_range = [
                     relayout_data["xaxis.range[0]"],
                     relayout_data["xaxis.range[1]"],
                 ]
-            if "yaxis.range[0]" in relayout_data and "yaxis.range[1]" in relayout_data:
+            if (
+                "yaxis.range[0]" in relayout_data
+                and "yaxis.range[1]" in relayout_data
+            ):
                 st.session_state.current_y_range = [
                     relayout_data["yaxis.range[0]"],
                     relayout_data["yaxis.range[1]"],
@@ -620,10 +732,14 @@ with tab_region:
                     # Mode A: Editing an existing point
                     if st.session_state.editing_point_idx is not None:
                         target_idx = st.session_state.editing_point_idx
-                        st.session_state.four_corners[target_idx] = [click_x, click_y]
+                        st.session_state.four_corners[target_idx] = [
+                            click_x,
+                            click_y,
+                        ]
                         st.session_state.editing_point_idx = None
                         st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                            {"X (m)": p[0], "Y (m)": p[1]}
+                            for p in st.session_state.four_corners
                         ]
                         st.rerun()
 
@@ -631,7 +747,8 @@ with tab_region:
                     elif len(st.session_state.four_corners) < 4:
                         st.session_state.four_corners.append([click_x, click_y])
                         st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
+                            {"X (m)": p[0], "Y (m)": p[1]}
+                            for p in st.session_state.four_corners
                         ]
                         st.rerun()
 
