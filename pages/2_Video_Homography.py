@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from shapely.geometry import LineString, Polygon
 import streamlit as st
 
 from utils.vga_engine import process_cad_file
@@ -105,9 +104,13 @@ with tab_import:
                 if "exclusion_masks" in data and data["exclusion_masks"]:
                     st.session_state.exclusion_masks = data["exclusion_masks"]
 
-                tracking_data = data.get("tracking_results", data.get("tracking_data", None))
+                # Safe Extraction of Tracking Results
+                tracking_data = data.get("tracking_results", data.get("tracking_data", data.get("pedestrian_trajectories", None)))
                 if tracking_data is not None:
-                    st.session_state.tracking_results_df = pd.DataFrame(tracking_data)
+                    if isinstance(tracking_data, list):
+                        st.session_state.tracking_results_df = pd.DataFrame(tracking_data)
+                    elif isinstance(tracking_data, dict):
+                        st.session_state.tracking_results_df = pd.json_normalize(tracking_data)
 
             except Exception as e:
                 st.error(f"Error parsing JSON: {e}")
@@ -154,13 +157,114 @@ with tab_import:
 # TAB 2: REGION SELECTION & POINT MASKING
 # ==========================================
 with tab_region:
-    st.subheader("Step 2.2: Define 4 ROI Camera Corners & Click Video Masking")
+    st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
-    col_controls, col_video_preview, col_plot = st.columns([1.1, 1.8, 2.2])
+    # --- TOP HERO SECTION: LARGE INTERACTIVE VIDEO MASKING ---
+    st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
+    st.info("💡 **Instructions:** Click points directly on the image to create a polygon surrounding regions to **EXCLUDE from human tracking** (e.g., static displays, reflections, or off-limits areas).")
 
-    # --- LEFT COLUMN: CONTROLS & ROI CORNERS ---
+    if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
+        col_m_slider, col_m_btns = st.columns([2.5, 1.5])
+
+        with col_m_slider:
+            frame_idx = st.slider(
+                "Calibration Video Frame",
+                min_value=0,
+                max_value=1000,
+                value=st.session_state.selected_frame_idx,
+                step=5,
+            )
+            st.session_state.selected_frame_idx = frame_idx
+
+        with col_m_btns:
+            st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            c_btn1, c_btn2, c_btn3 = st.columns(3)
+            with c_btn1:
+                if st.button("💾 Lock Mask", use_container_width=True):
+                    if len(st.session_state.active_mask_pts) >= 3:
+                        st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
+                        st.session_state.active_mask_pts = []
+                        st.success("Mask Saved!")
+                        st.rerun()
+                    else:
+                        st.warning("Needs ≥3 points.")
+            with c_btn2:
+                if st.button("🗑️ Clear Active", use_container_width=True):
+                    st.session_state.active_mask_pts = []
+                    st.rerun()
+            with c_btn3:
+                if st.button("🔥 Reset All", use_container_width=True):
+                    st.session_state.exclusion_masks = []
+                    st.session_state.active_mask_pts = []
+                    st.rerun()
+
+        raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
+        if raw_frame_rgb is not None:
+            fig_img = px.imshow(raw_frame_rgb)
+
+            # Overlay Saved Exclusion Masks (Semi-transparent Red)
+            for m_idx, mask in enumerate(st.session_state.exclusion_masks):
+                mx = [p[0] for p in mask] + [mask[0][0]]
+                my = [p[1] for p in mask] + [mask[0][1]]
+                fig_img.add_trace(go.Scatter(
+                    x=mx, y=my,
+                    mode="lines",
+                    fill="toself",
+                    fillcolor="rgba(255, 0, 0, 0.45)",
+                    line=dict(color="#FF0000", width=2),
+                    name=f"Exclusion Zone {m_idx+1}"
+                ))
+
+            # Overlay Active Mask Points (Yellow Dots & Lines)
+            if len(st.session_state.active_mask_pts) > 0:
+                amx = [p[0] for p in st.session_state.active_mask_pts]
+                amy = [p[1] for p in st.session_state.active_mask_pts]
+                fig_img.add_trace(go.Scatter(
+                    x=amx, y=amy,
+                    mode="markers+lines",
+                    marker=dict(color="#FFFF00", size=10),
+                    line=dict(color="#FFFF00", width=2, dash="dash"),
+                    name="Active Polygon Points"
+                ))
+
+            fig_img.update_layout(
+                margin=dict(l=0, r=0, t=10, b=10),
+                height=650,
+                clickmode="event+select",
+                dragmode="pan",
+                uirevision="VIDEO_LOCKED",
+            )
+
+            v_events = st.plotly_chart(
+                fig_img,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="points",
+                key="video_mask_canvas"
+            )
+
+            # Handle Clicks on Video Canvas
+            if v_events and "selection" in v_events:
+                v_pts = v_events["selection"].get("points", [])
+                if v_pts:
+                    vx, vy = float(v_pts[0]["x"]), float(v_pts[0]["y"])
+                    sig = f"vmask_{vx:.2f}_{vy:.2f}"
+                    if sig != st.session_state.mask_click_sig:
+                        st.session_state.mask_click_sig = sig
+                        st.session_state.active_mask_pts.append([vx, vy])
+                        st.rerun()
+    else:
+        st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
+
+    st.markdown("---")
+
+    # --- BOTTOM SECTION: CORNER COORDINATES & FLOORPLAN MAP ---
+    st.markdown("### 📐 2. Camera ROI Corner Mapping")
+
+    col_controls, col_plot = st.columns([1.2, 2.8])
+
     with col_controls:
-        st.markdown("#### Corner Coordinates")
+        st.markdown("#### Corner Point Settings")
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
@@ -180,16 +284,16 @@ with tab_region:
         num_pts = len(st.session_state.four_corners)
         if st.session_state.editing_point_idx is not None:
             edit_num = st.session_state.editing_point_idx + 1
-            st.warning(f"🎯 **Editing P{edit_num}:** Click map to update position.")
+            st.warning(f"🎯 **Editing P{edit_num}:** Click map to re-position.")
         elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click map.")
+            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click floorplan map.")
         else:
-            st.success("✅ All 4 Corners Selected!")
+            st.success("✅ All 4 ROI Corners Configured!")
 
         corner_labels = ["P1 (Top-Left)", "P2 (Top-Right)", "P3 (Bottom-Right)", "P4 (Bottom-Left)"]
 
         if len(st.session_state.four_corners) > 0:
-            st.markdown("##### Selected Points")
+            st.markdown("##### Current Corners")
             for idx, pt in enumerate(st.session_state.four_corners[:4]):
                 c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
                 col_info, col_act = st.columns([2.2, 1])
@@ -204,80 +308,6 @@ with tab_region:
                         st.session_state.processed_click_sig = None
                         st.rerun()
 
-        st.markdown("---")
-        st.markdown("#### Masking Controls")
-        if st.button("💾 Save Active Mask Zone", use_container_width=True):
-            if len(st.session_state.active_mask_pts) >= 3:
-                st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
-                st.session_state.active_mask_pts = []
-                st.success("Mask Saved!")
-                st.rerun()
-            else:
-                st.warning("Mask requires at least 3 points.")
-
-        if st.button("🗑️ Clear Active Mask", use_container_width=True):
-            st.session_state.active_mask_pts = []
-            st.rerun()
-
-        if st.button("🔥 Clear All Mask Zones", use_container_width=True):
-            st.session_state.exclusion_masks = []
-            st.session_state.active_mask_pts = []
-            st.rerun()
-
-    # --- MIDDLE COLUMN: INTERACTIVE VIDEO FRAME MASKING ---
-    with col_video_preview:
-        st.markdown("#### Video Calibration Frame & Click Masking")
-        if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
-            frame_idx = st.slider(
-                "Preview Frame Index",
-                min_value=0,
-                max_value=1000,
-                value=st.session_state.selected_frame_idx,
-                step=5,
-            )
-            st.session_state.selected_frame_idx = frame_idx
-
-            raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
-            if raw_frame_rgb is not None:
-                fig_img = px.imshow(raw_frame_rgb)
-
-                # Overlay Saved Masks
-                for m_idx, mask in enumerate(st.session_state.exclusion_masks):
-                    mx = [p[0] for p in mask] + [mask[0][0]]
-                    my = [p[1] for p in mask] + [mask[0][1]]
-                    fig_img.add_trace(go.Scatter(x=mx, y=my, mode="lines", fill="toself", fillcolor="rgba(255, 0, 0, 0.4)", line=dict(color="red"), name=f"Mask {m_idx+1}"))
-
-                # Overlay Active Masking Points
-                if len(st.session_state.active_mask_pts) > 0:
-                    amx = [p[0] for p in st.session_state.active_mask_pts]
-                    amy = [p[1] for p in st.session_state.active_mask_pts]
-                    fig_img.add_trace(go.Scatter(x=amx, y=amy, mode="markers+lines", marker=dict(color="yellow", size=10), line=dict(color="yellow", dash="dash"), name="Active Mask Points"))
-
-                fig_img.update_layout(
-                    margin=dict(l=0, r=0, t=0, b=0),
-                    height=450,
-                    clickmode="event+select",
-                    dragmode="drawclosedpath",
-                    uirevision="VIDEO_LOCKED",
-                )
-
-                v_events = st.plotly_chart(fig_img, use_container_width=True, on_select="rerun", selection_mode="points", key="video_mask_canvas")
-
-                # Handle clicks on video frame for polygon masking
-                if v_events and "selection" in v_events:
-                    v_pts = v_events["selection"].get("points", [])
-                    if v_pts:
-                        vx, vy = float(v_pts[0]["x"]), float(v_pts[0]["y"])
-                        sig = f"vmask_{vx:.2f}_{vy:.2f}"
-                        if sig != st.session_state.mask_click_sig:
-                            st.session_state.mask_click_sig = sig
-                            st.session_state.active_mask_pts.append([vx, vy])
-                            st.rerun()
-
-        else:
-            st.warning("⚠️ Upload video in Tab 2.1 to enable interactive point masking.")
-
-    # --- RIGHT COLUMN: MAP CANVAS (FIXED ZOOM RESET) ---
     with col_plot:
         st.markdown("#### Interactive Floorplan Map")
 
@@ -346,10 +376,10 @@ with tab_region:
                 )
             )
 
-        # STRICT ZOOM LOCK: uirevision constant + NO RANGE OVERWRITES
+        # STRICT ZOOM LOCK
         fig.update_layout(
             template="plotly_dark",
-            height=600,
+            height=550,
             xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1, showgrid=True),
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
@@ -418,9 +448,21 @@ with tab_playback:
         if uploaded_tb_json is not None:
             try:
                 raw_json = json.load(uploaded_tb_json)
-                tb_data = raw_json.get("tracking_results", raw_json.get("tracking_data", raw_json))
-                st.session_state.tracking_results_df = pd.DataFrame(tb_data)
-                st.success("✅ Imported JSON tracking records!")
+
+                # Robust JSON Parsing handling dictionary or array root formats
+                if isinstance(raw_json, list):
+                    df_loaded = pd.DataFrame(raw_json)
+                elif isinstance(raw_json, dict):
+                    inner_key = next((k for k in ["tracking_results", "tracking_data", "pedestrian_trajectories", "trajectories"] if k in raw_json), None)
+                    if inner_key and isinstance(raw_json[inner_key], list):
+                        df_loaded = pd.DataFrame(raw_json[inner_key])
+                    elif inner_key and isinstance(raw_json[inner_key], dict):
+                        df_loaded = pd.json_normalize(raw_json[inner_key])
+                    else:
+                        df_loaded = pd.json_normalize(raw_json)
+
+                st.session_state.tracking_results_df = df_loaded
+                st.success(f"✅ Successfully imported {len(df_loaded)} tracking records!")
             except Exception as e:
                 st.error(f"Error reading JSON: {e}")
 
@@ -429,7 +471,7 @@ with tab_playback:
         if uploaded_tb_csv is not None:
             try:
                 st.session_state.tracking_results_df = pd.read_csv(uploaded_tb_csv)
-                st.success("✅ Imported CSV tracking records!")
+                st.success("✅ Successfully imported CSV tracking records!")
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
 
@@ -439,7 +481,6 @@ with tab_playback:
     df_track = st.session_state.get("tracking_results_df")
 
     if df_track is not None and not df_track.empty:
-        # Standardize column naming
         df_track.columns = [c.lower().strip() for c in df_track.columns]
 
         # Resolve column keys
@@ -449,7 +490,6 @@ with tab_playback:
         id_col = next((c for c in ["track_id", "id", "person_id"] if c in df_track.columns), "track_id")
 
         if frame_col and x_col and y_col:
-            # Generate Speed & Vector direction metrics if absent
             if "speed" not in df_track.columns:
                 df_track = df_track.sort_values(by=[id_col, frame_col])
                 df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
@@ -469,13 +509,11 @@ with tab_playback:
                 st.markdown(f"**Human Movement Scatter Plan (Frame #{selected_f})**")
                 fig_play = go.Figure()
 
-                # Add CAD Walls
                 for line in st.session_state.get("dxf_walls", []):
                     if hasattr(line, "xy"):
                         wx, wy = line.xy
                         fig_play.add_trace(go.Scatter(x=list(wx), y=list(wy), mode="lines", line=dict(color="#00ADB5", width=1), showlegend=False, hoverinfo="none"))
 
-                # Add Active People (Dots)
                 fig_play.add_trace(go.Scatter(
                     x=curr_frame_df[x_col],
                     y=curr_frame_df[y_col],
@@ -490,7 +528,6 @@ with tab_playback:
 
             with col_fb2:
                 st.markdown(f"**Frame Density / Volume Heatmap (Frame #{selected_f})**")
-                fig_f_hm = px.density_mapbox if False else px.scatter_density if False else None
                 fig_f_hm = go.Figure(go.Histogram2dContour(
                     x=curr_frame_df[x_col],
                     y=curr_frame_df[y_col],
