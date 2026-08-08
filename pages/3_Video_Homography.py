@@ -223,13 +223,13 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING (POLYGON GEOMETRY FIX)
+# TAB 2: REGION SELECTION & MASKING (SVG PATH SHAPE MASKING)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **How to use:** Select the **Lasso Tool** (or Box Tool) from the top-right video toolbar, then draw around an area to create an exclusion polygon!")
+    st.info("💡 **Instructions:** Click and drag on the video frame to draw your exclusion zone. Release to finish the shape!")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -246,23 +246,13 @@ with tab_region:
 
         with col_m_btns:
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-            c_btn1, c_btn2, c_btn3 = st.columns(3)
+            c_btn1, c_btn2 = st.columns(2)
             with c_btn1:
-                if st.button("💾 Lock Active Mask", use_container_width=True):
-                    if len(st.session_state.active_mask_pts) >= 3:
-                        st.session_state.exclusion_masks.append(st.session_state.active_mask_pts)
-                        st.session_state.active_mask_pts = []
-                        st.session_state.mask_click_sig = None
-                        st.success("Mask Zone Locked & Saved!")
-                        st.rerun()
-                    else:
-                        st.warning(f"Needs ≥3 points (Currently active: {len(st.session_state.active_mask_pts)}).")
-            with c_btn2:
                 if st.button("🗑️ Clear Active", use_container_width=True):
                     st.session_state.active_mask_pts = []
                     st.session_state.mask_click_sig = None
                     st.rerun()
-            with c_btn3:
+            with c_btn2:
                 if st.button("🔥 Reset All Masks", use_container_width=True):
                     st.session_state.exclusion_masks = []
                     st.session_state.active_mask_pts = []
@@ -280,7 +270,7 @@ with tab_region:
 
             fig_img = go.Figure()
 
-            # 1. Video Frame Background
+            # 1. Background Video Frame Image
             fig_img.add_layout_image(
                 dict(
                     source=pil_img,
@@ -296,21 +286,7 @@ with tab_region:
                 )
             )
 
-            # Add invisible grid for click interception
-            grid_x, grid_y = np.meshgrid(
-                np.linspace(0, img_w, 40),
-                np.linspace(0, img_h, 40)
-            )
-            fig_img.add_trace(go.Scatter(
-                x=grid_x.flatten(),
-                y=grid_y.flatten(),
-                mode="markers",
-                marker=dict(size=10, color="rgba(0,0,0,0.001)"),
-                hoverinfo="none",
-                showlegend=False,
-            ))
-
-            # 2. Render Locked/Saved Masks
+            # 2. Render Existing Locked Exclusion Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -326,73 +302,74 @@ with tab_region:
                         name=f"Mask Zone #{idx+1}",
                     ))
 
-            # 3. Render Active Selected Lasso Polygon
-            if len(st.session_state.active_mask_pts) > 0:
-                amx = [p[0] for p in st.session_state.active_mask_pts]
-                amy = [p[1] for p in st.session_state.active_mask_pts]
-                
-                amx_line = amx + [amx[0]]
-                amy_line = amy + [amy[0]]
-
-                fig_img.add_trace(go.Scatter(
-                    x=amx_line,
-                    y=amy_line,
-                    mode="markers+lines",
-                    fill="toself",
-                    fillcolor="rgba(255, 255, 0, 0.4)",
-                    marker=dict(color="#FFFF00", size=6),
-                    line=dict(color="#FFFF00", width=2.5, dash="dash"),
-                    name="Active Polygon"
-                ))
-
+            # Config layout for native freehand closed path drawing
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
-                dragmode="lasso",
-                clickmode="event+select",
+                dragmode="drawclosedpath",  # Enables native freehand shape drawing
                 showlegend=False,
                 uirevision="PERMANENT_VIDEO_LOCK"
             )
+
+            # Pass modeBar buttons so user can switch between freehand path and rectangle
+            plotly_config = {
+                "modeBarButtonsToAdd": [
+                    "drawclosedpath",
+                    "drawrect",
+                    "eraseshape"
+                ],
+                "displayModeBar": True
+            }
 
             v_events = st.plotly_chart(
                 fig_img,
                 use_container_width=True,
                 on_select="rerun",
-                selection_mode=["points", "box", "lasso"],
+                config=plotly_config,
                 key="video_mask_canvas"
             )
 
-            # Process Lasso Selection & Clean Up Geometry
+            # Extract SVG Shapes Directly from Selection Event
             if v_events and "selection" in v_events:
-                v_pts = v_events["selection"].get("points", [])
-                if v_pts and len(v_pts) >= 3:
-                    raw_pts = np.array([[float(p["x"]), float(p["y"])] for p in v_pts])
-                    
-                    # Fix Zigzag: Use Convex Hull or Angular Sort around centroid
-                    try:
-                        from scipy.spatial import ConvexHull
-                        hull = ConvexHull(raw_pts)
-                        clean_pts = raw_pts[hull.vertices].tolist()
-                    except Exception:
-                        # Fallback polar angle sort
-                        cx, cy = np.mean(raw_pts[:, 0]), np.mean(raw_pts[:, 1])
-                        angles = np.arctan2(raw_pts[:, 1] - cy, raw_pts[:, 0] - cx)
-                        sort_idx = np.argsort(angles)
-                        clean_pts = raw_pts[sort_idx].tolist()
+                shapes = v_events["selection"].get("shapes", [])
+                if shapes:
+                    parsed_masks = []
+                    for shape in shapes:
+                        shape_type = shape.get("type")
+                        
+                        # Handle Freehand Closed Paths
+                        if shape_type == "path":
+                            path_str = shape.get("path", "")
+                            pts = []
+                            # Parse SVG path format: M x y L x y L x y Z
+                            clean_path = path_str.replace("Z", "").strip()
+                            for cmd in clean_path.split("L"):
+                                coords = cmd.replace("M", "").strip().split()
+                                if len(coords) >= 2:
+                                    pts.append([float(coords[0]), float(coords[1])])
+                            
+                            if len(pts) >= 3:
+                                # Subsample dense freehand points to keep clean polygon vertices
+                                step = max(1, len(pts) // 15)
+                                parsed_masks.append(pts[::step])
 
-                    sig = f"lasso_{len(clean_pts)}_{clean_pts[0][0]:.1f}_{clean_pts[-1][1]:.1f}"
-                    
-                    if sig != st.session_state.mask_click_sig:
-                        st.session_state.mask_click_sig = sig
-                        st.session_state.active_mask_pts = clean_pts
+                        # Handle Bounding Rectangles
+                        elif shape_type == "rect":
+                            x0, x1 = float(shape["x0"]), float(shape["x1"])
+                            y0, y1 = float(shape["y0"]), float(shape["y1"])
+                            rect_pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                            parsed_masks.append(rect_pts)
+
+                    if parsed_masks and parsed_masks != st.session_state.exclusion_masks:
+                        st.session_state.exclusion_masks = parsed_masks
                         st.rerun()
 
-            num_active = len(st.session_state.active_mask_pts)
-            if num_active > 0:
-                st.info(f"📍 **{num_active} vertex region generated!** Click **💾 Lock Active Mask** to save.")
+            num_masks = len(st.session_state.exclusion_masks)
+            if num_masks > 0:
+                st.success(f"✅ **{num_masks}** Exclusion Zone(s) Saved!")
 
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
