@@ -1,4 +1,3 @@
-# pages/2_Video_Homography.py
 import json
 import os
 import tempfile
@@ -7,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
+from shapely.geometry import LineString, Polygon
 
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
@@ -19,10 +19,10 @@ st.title("📹 Module 2: Video Homography & Region Selection")
 # ==========================================
 # SESSION STATE INITIALIZATION
 # ==========================================
-if "dxf_walls" not in st.session_state:
-    st.session_state.dxf_walls = []
 if "wall_lines" not in st.session_state:
     st.session_state.wall_lines = []
+if "dxf_walls" not in st.session_state:
+    st.session_state.dxf_walls = []
 if "vga_grid_df" not in st.session_state:
     st.session_state.vga_grid_df = None
 if "selected_polygon_pts" not in st.session_state:
@@ -56,41 +56,71 @@ tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
     "🎬 2.4 2D Playback & Crowd Heatmaps",
 ])
 
-# Universal JSON Wall Geometry Parser
-def parse_cad_walls_from_json(data):
-    walls = []
-    # Check all possible dictionary key names used for storing walls
-    candidates = ["dxf_walls", "wall_lines", "walls", "cad_walls", "geometry_lines"]
-    wall_data = None
-    for k in candidates:
-        if k in data and data[k]:
-            wall_data = data[k]
-            break
+# ==========================================
+# HELPER FUNCTIONS: ROBUST CAD WALL PARSING
+# ==========================================
+def normalize_line_to_dict(line):
+    """Converts Shapely objects, tuples, or dicts to standard dicts {"x": [x1, x2], "y": [y1, y2]}."""
+    try:
+        if hasattr(line, "xy"):  # Shapely LineString
+            x, y = line.xy
+            return {"x": [float(x[0]), float(x[1])], "y": [float(y[0]), float(y[1])]}
+        elif isinstance(line, dict) and "x" in line and "y" in line:
+            return {"x": [float(line["x"][0]), float(line["x"][1])], "y": [float(line["y"][0]), float(line["y"][1])]}
+        elif isinstance(line, (list, tuple)) and len(line) >= 2:
+            p1, p2 = line[0], line[1]
+            if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+                return {"x": [float(p1[0]), float(p2[0])], "y": [float(p1[1]), float(p2[1])]}
+    except Exception:
+        pass
+    return None
 
-    if not wall_data and isinstance(data, dict):
-        # Look inside metadata or nested dictionary if present
-        for sub_k in ["metadata", "vga_data", "config"]:
-            if isinstance(data.get(sub_k), dict):
-                for k in candidates:
-                    if k in data[sub_k] and data[sub_k][k]:
-                        wall_data = data[sub_k][k]
-                        break
+def extract_walls_from_session(data):
+    """Recursively searches for wall lines across all common JSON export structures."""
+    normalized_walls = []
+    raw_found = []
 
-    if wall_data:
-        for item in wall_data:
-            # Format 1: Dict with 'x' and 'y' lists
-            if isinstance(item, dict) and "x" in item and "y" in item:
-                walls.append({"x": item["x"], "y": item["y"]})
-            # Format 2: Dict with start/end or p1/p2
-            elif isinstance(item, dict) and "start" in item and "end" in item:
-                walls.append({"x": [item["start"][0], item["end"][0]], "y": [item["start"][1], item["end"][1]]})
-            # Format 3: Line segment list [[x1, y1], [x2, y2]]
-            elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                p1, p2 = item[0], item[1]
-                if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
-                    walls.append({"x": [p1[0], p2[0]], "y": [p1[1], p2[1]]})
+    if isinstance(data, dict):
+        # Path 1: session_data["floorplan"]["wall_lines"]
+        if "floorplan" in data and isinstance(data["floorplan"], dict):
+            raw_found.extend(data["floorplan"].get("wall_lines", []))
 
-    return walls
+        # Path 2: Root level keys
+        for key in ["wall_lines", "dxf_walls", "walls", "cad_walls", "geometry_lines"]:
+            if key in data and isinstance(data[key], list):
+                raw_found.extend(data[key])
+
+    elif isinstance(data, list):
+        raw_found = data
+
+    for item in raw_found:
+        d = normalize_line_to_dict(item)
+        if d:
+            normalized_walls.append(d)
+
+    return normalized_walls
+
+def add_cad_walls_to_fig(fig, wall_color="#00ADB5", width=1.5):
+    """Overlays CAD wall lines onto any Plotly canvas using pre-normalized dicts."""
+    walls_data = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
+
+    wall_x, wall_y = [], []
+    for line in walls_data:
+        d = normalize_line_to_dict(line)
+        if d:
+            wall_x.extend([d["x"][0], d["x"][1], None])
+            wall_y.extend([d["y"][0], d["y"][1], None])
+
+    if wall_x:
+        fig.add_trace(go.Scatter(
+            x=wall_x, y=wall_y,
+            mode="lines",
+            line=dict(color=wall_color, width=width),
+            name="CAD Walls",
+            hoverinfo="none",
+            showlegend=False
+        ))
+    return fig
 
 # ==========================================
 # TAB 1: FILE & VIDEO IMPORT
@@ -112,21 +142,23 @@ with tab_import:
             try:
                 data = json.load(uploaded_json)
 
-                # 1. Load VGA Grid
-                vga_data = data.get("vga_results", data.get("vga_grid", data.get("vga_floorplan_nodes", [])))
-                if vga_data:
-                    st.session_state.vga_grid_df = pd.DataFrame(vga_data)
-                    st.session_state["vga_df"] = st.session_state.vga_grid_df
+                # 1. Extract and normalize CAD walls
+                extracted_walls = extract_walls_from_session(data)
+                if extracted_walls:
+                    st.session_state["wall_lines"] = extracted_walls
+                    st.session_state["dxf_walls"] = extracted_walls
+                    st.success(f"✅ Loaded and validated {len(extracted_walls)} CAD wall segments!")
+                else:
+                    st.error("❌ JSON loaded, but zero valid wall segments could be extracted. Please check file formatting.")
+
+                # 2. Extract VGA Grid Data
+                vga_raw = data.get("vga_results") or data.get("vga_grid")
+                if vga_raw:
+                    st.session_state["vga_df"] = pd.DataFrame(vga_raw)
+                    st.session_state.vga_grid_df = st.session_state["vga_df"]
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Universal CAD Wall Extraction
-                extracted_walls = parse_cad_walls_from_json(data)
-                if extracted_walls:
-                    st.session_state.dxf_walls = extracted_walls
-                    st.session_state.wall_lines = extracted_walls
-                    st.success(f"✅ Loaded {len(extracted_walls)} CAD wall boundary lines!")
-
-                # 3. Load ROI Polygon / Corners
+                # 3. Extract ROI Polygon / Corners
                 if "polygon_points" in data and data["polygon_points"]:
                     raw_pts = data["polygon_points"]
                     formatted_pts = []
@@ -149,7 +181,7 @@ with tab_import:
                     st.session_state.exclusion_masks = data["exclusion_masks"]
 
             except Exception as e:
-                st.error(f"Error parsing JSON: {e}")
+                st.error(f"Error parsing JSON session file: {e}")
 
     with col_dxf:
         st.markdown("### 📐 Option B: Import Raw CAD File")
@@ -167,10 +199,11 @@ with tab_import:
 
             try:
                 with st.spinner("Processing CAD file via VGA Engine..."):
-                    wall_lines = process_cad_file(tmp_path)
-                    st.session_state.dxf_walls = wall_lines
-                    st.session_state.wall_lines = wall_lines
-                    st.success(f"✅ Successfully parsed CAD! {len(wall_lines)} wall boundary lines ready.")
+                    raw_wall_lines = process_cad_file(tmp_path)
+                    normalized_walls = [normalize_line_to_dict(w) for w in raw_wall_lines if normalize_line_to_dict(w)]
+                    st.session_state.dxf_walls = normalized_walls
+                    st.session_state.wall_lines = normalized_walls
+                    st.success(f"✅ Successfully parsed CAD! {len(normalized_walls)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
             finally:
@@ -238,7 +271,6 @@ with tab_region:
             fig_img = px.imshow(raw_frame_rgb)
             img_h, img_w = raw_frame_rgb.shape[0], raw_frame_rgb.shape[1]
 
-            # Render completed polygon exclusion masks via Plotly SVG paths
             shapes_list = []
             for mask in st.session_state.exclusion_masks:
                 if len(mask) >= 3:
@@ -246,11 +278,11 @@ with tab_region:
                     shapes_list.append(dict(
                         type="path",
                         path=path_str,
+                        xref="x", yref="y",
                         fillcolor="rgba(255, 0, 0, 0.45)",
                         line=dict(color="#FF0000", width=3),
                     ))
 
-            # Active drawing overlay (Scatter markers & connecting lines)
             if len(st.session_state.active_mask_pts) > 0:
                 amx = [p[0] for p in st.session_state.active_mask_pts]
                 amy = [p[1] for p in st.session_state.active_mask_pts]
@@ -260,7 +292,7 @@ with tab_region:
                 fig_img.add_trace(go.Scatter(
                     x=amx_line, y=amy_line,
                     mode="markers+lines",
-                    marker=dict(color="#FFFF00", size=10, symbol="circle"),
+                    marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1)),
                     line=dict(color="#FFFF00", width=3, dash="dash"),
                     name="Active Mask Boundary",
                     showlegend=False
@@ -270,8 +302,8 @@ with tab_region:
                 shapes=shapes_list,
                 margin=dict(l=0, r=0, t=10, b=10),
                 height=600,
-                xaxis=dict(range=[0, img_w], showgrid=False),
-                yaxis=dict(range=[img_h, 0], showgrid=False),
+                xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False),
+                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False),
                 clickmode="event+select",
                 dragmode="pan",
                 uirevision="VIDEO_CANVAS_PRESERVE"
@@ -299,7 +331,7 @@ with tab_region:
 
     st.markdown("---")
 
-    # --- BOTTOM SECTION: CORNER COORDINATES & FLOORPLAN MAP ---
+    # --- CORNER COORDINATES & FLOORPLAN MAP ---
     st.markdown("### 📐 2. Camera ROI Corner Mapping")
 
     col_controls, col_plot = st.columns([1.2, 2.8])
@@ -350,36 +382,10 @@ with tab_region:
 
         fig = go.Figure()
 
-        # CAD Wall Rendering Pipeline
-        wall_x, wall_y = [], []
-        walls_data = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
+        # Add normalized CAD walls
+        fig = add_cad_walls_to_fig(fig)
 
-        for line in walls_data:
-            if hasattr(line, "xy"):  # Shapely LineString
-                x, y = line.xy
-                wall_x.extend([x[0], x[1], None])
-                wall_y.extend([y[0], y[1], None])
-            elif isinstance(line, dict) and "x" in line and "y" in line:  # Dict representation
-                wall_x.extend([line["x"][0], line["x"][1], None])
-                wall_y.extend([line["y"][0], line["y"][1], None])
-            elif isinstance(line, (list, tuple)):  # Point tuples
-                for i in range(len(line) - 1):
-                    wall_x.extend([line[i][0], line[i+1][0], None])
-                    wall_y.extend([line[i][1], line[i+1][1], None])
-
-        if wall_x:
-            fig.add_trace(
-                go.Scatter(
-                    x=wall_x, y=wall_y,
-                    mode="lines",
-                    line=dict(color="#00ADB5", width=1.5),
-                    name="CAD Walls",
-                    hoverinfo="none",
-                    showlegend=False,
-                )
-            )
-
-        # Plot selected ROI corners
+        # Plot ROI corners
         pts = st.session_state.four_corners
         if len(pts) > 0:
             px_pts = [p[0] for p in pts]
@@ -467,7 +473,7 @@ with tab_region:
 # ==========================================
 with tab_tracking:
     render_tracking_view(
-        st.session_state.get("dxf_walls", []),
+        st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", []),
         st.session_state.get("vga_grid_df", None),
     )
 
@@ -513,13 +519,11 @@ with tab_playback:
 
     st.markdown("---")
 
-    # DISPLAY HEATMAPS AND MOTION PLAYBACK
     df_track = st.session_state.get("tracking_results_df")
 
     if df_track is not None and not df_track.empty:
         df_track.columns = [str(c).lower().strip() for c in df_track.columns]
 
-        # Explicitly supports world_x, world_y, img_x, img_y, frame_idx, track_id
         frame_col = next((c for c in ["frame_idx", "frame", "frame_number", "timestamp"] if c in df_track.columns), None)
         x_col = next((c for c in ["world_x", "x", "x (m)", "x_m", "pos_x", "x_canvas", "img_x"] if c in df_track.columns), None)
         y_col = next((c for c in ["world_y", "y", "y (m)", "y_m", "pos_y", "y_canvas", "img_y"] if c in df_track.columns), None)
@@ -539,10 +543,14 @@ with tab_playback:
                 df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
                 df_track["speed"] = np.sqrt(df_track["dx"]**2 + df_track["dy"]**2)
 
-            # --- SECTION 2: FRAME PLAYBACK ---
             st.markdown("### 2. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
-            selected_f = st.slider("Select Frame for Instant Inspection", min_value=int(min(frames_available)), max_value=int(max(frames_available)), value=int(min(frames_available)))
+            selected_f = st.slider(
+                "Select Frame for Instant Inspection",
+                min_value=int(min(frames_available)),
+                max_value=int(max(frames_available)),
+                value=int(min(frames_available)),
+            )
 
             curr_frame_df = df_track[df_track[frame_col] == selected_f]
 
@@ -551,15 +559,7 @@ with tab_playback:
             with col_fb1:
                 st.markdown(f"**Pedestrian Plan View (Frame #{selected_f})**")
                 fig_play = go.Figure()
-
-                # CAD walls as background trace
-                walls_data = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
-                for line in walls_data:
-                    if hasattr(line, "xy"):
-                        wx, wy = line.xy
-                        fig_play.add_trace(go.Scatter(x=list(wx), y=list(wy), mode="lines", line=dict(color="#00ADB5", width=1), showlegend=False))
-                    elif isinstance(line, dict) and "x" in line:
-                        fig_play.add_trace(go.Scatter(x=line["x"], y=line["y"], mode="lines", line=dict(color="#00ADB5", width=1), showlegend=False))
+                fig_play = add_cad_walls_to_fig(fig_play)
 
                 fig_play.add_trace(go.Scatter(
                     x=curr_frame_df[x_col],
@@ -570,41 +570,55 @@ with tab_playback:
                     textposition="top center",
                     name="Pedestrians"
                 ))
-                fig_play.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
+                fig_play.update_layout(
+                    template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10),
+                    xaxis=dict(scaleanchor="y", scaleratio=1)
+                )
                 st.plotly_chart(fig_play, use_container_width=True)
 
             with col_fb2:
                 st.markdown(f"**Instant Density Heatmap (Frame #{selected_f})**")
-                fig_f_hm = go.Figure(go.Histogram2dContour(
+                fig_f_hm = go.Figure()
+                fig_f_hm = add_cad_walls_to_fig(fig_f_hm, wall_color="#FFFFFF", width=2)
+
+                fig_f_hm.add_trace(go.Histogram2dContour(
                     x=curr_frame_df[x_col],
                     y=curr_frame_df[y_col],
                     colorscale="Jet",
                     showscale=True
                 ))
-                fig_f_hm.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10))
+                fig_f_hm.update_layout(
+                    template="plotly_dark", height=400, margin=dict(l=10, r=10, t=20, b=10),
+                    xaxis=dict(scaleanchor="y", scaleratio=1)
+                )
                 st.plotly_chart(fig_f_hm, use_container_width=True)
 
             st.markdown("---")
 
-            # --- SECTION 3: FULL HEATMAP ANALYTICS ---
             st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
 
-            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs(["📊 Crowd Volume", "🔥 Density Heatmap", "⚡ Speed Distribution", "🧭 Directional Flow"])
+            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs([
+                "📊 Crowd Volume", "🔥 Density Heatmap", "⚡ Speed Distribution", "🧭 Directional Flow"
+            ])
 
             with m_tab1:
                 st.markdown("#### Cumulative Occupancy Heatmap")
-                fig_vol = go.Figure(go.Histogram2dContour(
+                fig_vol = go.Figure()
+                fig_vol = add_cad_walls_to_fig(fig_vol, wall_color="#FFFFFF", width=2)
+                fig_vol.add_trace(go.Histogram2dContour(
                     x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
                 ))
-                fig_vol.update_layout(template="plotly_dark", height=500)
+                fig_vol.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
                 st.plotly_chart(fig_vol, use_container_width=True)
 
             with m_tab2:
                 st.markdown("#### Binned Pedestrian Density Grid")
-                fig_dens = go.Figure(go.Histogram2d(
+                fig_dens = go.Figure()
+                fig_dens = add_cad_walls_to_fig(fig_dens, wall_color="#FFFFFF", width=2)
+                fig_dens.add_trace(go.Histogram2d(
                     x=df_track[x_col], y=df_track[y_col], colorscale="Hot", showscale=True, nbinsx=35, nbinsy=35
                 ))
-                fig_dens.update_layout(template="plotly_dark", height=500)
+                fig_dens.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
                 st.plotly_chart(fig_dens, use_container_width=True)
 
             with m_tab3:
@@ -613,19 +627,20 @@ with tab_playback:
                     df_track, x=x_col, y=y_col, color="speed", color_continuous_scale="Plasma",
                     title="Pedestrian Speed Distribution"
                 )
-                fig_spd.update_layout(template="plotly_dark", height=500)
+                fig_spd = add_cad_walls_to_fig(fig_spd)
+                fig_spd.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
                 st.plotly_chart(fig_spd, use_container_width=True)
 
             with m_tab4:
                 st.markdown("#### Movement Direction Vectors")
                 fig_dir = px.scatter(
-                    df_track, x=x_col, y=y_col, color="dx", color_continuous_scale="Coolwarm",
+                    df_track, x=x_col, y=y_col, color="dx", color_continuous_scale="RdBu",
                     title="Directional Shift Field (dx)"
                 )
-                fig_dir.update_layout(template="plotly_dark", height=500)
+                fig_dir = add_cad_walls_to_fig(fig_dir)
+                fig_dir.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
                 st.plotly_chart(fig_dir, use_container_width=True)
 
-            # Export Section
             st.markdown("---")
             st.markdown("### 4. Export Aggregated Analytics")
 
@@ -646,7 +661,7 @@ with tab_playback:
             )
 
         else:
-            st.error(f"⚠️ Could not resolve coordinate columns (`x`, `y`) in dataset. Found columns: {list(df_track.columns)}")
+            st.error(f"⚠️ Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}")
 
     else:
         st.info("💡 Upload a JSON/CSV tracking file above or run tracking in Step 2.3 to view movement playback and heatmaps.")
