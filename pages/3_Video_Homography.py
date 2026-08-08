@@ -223,13 +223,13 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & POINT MASKING (FIXED)
+# TAB 2: REGION SELECTION & POINT MASKING (FIXED WITH SCATTER OVERLAY)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 Click points directly on the frame to draw a polygon surrounding regions to **EXCLUDE from human tracking**.")
+    st.info("💡 Click points directly on the video frame to draw a polygon. Click **💾 Lock Mask** when done with a zone.")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -252,97 +252,102 @@ with tab_region:
                     if len(st.session_state.active_mask_pts) >= 3:
                         st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
                         st.session_state.active_mask_pts = []
+                        st.session_state.mask_click_sig = None
                         st.success("Mask Saved!")
                         st.rerun()
                     else:
-                        st.warning("Needs ≥3 points.")
+                        st.warning("Needs ≥3 points to lock.")
             with c_btn2:
                 if st.button("🗑️ Clear Active", use_container_width=True):
                     st.session_state.active_mask_pts = []
+                    st.session_state.mask_click_sig = None
                     st.rerun()
             with c_btn3:
                 if st.button("🔥 Reset All", use_container_width=True):
                     st.session_state.exclusion_masks = []
                     st.session_state.active_mask_pts = []
+                    st.session_state.mask_click_sig = None
                     st.rerun()
 
+        # Extract Video Frame
         raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
         
         if raw_frame_rgb is not None:
+            import PIL.Image
+
             img_h, img_w, _ = raw_frame_rgb.shape
+            pil_img = PIL.Image.fromarray(raw_frame_rgb)
 
-            # Build Figure with Base Frame
-            fig_img = px.imshow(raw_frame_rgb, binary_string=True)
+            # Build standard Plotly Figure (Same logic as floorplan map canvas)
+            fig_img = go.Figure()
 
-            shapes_list = []
+            # Add Video Frame as standard background image
+            fig_img.add_layout_image(
+                dict(
+                    source=pil_img,
+                    xref="x",
+                    yref="y",
+                    x=0,
+                    y=0,
+                    sizex=img_w,
+                    sizey=img_h,
+                    sizing="stretch",
+                    opacity=1,
+                    layer="below"
+                )
+            )
 
-            # --- 1. RENDER LOCKED EXCLUSION MASKS ---
+            # 1. Plot Saved/Locked Mask Polygons
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
-                    mx = [float(p[0]) for p in mask]
-                    my = [float(p[1]) for p in mask]
-                    
-                    # Close the polygon loop
-                    mx_closed = mx + [mx[0]]
-                    my_closed = my + [my[0]]
-
-                    # Method A: Direct Scatter Overlay (Guaranteed Visual Visibility)
+                    mx = [p[0] for p in mask] + [mask[0][0]]
+                    my = [p[1] for p in mask] + [mask[0][1]]
                     fig_img.add_trace(go.Scatter(
-                        x=mx_closed,
-                        y=my_closed,
+                        x=mx,
+                        y=my,
                         mode="lines+markers",
                         fill="toself",
                         fillcolor="rgba(255, 0, 0, 0.45)",
                         line=dict(color="#FF0000", width=3),
                         marker=dict(size=6, color="#FF0000"),
-                        name=f"Mask #{idx+1}",
-                        hoverinfo="name",
-                        showlegend=True
+                        name=f"Mask Zone #{idx+1}",
+                        hoverinfo="name"
                     ))
 
-                    # Method B: SVG Path Backup
-                    path_str = f"M {mx[0]},{my[0]} " + " ".join([f"L {p[0]},{p[1]}" for p in mask[1:]]) + " Z"
-                    shapes_list.append(dict(
-                        type="path",
-                        path=path_str,
-                        xref="x", yref="y",
-                        fillcolor="rgba(255, 0, 0, 0.45)",
-                        line=dict(color="#FF0000", width=3),
-                    ))
-
-            # --- 2. RENDER ACTIVE (IN-PROGRESS) MASK ---
+            # 2. Plot Active Drawing Points and Connecting Line
             if len(st.session_state.active_mask_pts) > 0:
-                amx = [float(p[0]) for p in st.session_state.active_mask_pts]
-                amy = [float(p[1]) for p in st.session_state.active_mask_pts]
+                amx = [p[0] for p in st.session_state.active_mask_pts]
+                amy = [p[1] for p in st.session_state.active_mask_pts]
                 
-                amx_line = amx + ([amx[0]] if len(amx) > 1 else [])
-                amy_line = amy + ([amy[0]] if len(amy) > 1 else [])
+                # Close line visual if >= 3 points
+                amx_line = amx + ([amx[0]] if len(amx) >= 3 else [])
+                amy_line = amy + ([amy[0]] if len(amy) >= 3 else [])
 
                 fig_img.add_trace(go.Scatter(
-                    x=amx_line, 
+                    x=amx_line,
                     y=amy_line,
                     mode="markers+lines",
                     fill="toself" if len(amx) >= 3 else "none",
-                    fillcolor="rgba(255, 255, 0, 0.25)",
+                    fillcolor="rgba(255, 255, 0, 0.3)",
                     marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1.5)),
                     line=dict(color="#FFFF00", width=3, dash="dash"),
-                    name="Active Polygon",
-                    showlegend=False
+                    name="Active Polygon"
                 ))
 
-            # Layout Settings
+            # Set exact image dimensions to axis space
             fig_img.update_layout(
-                shapes=shapes_list,
+                template="plotly_dark",
+                height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
-                height=650,
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
-                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
+                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1), # Reversed Y for image coordinates
                 clickmode="event+select",
                 dragmode="pan",
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(0,0,0,0.5)"),
-                uirevision="VIDEO_CANVAS_PRESERVE"
+                showlegend=False,
+                uirevision="PERMANENT_VIDEO_LOCK"
             )
 
+            # Interactive Plotly Chart Display
             v_events = st.plotly_chart(
                 fig_img,
                 use_container_width=True,
@@ -351,15 +356,17 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
-            # Capture Interactive Clicks
+            # Capture Click Events
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
                 if v_pts:
-                    vx, vy = float(v_pts[0]["x"]), float(v_pts[0]["y"])
-                    sig = f"vmask_{vx:.2f}_{vy:.2f}"
+                    click_x = float(v_pts[0]["x"])
+                    click_y = float(v_pts[0]["y"])
+                    
+                    sig = f"vmask_{click_x:.2f}_{click_y:.2f}"
                     if sig != st.session_state.mask_click_sig:
                         st.session_state.mask_click_sig = sig
-                        st.session_state.active_mask_pts.append([vx, vy])
+                        st.session_state.active_mask_pts.append([click_x, click_y])
                         st.rerun()
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
