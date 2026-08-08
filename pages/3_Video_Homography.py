@@ -223,7 +223,7 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & POINT MASKING (FIXED WITH SCATTER OVERLAY)
+# TAB 2: REGION SELECTION & POINT MASKING (GUARANTEED CLICK ENGINE)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
@@ -278,10 +278,9 @@ with tab_region:
             img_h, img_w, _ = raw_frame_rgb.shape
             pil_img = PIL.Image.fromarray(raw_frame_rgb)
 
-            # Build standard Plotly Figure (Same logic as floorplan map canvas)
             fig_img = go.Figure()
 
-            # Add Video Frame as standard background image
+            # 1. Background Video Frame
             fig_img.add_layout_image(
                 dict(
                     source=pil_img,
@@ -297,7 +296,23 @@ with tab_region:
                 )
             )
 
-            # 1. Plot Saved/Locked Mask Polygons
+            # 2. INVISIBLE CLICK INTERCEPTOR GRID
+            # This forces Plotly to capture clicks everywhere on the image
+            grid_x, grid_y = np.meshgrid(
+                np.linspace(0, img_w, 30),
+                np.linspace(0, img_h, 30)
+            )
+            fig_img.add_trace(go.Scatter(
+                x=grid_x.flatten(),
+                y=grid_y.flatten(),
+                mode="markers",
+                marker=dict(size=20, color="rgba(0,0,0,0.001)"), # Transparent click field
+                hoverinfo="none",
+                showlegend=False,
+                name="ClickGrid"
+            ))
+
+            # 3. Render Locked Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -309,17 +324,16 @@ with tab_region:
                         fill="toself",
                         fillcolor="rgba(255, 0, 0, 0.45)",
                         line=dict(color="#FF0000", width=3),
-                        marker=dict(size=6, color="#FF0000"),
+                        marker=dict(size=8, color="#FF0000"),
                         name=f"Mask Zone #{idx+1}",
                         hoverinfo="name"
                     ))
 
-            # 2. Plot Active Drawing Points and Connecting Line
+            # 4. Render Active Points & Dynamic Polygon Lines
             if len(st.session_state.active_mask_pts) > 0:
                 amx = [p[0] for p in st.session_state.active_mask_pts]
                 amy = [p[1] for p in st.session_state.active_mask_pts]
                 
-                # Close line visual if >= 3 points
                 amx_line = amx + ([amx[0]] if len(amx) >= 3 else [])
                 amy_line = amy + ([amy[0]] if len(amy) >= 3 else [])
 
@@ -328,26 +342,25 @@ with tab_region:
                     y=amy_line,
                     mode="markers+lines",
                     fill="toself" if len(amx) >= 3 else "none",
-                    fillcolor="rgba(255, 255, 0, 0.3)",
-                    marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1.5)),
+                    fillcolor="rgba(255, 255, 0, 0.35)",
+                    marker=dict(color="#FFFF00", size=12, symbol="circle", line=dict(color="#000000", width=2)),
                     line=dict(color="#FFFF00", width=3, dash="dash"),
                     name="Active Polygon"
                 ))
 
-            # Set exact image dimensions to axis space
+            # Canvas Formatting
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
-                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1), # Reversed Y for image coordinates
+                yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
                 clickmode="event+select",
                 dragmode="pan",
                 showlegend=False,
                 uirevision="PERMANENT_VIDEO_LOCK"
             )
 
-            # Interactive Plotly Chart Display
             v_events = st.plotly_chart(
                 fig_img,
                 use_container_width=True,
@@ -356,7 +369,7 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
-            # Capture Click Events
+            # Capture Point Selections
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
                 if v_pts:
@@ -368,6 +381,12 @@ with tab_region:
                         st.session_state.mask_click_sig = sig
                         st.session_state.active_mask_pts.append([click_x, click_y])
                         st.rerun()
+
+            # Real-Time Point Indicator Debugging Banner
+            num_pts = len(st.session_state.active_mask_pts)
+            if num_pts > 0:
+                st.info(f"📍 Active Mask Points Captured: **{num_pts}** | Click **💾 Lock Mask** when finished.")
+
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
 
