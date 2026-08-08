@@ -223,7 +223,7 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING (SVG PATH SHAPE MASKING)
+# TAB 2: REGION SELECTION & MASKING (FULLY FIXED)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
@@ -467,6 +467,7 @@ with tab_region:
                 )
             )
 
+        # FIXED LAYOUT CONFIGURATION FOR MAP CLICKING
         fig.update_layout(
             template="plotly_dark",
             height=550,
@@ -474,7 +475,7 @@ with tab_region:
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
-            dragmode="pan",
+            dragmode="select", # Enables point selection events directly on click/select
             hovermode="closest",
             uirevision="PERMANENT_CANVAS_LOCK",
         )
