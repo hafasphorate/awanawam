@@ -223,13 +223,13 @@ with tab_import:
         st.success("✅ Video file attached successfully!")
 
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING (FULLY WORKING & STABLE)
+# TAB 2: REGION SELECTION & MASKING (LASSO POLYGON FIXED)
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **Instructions:** Click and drag or draw on the video frame. Double-click to close shapes or click **💾 Lock Mask** to save active coordinates.")
+    st.info("💡 **How to use:** Select the **Lasso Tool** (or Box Tool) from the top-right video toolbar, then draw around an area to create an exclusion polygon!")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -248,22 +248,27 @@ with tab_region:
             st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
             c_btn1, c_btn2, c_btn3 = st.columns(3)
             with c_btn1:
-                if st.button("💾 Lock Mask", use_container_width=True):
+                if st.button("💾 Lock Active Mask", use_container_width=True):
                     if len(st.session_state.active_mask_pts) >= 3:
-                        st.session_state.exclusion_masks.append(list(st.session_state.active_mask_pts))
+                        # Downsample dense lasso points to clean polygon vertices
+                        pts = st.session_state.active_mask_pts
+                        step = max(1, len(pts) // 12) # keep max ~12 vertices for clean geometry
+                        clean_pts = pts[::step]
+                        
+                        st.session_state.exclusion_masks.append(clean_pts)
                         st.session_state.active_mask_pts = []
                         st.session_state.mask_click_sig = None
-                        st.success("Mask Saved!")
+                        st.success("Mask Zone Locked & Saved!")
                         st.rerun()
                     else:
-                        st.warning("Needs ≥3 points to lock.")
+                        st.warning(f"Needs ≥3 points (Currently active: {len(st.session_state.active_mask_pts)}).")
             with c_btn2:
                 if st.button("🗑️ Clear Active", use_container_width=True):
                     st.session_state.active_mask_pts = []
                     st.session_state.mask_click_sig = None
                     st.rerun()
             with c_btn3:
-                if st.button("🔥 Reset All", use_container_width=True):
+                if st.button("🔥 Reset All Masks", use_container_width=True):
                     st.session_state.exclusion_masks = []
                     st.session_state.active_mask_pts = []
                     st.session_state.mask_click_sig = None
@@ -280,7 +285,7 @@ with tab_region:
 
             fig_img = go.Figure()
 
-            # 1. Background Image Layer
+            # 1. Video Frame Background
             fig_img.add_layout_image(
                 dict(
                     source=pil_img,
@@ -296,7 +301,21 @@ with tab_region:
                 )
             )
 
-            # 2. Render Existing Locked Exclusion Masks
+            # Add invisible grid so lasso tool picks up space everywhere
+            grid_x, grid_y = np.meshgrid(
+                np.linspace(0, img_w, 40),
+                np.linspace(0, img_h, 40)
+            )
+            fig_img.add_trace(go.Scatter(
+                x=grid_x.flatten(),
+                y=grid_y.flatten(),
+                mode="markers",
+                marker=dict(size=10, color="rgba(0,0,0,0.001)"),
+                hoverinfo="none",
+                showlegend=False,
+            ))
+
+            # 2. Render Locked/Saved Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -312,39 +331,37 @@ with tab_region:
                         name=f"Mask Zone #{idx+1}",
                     ))
 
-            # 3. Render Active Mask Points
+            # 3. Render Active Selected Lasso Polygon
             if len(st.session_state.active_mask_pts) > 0:
                 amx = [p[0] for p in st.session_state.active_mask_pts]
                 amy = [p[1] for p in st.session_state.active_mask_pts]
                 
-                amx_line = amx + ([amx[0]] if len(amx) >= 3 else [])
-                amy_line = amy + ([amy[0]] if len(amy) >= 3 else [])
+                amx_line = amx + [amx[0]]
+                amy_line = amy + [amy[0]]
 
                 fig_img.add_trace(go.Scatter(
                     x=amx_line,
                     y=amy_line,
                     mode="markers+lines",
-                    fill="toself" if len(amx) >= 3 else "none",
-                    fillcolor="rgba(255, 255, 0, 0.35)",
-                    marker=dict(color="#FFFF00", size=10, symbol="circle", line=dict(color="#000000", width=1.5)),
-                    line=dict(color="#FFFF00", width=3, dash="dash"),
+                    fill="toself",
+                    fillcolor="rgba(255, 255, 0, 0.4)",
+                    marker=dict(color="#FFFF00", size=6),
+                    line=dict(color="#FFFF00", width=2.5, dash="dash"),
                     name="Active Polygon"
                 ))
 
-            # Fixed Plotly Layout Configuration
             fig_img.update_layout(
                 template="plotly_dark",
                 height=600,
                 margin=dict(l=0, r=0, t=10, b=10),
                 xaxis=dict(range=[0, img_w], showgrid=False, zeroline=False, constrain="domain"),
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
-                dragmode="lasso",  # Uses Lasso Selection as reliable interactive tool
+                dragmode="lasso",
                 clickmode="event+select",
                 showlegend=False,
                 uirevision="PERMANENT_VIDEO_LOCK"
             )
 
-            # Display Chart
             v_events = st.plotly_chart(
                 fig_img,
                 use_container_width=True,
@@ -353,19 +370,24 @@ with tab_region:
                 key="video_mask_canvas"
             )
 
-            # Capture Selection Points
+            # Process Lasso Selection
             if v_events and "selection" in v_events:
                 v_pts = v_events["selection"].get("points", [])
-                if v_pts:
-                    for pt in v_pts:
-                        click_x = float(pt["x"])
-                        click_y = float(pt["y"])
-                        st.session_state.active_mask_pts.append([click_x, click_y])
-                    st.rerun()
+                if v_pts and len(v_pts) >= 3:
+                    # Capture full shape boundary points
+                    new_pts = [[float(p["x"]), float(p["y"])] for p in v_pts]
+                    
+                    # Generate unique signature for this lasso trace
+                    sig = f"lasso_{len(new_pts)}_{new_pts[0][0]:.1f}_{new_pts[-1][1]:.1f}"
+                    
+                    if sig != st.session_state.mask_click_sig:
+                        st.session_state.mask_click_sig = sig
+                        st.session_state.active_mask_pts = new_pts
+                        st.rerun()
 
-            num_masks = len(st.session_state.exclusion_masks)
-            if num_masks > 0:
-                st.success(f"✅ **{num_masks}** Exclusion Zone(s) Saved!")
+            num_active = len(st.session_state.active_mask_pts)
+            if num_active > 0:
+                st.info(f"📍 **{num_active} points captured!** Click **💾 Lock Active Mask** to finalize this zone.")
 
     else:
         st.warning("⚠️ Please upload a surveillance video in Step 2.1 to enable interactive video masking.")
