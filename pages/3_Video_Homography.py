@@ -37,10 +37,6 @@ if "editing_point_idx" not in st.session_state:
     st.session_state.editing_point_idx = None
 if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
-if "current_x_range" not in st.session_state:
-    st.session_state.current_x_range = None
-if "current_y_range" not in st.session_state:
-    st.session_state.current_y_range = None
 if "tracking_results_df" not in st.session_state:
     st.session_state.tracking_results_df = None
 
@@ -299,32 +295,18 @@ with tab_region:
 
         if len(st.session_state.four_corners) > 0:
             st.markdown("---")
-            st.markdown("##### Selected Points & Individual Controls")
+            st.markdown("##### Selected Points & Individual Redo")
             for idx, pt in enumerate(st.session_state.four_corners[:4]):
                 c_lbl = corner_labels[idx] if idx < 4 else f"P{idx+1}"
-                col_info, col_edit, col_reset = st.columns([2.8, 1.1, 1.1])
+                col_info, col_act = st.columns([2.5, 1])
 
                 with col_info:
                     st.markdown(f"**{c_lbl}**: `({round(pt[0], 2)}, {round(pt[1], 2)})`")
-
-                with col_edit:
+                with col_act:
                     is_editing = (st.session_state.editing_point_idx == idx)
                     btn_label = "🎯 Target" if is_editing else "✏️ Edit"
                     if st.button(btn_label, key=f"edit_btn_{idx}", use_container_width=True):
                         st.session_state.editing_point_idx = idx
-                        st.session_state.processed_click_sig = None
-                        st.rerun()
-
-                with col_reset:
-                    if st.button("🗑️ Reset", key=f"reset_btn_{idx}", use_container_width=True):
-                        st.session_state.four_corners.pop(idx)
-                        st.session_state.selected_polygon_pts = [
-                            {"X (m)": p[0], "Y (m)": p[1]} for p in st.session_state.four_corners
-                        ]
-                        if st.session_state.editing_point_idx == idx:
-                            st.session_state.editing_point_idx = None
-                        elif st.session_state.editing_point_idx is not None and st.session_state.editing_point_idx > idx:
-                            st.session_state.editing_point_idx -= 1
                         st.session_state.processed_click_sig = None
                         st.rerun()
 
