@@ -56,15 +56,40 @@ tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
     "🎬 2.4 2D Playback & Crowd Heatmaps",
 ])
 
-# Helper function to unpack wall geometry cleanly
-def extract_walls_from_json(data):
+# Universal JSON Wall Geometry Parser
+def parse_cad_walls_from_json(data):
     walls = []
-    wall_source = data.get("dxf_walls", data.get("wall_lines", data.get("walls", [])))
-    for w in wall_source:
-        if isinstance(w, dict) and "x" in w and "y" in w:
-            walls.append(w)
-        elif isinstance(w, (list, tuple)) and len(w) >= 2:
-            walls.append({"x": [w[0][0], w[1][0]], "y": [w[0][1], w[1][1]]})
+    # Check all possible dictionary key names used for storing walls
+    candidates = ["dxf_walls", "wall_lines", "walls", "cad_walls", "geometry_lines"]
+    wall_data = None
+    for k in candidates:
+        if k in data and data[k]:
+            wall_data = data[k]
+            break
+
+    if not wall_data and isinstance(data, dict):
+        # Look inside metadata or nested dictionary if present
+        for sub_k in ["metadata", "vga_data", "config"]:
+            if isinstance(data.get(sub_k), dict):
+                for k in candidates:
+                    if k in data[sub_k] and data[sub_k][k]:
+                        wall_data = data[sub_k][k]
+                        break
+
+    if wall_data:
+        for item in wall_data:
+            # Format 1: Dict with 'x' and 'y' lists
+            if isinstance(item, dict) and "x" in item and "y" in item:
+                walls.append({"x": item["x"], "y": item["y"]})
+            # Format 2: Dict with start/end or p1/p2
+            elif isinstance(item, dict) and "start" in item and "end" in item:
+                walls.append({"x": [item["start"][0], item["end"][0]], "y": [item["start"][1], item["end"][1]]})
+            # Format 3: Line segment list [[x1, y1], [x2, y2]]
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                p1, p2 = item[0], item[1]
+                if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+                    walls.append({"x": [p1[0], p2[0]], "y": [p1[1], p2[1]]})
+
     return walls
 
 # ==========================================
@@ -94,12 +119,12 @@ with tab_import:
                     st.session_state["vga_df"] = st.session_state.vga_grid_df
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 2. Fix 1: Load CAD Walls from JSON Export
-                walls = extract_walls_from_json(data)
-                if walls:
-                    st.session_state.dxf_walls = walls
-                    st.session_state.wall_lines = walls
-                    st.success(f"✅ Loaded {len(walls)} CAD wall boundaries")
+                # 2. Universal CAD Wall Extraction
+                extracted_walls = parse_cad_walls_from_json(data)
+                if extracted_walls:
+                    st.session_state.dxf_walls = extracted_walls
+                    st.session_state.wall_lines = extracted_walls
+                    st.success(f"✅ Loaded {len(extracted_walls)} CAD wall boundary lines!")
 
                 # 3. Load ROI Polygon / Corners
                 if "polygon_points" in data and data["polygon_points"]:
@@ -213,7 +238,7 @@ with tab_region:
             fig_img = px.imshow(raw_frame_rgb)
             img_h, img_w = raw_frame_rgb.shape[0], raw_frame_rgb.shape[1]
 
-            # Fix 2: Render completed polygon exclusion masks
+            # Render completed polygon exclusion masks via Plotly SVG paths
             shapes_list = []
             for mask in st.session_state.exclusion_masks:
                 if len(mask) >= 3:
@@ -225,7 +250,7 @@ with tab_region:
                         line=dict(color="#FF0000", width=3),
                     ))
 
-            # Fix 2: Active drawing overlay
+            # Active drawing overlay (Scatter markers & connecting lines)
             if len(st.session_state.active_mask_pts) > 0:
                 amx = [p[0] for p in st.session_state.active_mask_pts]
                 amy = [p[1] for p in st.session_state.active_mask_pts]
@@ -237,7 +262,7 @@ with tab_region:
                     mode="markers+lines",
                     marker=dict(color="#FFFF00", size=10, symbol="circle"),
                     line=dict(color="#FFFF00", width=3, dash="dash"),
-                    name="Active Mask",
+                    name="Active Mask Boundary",
                     showlegend=False
                 ))
 
@@ -246,7 +271,7 @@ with tab_region:
                 margin=dict(l=0, r=0, t=10, b=10),
                 height=600,
                 xaxis=dict(range=[0, img_w], showgrid=False),
-                yaxis=dict(range=[img_h, 0], showgrid=False), # Maintain image axis orientation
+                yaxis=dict(range=[img_h, 0], showgrid=False),
                 clickmode="event+select",
                 dragmode="pan",
                 uirevision="VIDEO_CANVAS_PRESERVE"
@@ -325,7 +350,7 @@ with tab_region:
 
         fig = go.Figure()
 
-        # Fix 3: Robust CAD Wall Rendering supporting all data formats
+        # CAD Wall Rendering Pipeline
         wall_x, wall_y = [], []
         walls_data = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
 
@@ -337,7 +362,7 @@ with tab_region:
             elif isinstance(line, dict) and "x" in line and "y" in line:  # Dict representation
                 wall_x.extend([line["x"][0], line["x"][1], None])
                 wall_y.extend([line["y"][0], line["y"][1], None])
-            elif isinstance(line, (list, tuple)):  # Coordinate tuples
+            elif isinstance(line, (list, tuple)):  # Point tuples
                 for i in range(len(line) - 1):
                     wall_x.extend([line[i][0], line[i+1][0], None])
                     wall_y.extend([line[i][1], line[i+1][1], None])
@@ -455,13 +480,11 @@ with tab_playback:
     st.markdown("### 1. Import Tracking Dataset")
     col_up1, col_up2 = st.columns(2)
 
-    # Fix 4: Universal JSON tracking parser
     def parse_tracking_json(raw_json):
         if isinstance(raw_json, list):
             return pd.DataFrame(raw_json)
 
         if isinstance(raw_json, dict):
-            # Inspect common tracking payload keys
             for key in ["tracking_points", "tracking_results", "pedestrian_trajectories", "trajectories", "tracking_data"]:
                 if key in raw_json and isinstance(raw_json[key], list) and len(raw_json[key]) > 0:
                     return pd.DataFrame(raw_json[key])
@@ -496,17 +519,16 @@ with tab_playback:
     if df_track is not None and not df_track.empty:
         df_track.columns = [str(c).lower().strip() for c in df_track.columns]
 
-        # Fix 4: Map coordinate and frame keys flexibly across various schema versions
-        frame_col = next((c for c in ["frame", "frame_idx", "frame_number", "timestamp"] if c in df_track.columns), None)
-        x_col = next((c for c in ["x", "x (m)", "x_m", "pos_x", "x_canvas"] if c in df_track.columns), None)
-        y_col = next((c for c in ["y", "y (m)", "y_m", "pos_y", "y_canvas"] if c in df_track.columns), None)
+        # Explicitly supports world_x, world_y, img_x, img_y, frame_idx, track_id
+        frame_col = next((c for c in ["frame_idx", "frame", "frame_number", "timestamp"] if c in df_track.columns), None)
+        x_col = next((c for c in ["world_x", "x", "x (m)", "x_m", "pos_x", "x_canvas", "img_x"] if c in df_track.columns), None)
+        y_col = next((c for c in ["world_y", "y", "y (m)", "y_m", "pos_y", "y_canvas", "img_y"] if c in df_track.columns), None)
         id_col = next((c for c in ["track_id", "id", "person_id"] if c in df_track.columns), "track_id")
 
         if x_col and y_col:
-            # Ensure frame column exists
             if not frame_col:
-                df_track["frame"] = 0
-                frame_col = "frame"
+                df_track["frame_idx"] = 0
+                frame_col = "frame_idx"
 
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
@@ -530,7 +552,7 @@ with tab_playback:
                 st.markdown(f"**Pedestrian Plan View (Frame #{selected_f})**")
                 fig_play = go.Figure()
 
-                # Add CAD walls as background trace
+                # CAD walls as background trace
                 walls_data = st.session_state.get("dxf_walls") or st.session_state.get("wall_lines", [])
                 for line in walls_data:
                     if hasattr(line, "xy"):
