@@ -226,14 +226,23 @@ with tab_import:
 if "mask_canvas_key_ver" not in st.session_state:
     st.session_state.mask_canvas_key_ver = 0
 
+import streamlit as st
+import plotly.graph_objects as go
+import numpy as np
+import PIL.Image
+
+# Initialize key version counter in session state if not already set
+if "mask_canvas_key_ver" not in st.session_state:
+    st.session_state.mask_canvas_key_ver = 0
+
 # ==========================================
-# TAB 2: REGION SELECTION & MASKING (FULLY FIXED)
+# TAB 2: REGION SELECTION & MASKING
 # ==========================================
 with tab_region:
     st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
 
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-    st.info("💡 **Instructions:** Draw shapes using the video toolbar (top right). Click **🔥 Reset All Masks** to clear.")
+    st.info("💡 **Instructions:** Draw freehand zones or rectangles using the Plotly toolbar (top right). Click **🔥 Reset All Masks** to clear all zones.")
 
     if "uploaded_video_file" in st.session_state and st.session_state.uploaded_video_file is not None:
         col_m_slider, col_m_btns = st.columns([2.5, 1.5])
@@ -262,8 +271,6 @@ with tab_region:
         raw_frame_rgb = extract_frame_from_video(st.session_state.uploaded_video_file, frame_number=frame_idx)
         
         if raw_frame_rgb is not None:
-            import PIL.Image
-
             img_h, img_w, _ = raw_frame_rgb.shape
             pil_img = PIL.Image.fromarray(raw_frame_rgb)
 
@@ -285,7 +292,7 @@ with tab_region:
                 )
             )
 
-            # 2. Render Existing Exclusion Masks
+            # 2. Render Existing Saved Exclusion Masks
             for idx, mask in enumerate(st.session_state.exclusion_masks):
                 if len(mask) >= 3:
                     mx = [p[0] for p in mask] + [mask[0][0]]
@@ -309,7 +316,6 @@ with tab_region:
                 yaxis=dict(range=[img_h, 0], showgrid=False, zeroline=False, scaleanchor="x", scaleratio=1),
                 dragmode="drawclosedpath",
                 showlegend=False,
-                # Dynamic revision ID to clear client-side shapes when reset is clicked
                 uirevision=f"MASK_REV_{st.session_state.mask_canvas_key_ver}"
             )
 
@@ -333,6 +339,8 @@ with tab_region:
                     parsed_masks = []
                     for shape in shapes:
                         shape_type = shape.get("type")
+                        
+                        # Handle Freehand Closed Paths
                         if shape_type == "path":
                             path_str = shape.get("path", "")
                             pts = []
@@ -345,6 +353,7 @@ with tab_region:
                                 step = max(1, len(pts) // 15)
                                 parsed_masks.append(pts[::step])
 
+                        # Handle Bounding Rectangles
                         elif shape_type == "rect":
                             x0, x1 = float(shape["x0"]), float(shape["x1"])
                             y0, y1 = float(shape["y0"]), float(shape["y1"])
@@ -389,7 +398,7 @@ with tab_region:
         if st.session_state.editing_point_idx is not None:
             st.warning(f"🎯 **Editing P{st.session_state.editing_point_idx + 1}:** Click map to re-position.")
         elif num_pts < 4:
-            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the map.")
+            st.info(f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the floorplan map.")
         else:
             st.success("✅ All 4 ROI Corners Configured!")
 
@@ -417,14 +426,13 @@ with tab_region:
         # Add normalized CAD walls
         fig = add_cad_walls_to_fig(fig)
 
-        # 🎯 FIX FOR CLICKING: Invisible background grid mesh to intercept clicks across the entire canvas area
-        # Assuming floorplan space spans 0-50m (adjust range if your CAD floorplan size differs)
-        grid_x, grid_y = np.meshgrid(np.linspace(-5, 55, 30), np.linspace(-5, 55, 30))
+        # 🎯 Invisible background mesh to intercept clicks on empty space
+        grid_x, grid_y = np.meshgrid(np.linspace(-5, 60, 40), np.linspace(-5, 60, 40))
         fig.add_trace(go.Scatter(
             x=grid_x.flatten(),
             y=grid_y.flatten(),
             mode="markers",
-            marker=dict(size=12, color="rgba(0,0,0,0.001)"),
+            marker=dict(size=15, color="rgba(0,0,0,0.001)"),
             hoverinfo="none",
             showlegend=False,
             name="ClickMesh"
@@ -474,6 +482,7 @@ with tab_region:
             yaxis=dict(title="Y Coordinate", showgrid=True),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
+            dragmode="pan",
             hovermode="closest",
             uirevision="PERMANENT_CANVAS_LOCK",
         )
@@ -486,7 +495,6 @@ with tab_region:
             key="roi_floorplan_canvas",
         )
 
-        # Process floorplan clicks
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
