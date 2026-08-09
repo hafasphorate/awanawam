@@ -203,6 +203,44 @@ def extract_frame_from_video(uploaded_file, frame_number=0):
     return None
 
 
+import json
+import re
+import tempfile
+import cv2
+import numpy as np
+import PIL.Image
+import plotly.graph_objects as go
+import streamlit as st
+
+# ==========================================
+# 1. HELPER: VIDEO FRAME EXTRACTION
+# ==========================================
+def extract_frame_from_video(uploaded_file, frame_number=0):
+    """Extracts a specific frame (RGB) from a Streamlit UploadedFile object using OpenCV."""
+    if uploaded_file is None:
+        return None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            return None
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ret, frame = cap.read()
+        cap.release()
+
+        if ret and frame is not None:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        st.error(f"Error reading video frame: {e}")
+
+    return None
+
+
 # ==========================================
 # 2. SESSION STATE INITIALIZATION
 # ==========================================
@@ -318,7 +356,7 @@ if (
                 constrain="domain",
             ),
             yaxis=dict(
-                range=[img_h, 0],  # Invert axis for image pixel coordinates
+                range=[img_h, 0],
                 showgrid=False,
                 zeroline=False,
                 scaleanchor="x",
@@ -394,7 +432,7 @@ if (
 
 else:
     st.warning(
-        "⚠️ Please upload a video file (e.g., `uploaded_video_file`) in Step 2.1 to display the frame preview."
+        "⚠️ Please upload a video file in Step 2.1 to display the frame preview."
     )
 
 st.markdown("---")
@@ -476,35 +514,79 @@ with col_controls:
 with col_plot:
     fig = go.Figure()
 
-    # CAD Walls
-    dxf_walls = st.session_state.get("wall_lines") or []
+    # --- ROBUST CAD WALL PARSER ---
+    # Look for CAD walls in common session state keys
+    dxf_walls = (
+        st.session_state.get("wall_lines")
+        or st.session_state.get("dxf_walls")
+        or st.session_state.get("walls")
+        or []
+    )
+    
     wall_x, wall_y = [], []
     all_x, all_y = [], []
 
     for line in dxf_walls:
-        if hasattr(line, "xy"):
-            x_list, y_list = list(line.xy[0]), list(line.xy[1])
-            wall_x.extend([x_list[0], x_list[1], None])
-            wall_y.extend([y_list[0], y_list[1], None])
-            all_x.extend(x_list)
-            all_y.extend(y_list)
+        try:
+            # Case 1: Shapely LineString / Geometry with .xy property
+            if hasattr(line, "xy"):
+                coords_x, coords_y = list(line.xy[0]), list(line.xy[1])
+                for i in range(len(coords_x) - 1):
+                    wall_x.extend([coords_x[i], coords_x[i + 1], None])
+                    wall_y.extend([coords_y[i], coords_y[i + 1], None])
+                    all_x.extend([coords_x[i], coords_x[i + 1]])
+                    all_y.extend([coords_y[i], coords_y[i + 1]])
 
-    if wall_x:
+            # Case 2: Line object with start/end attributes (ezdxf style)
+            elif hasattr(line, "dxf"):
+                start = line.dxf.start
+                end = line.dxf.end
+                wall_x.extend([start[0], end[0], None])
+                wall_y.extend([start[1], end[1], None])
+                all_x.extend([start[0], end[0]])
+                all_y.extend([start[1], end[1]])
+
+            # Case 3: List/Tuple of Point Pairs e.g., [ (x1, y1), (x2, y2) ]
+            elif isinstance(line, (list, tuple)) and len(line) >= 2:
+                p1, p2 = line[0], line[1]
+                x1, y1 = float(p1[0]), float(p1[1])
+                x2, y2 = float(p2[0]), float(p2[1])
+                wall_x.extend([x1, x2, None])
+                wall_y.extend([y1, y2, None])
+                all_x.extend([x1, x2])
+                all_y.extend([y1, y2])
+        except Exception:
+            continue
+
+    # Plot CAD Wall Geometry
+    if wall_x and wall_y:
         fig.add_trace(
             go.Scatter(
                 x=wall_x,
                 y=wall_y,
                 mode="lines",
-                line=dict(color="#00ADB5", width=1.5),
-                name="CAD Walls",
+                line=dict(color="#00ADB5", width=1.8),
+                name="CAD Floorplan",
                 hoverinfo="none",
                 showlegend=False,
             )
         )
+    else:
+        st.warning("⚠️ No floorplan wall vectors detected in `st.session_state`. Please upload or parse your CAD file in Step 1.")
 
-    # Click Sensor Grid
-    minx, maxx = (min(all_x), max(all_x)) if all_x else (-5, 60)
-    miny, maxy = (min(all_y), max(all_y)) if all_y else (-5, 60)
+    # --- CLICK SENSOR GRID ---
+    if all_x and all_y:
+        minx, maxx = min(all_x), max(all_x)
+        miny, maxy = min(all_y), max(all_y)
+        pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 2.0
+        pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 2.0
+        bounds_x = [minx - pad_x, maxx + pad_x]
+        bounds_y = [miny - pad_y, maxy + pad_y]
+    else:
+        minx, maxx = -5.0, 60.0
+        miny, maxy = -5.0, 60.0
+        bounds_x = [-5.0, 60.0]
+        bounds_y = [-5.0, 60.0]
 
     gx = np.linspace(minx, maxx, 80)
     gy = np.linspace(miny, maxy, 80)
@@ -522,7 +604,7 @@ with col_plot:
         )
     )
 
-    # Selected ROI Points & Closed Polygon
+    # --- SELECTED ROI CORNERS & POLYGON ---
     pts = st.session_state.four_corners
     if len(pts) > 0:
         px_pts = [p[0] for p in pts]
@@ -567,8 +649,20 @@ with col_plot:
     fig.update_layout(
         template="plotly_dark",
         height=580,
-        xaxis=dict(title="X Coordinate", scaleanchor="y", scaleratio=1),
-        yaxis=dict(title="Y Coordinate"),
+        xaxis=dict(
+            title="X Coordinate (m)",
+            range=bounds_x,
+            scaleanchor="y",
+            scaleratio=1,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.1)",
+        ),
+        yaxis=dict(
+            title="Y Coordinate (m)",
+            range=bounds_y,
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.1)",
+        ),
         margin=dict(l=10, r=10, t=30, b=10),
         clickmode="event+select",
         dragmode="pan",
