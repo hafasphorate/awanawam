@@ -233,6 +233,18 @@ with tab_import:
         st.session_state.uploaded_video_file = uploaded_video
         st.success("✅ Video file attached successfully!")
 
+# ==========================================
+# 3. TAB 2: REGION SELECTION & MASKING
+# ==========================================
+st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
+
+# --- SECTION A: VIDEO PREVIEW & POLYGON MASKING ---
+st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
+st.info(
+    "💡 **Instructions:** Use the draw tool in the Plotly toolbar (top right) "
+    "to sketch exclusion zones directly on the video frame. Double-click to close a polygon."
+)
+
 import json
 import re
 import tempfile
@@ -288,19 +300,6 @@ for key, default in [
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
-
-
-# ==========================================
-# 3. TAB 2: REGION SELECTION & MASKING
-# ==========================================
-st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
-
-# --- SECTION A: VIDEO PREVIEW & POLYGON MASKING ---
-st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
-st.info(
-    "💡 **Instructions:** Use the draw tool in the Plotly toolbar (top right) "
-    "to sketch exclusion zones directly on the video frame. Double-click to close a polygon."
-)
 
 if (
     "uploaded_video_file" in st.session_state
