@@ -6,8 +6,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import PIL.Image
+import re
 import streamlit as st
 from shapely.geometry import LineString, Polygon
+
 
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
@@ -231,10 +233,11 @@ with tab_import:
         st.session_state.uploaded_video_file = uploaded_video
         st.success("✅ Video file attached successfully!")
 
+import json
+import re
 import numpy as np
 import PIL.Image
 import plotly.graph_objects as go
-import re
 import streamlit as st
 
 # ==========================================
@@ -245,12 +248,13 @@ for key, default in [
     ("exclusion_masks", []),
     ("active_mask_pts", []),
     ("editing_point_idx", None),
-    ("processed_click_sig", None),
+    ("last_click_hash", None),
     ("mask_canvas_key_ver", 0),
     ("selected_frame_idx", 0),
-    ("current_x_range", None),
-    ("current_y_range", None),
+    ("camera_view_range", None),
     ("selected_polygon_pts", []),
+    ("vga_grid_df", None),
+    ("homography_matrix", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -380,7 +384,7 @@ with tab_region:
                 key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}",
             )
 
-            # Extract SVG Shapes Directly from Selection Event (Robust Parser)
+            # Extract SVG Shapes Directly from Selection Event
             if v_events and "selection" in v_events:
                 shapes = v_events["selection"].get("shapes", [])
                 if shapes:
@@ -389,7 +393,6 @@ with tab_region:
                         shape_type = shape.get("type")
                         if shape_type == "path":
                             path_str = shape.get("path", "")
-                            # Robust SVG parsing for M, L, Z commands using Regex
                             tokens = re.findall(
                                 r"([MLZz])\s*([-\d\.\,\s]*)", path_str
                             )
@@ -444,9 +447,8 @@ with tab_region:
                 st.session_state.four_corners = []
                 st.session_state.selected_polygon_pts = []
                 st.session_state.editing_point_idx = None
-                st.session_state.processed_click_sig = None
-                st.session_state.current_x_range = None
-                st.session_state.current_y_range = None
+                st.session_state.last_click_hash = None
+                st.session_state.camera_view_range = None
                 st.rerun()
 
         with col_btn2:
@@ -462,7 +464,7 @@ with tab_region:
             )
         elif num_pts < 4:
             st.info(
-                f"⚠️ Selected **{num_pts}/4** corners. Click anywhere on the floorplan map."
+                f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the floorplan map."
             )
         else:
             st.success("✅ All 4 ROI Corners Configured!")
@@ -494,7 +496,7 @@ with tab_region:
                         use_container_width=True,
                     ):
                         st.session_state.editing_point_idx = idx
-                        st.session_state.processed_click_sig = None
+                        st.session_state.last_click_hash = None
                         st.rerun()
                 with col_del:
                     if st.button(
@@ -510,8 +512,34 @@ with tab_region:
                             {"X (m)": p[0], "Y (m)": p[1]}
                             for p in st.session_state.four_corners
                         ]
-                        st.session_state.processed_click_sig = None
+                        st.session_state.last_click_hash = None
                         st.rerun()
+
+        st.markdown("---")
+
+        # Config Exporter
+        export_payload = {
+            "polygon_points": st.session_state.four_corners[:4],
+            "vga_grid": (
+                st.session_state.vga_grid_df.to_dict(orient="records")
+                if st.session_state.vga_grid_df is not None
+                else []
+            ),
+            "homography_matrix": (
+                st.session_state.homography_matrix.tolist()
+                if st.session_state.homography_matrix is not None
+                else None
+            ),
+            "exclusion_masks": st.session_state.exclusion_masks,
+        }
+
+        st.download_button(
+            label="💾 Export JSON Config",
+            data=json.dumps(export_payload, indent=2),
+            file_name="floorplan_homography_config.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     with col_plot:
         st.markdown("#### Interactive Floorplan Map")
@@ -565,59 +593,44 @@ with tab_region:
                 )
             )
 
-        # 2. Dynamic Invisible Click Mesh Sensor
+        # 2. Compute Initial Bounds & Setup Click Mesh Grid
         if all_x and all_y:
             minx, maxx = min(all_x), max(all_x)
             miny, maxy = min(all_y), max(all_y)
             pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 1.0
             pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 1.0
-
-            if st.session_state.get("current_x_range") is None:
-                st.session_state.current_x_range = [
-                    minx - pad_x,
-                    maxx + pad_x,
-                ]
-            if st.session_state.get("current_y_range") is None:
-                st.session_state.current_y_range = [
-                    miny - pad_y,
-                    maxy + pad_y,
-                ]
-
-            gx = np.linspace(minx, maxx, 60)
-            gy = np.linspace(miny, maxy, 60)
-            g_xx, g_yy = np.meshgrid(gx, gy)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=g_xx.flatten(),
-                    y=g_yy.flatten(),
-                    mode="markers",
-                    marker=dict(size=16, color="rgba(0,0,0,0.001)"),
-                    hoverinfo="none",
-                    showlegend=False,
-                    name="click_sensor_grid",
-                )
-            )
+            init_x_range = [minx - pad_x, maxx + pad_x]
+            init_y_range = [miny - pad_y, maxy + pad_y]
         else:
-            if st.session_state.get("current_x_range") is None:
-                st.session_state.current_x_range = [-5, 60]
-            if st.session_state.get("current_y_range") is None:
-                st.session_state.current_y_range = [-5, 60]
+            minx, maxx = -5, 60
+            miny, maxy = -5, 60
+            init_x_range = [-5, 60]
+            init_y_range = [-5, 60]
 
-            grid_x, grid_y = np.meshgrid(
-                np.linspace(-5, 60, 50), np.linspace(-5, 60, 50)
+        if st.session_state.camera_view_range is None:
+            st.session_state.camera_view_range = {
+                "x": init_x_range,
+                "y": init_y_range,
+            }
+
+        grid_step_x = (maxx - minx) / 80 if (maxx - minx) > 0 else 1.0
+        grid_step_y = (maxy - miny) / 80 if (maxy - miny) > 0 else 1.0
+
+        gx = np.arange(minx, maxx + grid_step_x, grid_step_x)
+        gy = np.arange(miny, maxy + grid_step_y, grid_step_y)
+        g_xx, g_yy = np.meshgrid(gx, gy)
+
+        fig.add_trace(
+            go.Scatter(
+                x=g_xx.flatten(),
+                y=g_yy.flatten(),
+                mode="markers",
+                marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                hoverinfo="x+y",
+                showlegend=False,
+                name="click_sensor_grid",
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=grid_x.flatten(),
-                    y=grid_y.flatten(),
-                    mode="markers",
-                    marker=dict(size=18, color="rgba(0,0,0,0.001)"),
-                    hoverinfo="none",
-                    showlegend=False,
-                    name="ClickMesh",
-                )
-            )
+        )
 
         # 3. Render Active Corner Points & Bounding ROI Polygon
         pts = st.session_state.four_corners
@@ -625,7 +638,7 @@ with tab_region:
             px_pts = [p[0] for p in pts]
             py_pts = [p[1] for p in pts]
 
-            if len(pts) >= 3:
+            if len(pts) == 4:
                 px_closed = px_pts + [px_pts[0]]
                 py_closed = py_pts + [py_pts[0]]
                 fig.add_trace(
@@ -633,7 +646,7 @@ with tab_region:
                         x=px_closed,
                         y=py_closed,
                         mode="lines",
-                        fill="toself" if len(pts) == 4 else "none",
+                        fill="toself",
                         fillcolor="rgba(0, 230, 118, 0.35)",
                         line=dict(color="#00FF66", width=2.5),
                         name="Camera ROI Zone",
@@ -667,27 +680,27 @@ with tab_region:
                 )
             )
 
-        # 4. Layout & Range Lock Configuration
+        # 4. Layout Configuration & Range Locking
         fig.update_layout(
             template="plotly_dark",
-            height=550,
+            height=620,
             xaxis=dict(
                 title="X Coordinate",
-                range=st.session_state.current_x_range,
+                range=st.session_state.camera_view_range["x"],
                 scaleanchor="y",
                 scaleratio=1,
                 showgrid=True,
             ),
             yaxis=dict(
                 title="Y Coordinate",
-                range=st.session_state.current_y_range,
+                range=st.session_state.camera_view_range["y"],
                 showgrid=True,
             ),
             margin=dict(l=10, r=10, t=30, b=10),
             clickmode="event+select",
             dragmode="pan",
             hovermode="closest",
-            uirevision="PERMANENT_CANVAS_LOCK",
+            uirevision="constant_lock",
         )
 
         chart_events = st.plotly_chart(
@@ -705,7 +718,7 @@ with tab_region:
                 "xaxis.range[0]" in relayout_data
                 and "xaxis.range[1]" in relayout_data
             ):
-                st.session_state.current_x_range = [
+                st.session_state.camera_view_range["x"] = [
                     relayout_data["xaxis.range[0]"],
                     relayout_data["xaxis.range[1]"],
                 ]
@@ -713,23 +726,23 @@ with tab_region:
                 "yaxis.range[0]" in relayout_data
                 and "yaxis.range[1]" in relayout_data
             ):
-                st.session_state.current_y_range = [
+                st.session_state.camera_view_range["y"] = [
                     relayout_data["yaxis.range[0]"],
                     relayout_data["yaxis.range[1]"],
                 ]
 
-        # 6. Process Clicks Captured on the Floorplan Mesh
+        # 6. Process Clicks Captured on Floorplan Canvas
         if chart_events and "selection" in chart_events:
             event_pts = chart_events["selection"].get("points", [])
             if event_pts:
                 click_x = float(event_pts[0]["x"])
                 click_y = float(event_pts[0]["y"])
-                click_sig = f"{click_x:.4f}_{click_y:.4f}_{st.session_state.editing_point_idx}"
+                click_hash = f"{click_x:.3f}_{click_y:.3f}_{st.session_state.editing_point_idx}"
 
-                if click_sig != st.session_state.processed_click_sig:
-                    st.session_state.processed_click_sig = click_sig
+                if click_hash != st.session_state.last_click_hash:
+                    st.session_state.last_click_hash = click_hash
 
-                    # Mode A: Editing an existing point
+                    # Mode A: Editing active target corner
                     if st.session_state.editing_point_idx is not None:
                         target_idx = st.session_state.editing_point_idx
                         st.session_state.four_corners[target_idx] = [
@@ -743,7 +756,7 @@ with tab_region:
                         ]
                         st.rerun()
 
-                    # Mode B: Appending new points (up to 4)
+                    # Mode B: Appending new corners (up to 4)
                     elif len(st.session_state.four_corners) < 4:
                         st.session_state.four_corners.append([click_x, click_y])
                         st.session_state.selected_polygon_pts = [
