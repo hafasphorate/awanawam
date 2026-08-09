@@ -87,16 +87,14 @@ def normalize_line_to_dict(line):
     return None
 
 def extract_walls_from_session(data):
-    """Recursively searches for wall lines across all common JSON export structures."""
+    """Recursively searches for wall lines across common JSON export structures and normalizes them to Shapely LineString objects."""
     normalized_walls = []
     raw_found = []
 
     if isinstance(data, dict):
-        # Path 1: session_data["floorplan"]["wall_lines"]
         if "floorplan" in data and isinstance(data["floorplan"], dict):
             raw_found.extend(data["floorplan"].get("wall_lines", []))
 
-        # Path 2: Root level keys
         for key in ["wall_lines", "dxf_walls", "walls", "cad_walls", "geometry_lines"]:
             if key in data and isinstance(data[key], list):
                 raw_found.extend(data[key])
@@ -105,9 +103,20 @@ def extract_walls_from_session(data):
         raw_found = data
 
     for item in raw_found:
-        d = normalize_line_to_dict(item)
-        if d:
-            normalized_walls.append(d)
+        try:
+            if hasattr(item, "xy"):
+                normalized_walls.append(LineString(item.coords))
+            elif isinstance(item, dict) and "x" in item and "y" in item:
+                xs = item["x"]
+                ys = item["y"]
+                if len(xs) >= 2 and len(ys) >= 2:
+                    normalized_walls.append(LineString([(float(xs[0]), float(ys[0])), (float(xs[1]), float(ys[1]))]))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                p1, p2 = item[0], item[1]
+                if isinstance(p1, (list, tuple)) and isinstance(p2, (list, tuple)):
+                    normalized_walls.append(LineString([(float(p1[0]), float(p1[1])), (float(p2[0]), float(p2[1]))]))
+        except Exception:
+            continue
 
     return normalized_walls
 
@@ -211,10 +220,9 @@ with tab_import:
             try:
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     raw_wall_lines = process_cad_file(tmp_path)
-                    normalized_walls = [normalize_line_to_dict(w) for w in raw_wall_lines if normalize_line_to_dict(w)]
-                    st.session_state.dxf_walls = normalized_walls
-                    st.session_state.wall_lines = normalized_walls
-                    st.success(f"✅ Successfully parsed CAD! {len(normalized_walls)} wall boundary lines ready.")
+                    st.session_state.dxf_walls = raw_wall_lines
+                    st.session_state.wall_lines = raw_wall_lines
+                    st.success(f"✅ Successfully parsed CAD! {len(raw_wall_lines)} wall boundary lines ready.")
             except Exception as e:
                 st.error(f"Failed to parse CAD file: {e}")
             finally:
