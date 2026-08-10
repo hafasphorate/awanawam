@@ -753,147 +753,150 @@ with tab_tracking:
         st.session_state.get("vga_grid_df", None),
     )
 
+import json
+import math
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from scipy.spatial import cKDTree
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+
+
+def add_cad_walls_to_fig(fig, line_color="#666666", line_width=1.5):
+    """Underlays CAD floorplan wall lines stored in session state to Plotly figure."""
+    wall_lines = st.session_state.get(
+        "wall_lines", st.session_state.get("cad_walls", [])
+    )
+    if not wall_lines:
+        return fig
+
+    wall_x, wall_y = [], []
+    for line in wall_lines:
+        # Handles shapely LineString or raw tuple coordinate pairs
+        if hasattr(line, "xy"):
+            x, y = line.xy
+            wall_x.extend([x[0], x[1], None])
+            wall_y.extend([y[0], y[1], None])
+        elif isinstance(line, (list, tuple)) and len(line) == 2:
+            p1, p2 = line[0], line[1]
+            wall_x.extend([p1[0], p2[0], None])
+            wall_y.extend([p1[1], p2[1], None])
+
+    if wall_x and wall_y:
+        fig.add_trace(
+            go.Scatter(
+                x=wall_x,
+                y=wall_y,
+                mode="lines",
+                line=dict(color=line_color, width=line_width),
+                hoverinfo="none",
+                showlegend=False,
+                name="CAD Walls",
+            )
+        )
+    return fig
+
+
+def calculate_bearing_from_north(dx, dy):
+    """Calculates directional angle in degrees relative to North (top = 0 deg).
+
+    Angles increase clockwise: North=0, East=90, South=180, West=270.
+    """
+    if dx == 0 and dy == 0:
+        return 0.0
+    # math.atan2(dx, dy) yields 0 at (0, 1) [North], +pi/2 at (1, 0) [East]
+    angle_rad = math.atan2(dx, dy)
+    angle_deg = math.degrees(angle_rad)
+    return float(angle_deg % 360)
+
+
+def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
+    """Maps continuous trajectory points to the nearest VGA grid node."""
+    if not grid_nodes or df_track.empty:
+        return df_track
+
+    node_coords = np.array([[n["x"], n["y"]] for n in grid_nodes])
+    tree = cKDTree(node_coords)
+
+    track_coords = df_track[[x_col, y_col]].values
+    distances, indices = tree.query(track_coords)
+
+    df_track["grid_node_idx"] = indices
+    df_track["grid_node_x"] = node_coords[indices, 0]
+    df_track["grid_node_y"] = node_coords[indices, 1]
+
+    return df_track
+
+
 # ==========================================
 # TAB 4: 2D PLAYBACK & CROWD HEATMAPS
 # ==========================================
-
-# ==========================================
-# ADVANCED CAD WALL OVERLAY & AUTOSCALE HELPER
-# ==========================================
-def add_cad_walls_to_fig(fig, wall_color="#00E5FF", width=2.0):
-    """
-    Deep-unpacks wall entities and injects them into Plotly figures,
-    returning bounds (x_min, x_max, y_min, y_max) to prevent axis cropping.
-    """
-    walls = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
-
-    if not walls:
-        return fig, None
-
-    x_coords = []
-    y_coords = []
-
-    for item in walls:
-        try:
-            # 1. ezdxf Entities
-            if hasattr(item, "dxftype"):
-                dxf_type = item.dxftype()
-                if dxf_type == "LINE":
-                    x_coords.extend([item.dxf.start.x, item.dxf.end.x, None])
-                    y_coords.extend([item.dxf.start.y, item.dxf.end.y, None])
-                elif dxf_type in ["LWPOLYLINE", "POLYLINE"]:
-                    points = item.get_points() if hasattr(item, "get_points") else item.vertices
-                    for i in range(len(points) - 1):
-                        x_coords.extend([points[i][0], points[i+1][0], None])
-                        y_coords.extend([points[i][1], points[i+1][1], None])
-                    if getattr(item, "is_closed", False) or item.dxf.flags & 1:
-                        x_coords.extend([points[-1][0], points[0][0], None])
-                        y_coords.extend([points[-1][1], points[0][1], None])
-                continue
-
-            # 2. Shapely Geometries
-            if hasattr(item, "geom_type"):
-                if item.geom_type == "LineString":
-                    x, y = item.xy
-                    x_coords.extend(list(x) + [None])
-                    y_coords.extend(list(y) + [None])
-                elif item.geom_type in ["Polygon", "LinearRing"]:
-                    x, y = item.exterior.xy
-                    x_coords.extend(list(x) + [None])
-                    y_coords.extend(list(y) + [None])
-                elif item.geom_type == "MultiLineString":
-                    for line in item.geoms:
-                        x, y = line.xy
-                        x_coords.extend(list(x) + [None])
-                        y_coords.extend(list(y) + [None])
-                continue
-
-            # 3. Dictionaries
-            if isinstance(item, dict):
-                x1 = item.get("x1", item.get("start", [None, None])[0])
-                y1 = item.get("y1", item.get("start", [None, None])[1])
-                x2 = item.get("x2", item.get("end", [None, None])[0])
-                y2 = item.get("y2", item.get("end", [None, None])[1])
-                if None not in (x1, y1, x2, y2):
-                    x_coords.extend([x1, x2, None])
-                    y_coords.extend([y1, y2, None])
-                continue
-
-            # 4. Coordinate Lists/Tuples
-            if isinstance(item, (tuple, list)):
-                if len(item) == 2 and isinstance(item[0], (tuple, list)):
-                    x_coords.extend([item[0][0], item[1][0], None])
-                    y_coords.extend([item[0][1], item[1][1], None])
-                elif len(item) == 4:
-                    x_coords.extend([item[0], item[2], None])
-                    y_coords.extend([item[1], item[3], None])
-
-        except Exception:
-            continue
-
-    if x_coords:
-        # Add CAD wall trace on top
-        fig.add_trace(
-            go.Scatter(
-                x=x_coords,
-                y=y_coords,
-                mode="lines",
-                line=dict(color=wall_color, width=width),
-                name="CAD Walls",
-                hoverinfo="skip",
-                showlegend=True,
-            )
-        )
-        # Calculate wall bounds
-        valid_x = [x for x in x_coords if x is not None]
-        valid_y = [y for y in y_coords if y is not None]
-        if valid_x and valid_y:
-            bounds = (min(valid_x), max(valid_x), min(valid_y), max(valid_y))
-            return fig, bounds
-
-    return fig, None
-
 with tab_playback:
     st.subheader("Step 2.4: 2D Playback & Crowd Trajectory Analytics")
-
-    # Debug Diagnostic Expander
-    with st.expander("🔍 CAD Wall Debugger (Click here if walls are missing)", expanded=False):
-        walls_in_state = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
-        st.write(f"**Total wall objects found in state:** `{len(walls_in_state)}`")
-        if walls_in_state:
-            st.write("**First 2 Wall Elements Sample:**")
-            st.code(str(walls_in_state[:2]))
 
     st.markdown("### 1. Import Tracking Dataset")
     col_up1, col_up2 = st.columns(2)
 
     def parse_tracking_json(raw_json):
+        df_nodes = None
+
+        # Check for grid nodes inside the JSON export
+        if isinstance(raw_json, dict) and "vga_floorplan_nodes" in raw_json:
+            st.session_state.vga_floorplan_nodes = raw_json[
+                "vga_floorplan_nodes"
+            ]
+
         if isinstance(raw_json, list):
             return pd.DataFrame(raw_json)
 
         if isinstance(raw_json, dict):
-            for key in ["tracking_points", "tracking_results", "pedestrian_trajectories", "trajectories", "tracking_data"]:
-                if key in raw_json and isinstance(raw_json[key], list) and len(raw_json[key]) > 0:
+            for key in [
+                "tracking_points",
+                "tracking_results",
+                "pedestrian_trajectories",
+                "trajectories",
+                "tracking_data",
+            ]:
+                if (
+                    key in raw_json
+                    and isinstance(raw_json[key], list)
+                    and len(raw_json[key]) > 0
+                ):
                     return pd.DataFrame(raw_json[key])
 
         return pd.json_normalize(raw_json)
 
     with col_up1:
-        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 2.3)", type=["json"], key="tb_json_up")
+        uploaded_tb_json = st.file_uploader(
+            "Upload JSON Export (from Step 2.3 / Spatial Analysis)",
+            type=["json"],
+            key="tb_json_up",
+        )
         if uploaded_tb_json is not None:
             try:
                 raw_json = json.load(uploaded_tb_json)
                 df_loaded = parse_tracking_json(raw_json)
                 st.session_state.tracking_results_df = df_loaded
-                st.success(f"✅ Successfully imported {len(df_loaded)} tracking records!")
+                st.success(
+                    f"✅ Successfully imported {len(df_loaded)} tracking records!"
+                )
             except Exception as e:
                 st.error(f"Error reading JSON: {e}")
 
     with col_up2:
-        uploaded_tb_csv = st.file_uploader("Upload CSV Tracking Export", type=["csv"], key="tb_csv_up")
+        uploaded_tb_csv = st.file_uploader(
+            "Upload CSV Tracking Export", type=["csv"], key="tb_csv_up"
+        )
         if uploaded_tb_csv is not None:
             try:
-                st.session_state.tracking_results_df = pd.read_csv(uploaded_tb_csv)
+                st.session_state.tracking_results_df = pd.read_csv(
+                    uploaded_tb_csv
+                )
                 st.success("✅ Successfully imported CSV tracking records!")
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
@@ -905,10 +908,50 @@ with tab_playback:
     if df_track is not None and not df_track.empty:
         df_track.columns = [str(c).lower().strip() for c in df_track.columns]
 
-        frame_col = next((c for c in ["frame_idx", "frame", "frame_number", "timestamp"] if c in df_track.columns), None)
-        x_col = next((c for c in ["world_x", "x", "x (m)", "x_m", "pos_x", "x_canvas", "img_x"] if c in df_track.columns), None)
-        y_col = next((c for c in ["world_y", "y", "y (m)", "y_m", "pos_y", "y_canvas", "img_y"] if c in df_track.columns), None)
-        id_col = next((c for c in ["track_id", "id", "person_id"] if c in df_track.columns), "track_id")
+        frame_col = next(
+            (
+                c
+                for c in ["frame_idx", "frame", "frame_number", "timestamp"]
+                if c in df_track.columns
+            ),
+            None,
+        )
+        x_col = next(
+            (
+                c
+                for c in [
+                    "world_x",
+                    "x",
+                    "x (m)",
+                    "x_m",
+                    "pos_x",
+                    "x_canvas",
+                    "img_x",
+                ]
+                if c in df_track.columns
+            ),
+            None,
+        )
+        y_col = next(
+            (
+                c
+                for c in [
+                    "world_y",
+                    "y",
+                    "y (m)",
+                    "y_m",
+                    "pos_y",
+                    "y_canvas",
+                    "img_y",
+                ]
+                if c in df_track.columns
+            ),
+            None,
+        )
+        id_col = next(
+            (c for c in ["track_id", "id", "person_id"] if c in df_track.columns),
+            "track_id",
+        )
 
         if x_col and y_col:
             if not frame_col:
@@ -918,12 +961,29 @@ with tab_playback:
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
 
-            if "speed" not in df_track.columns:
-                df_track = df_track.sort_values(by=[id_col, frame_col])
-                df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
-                df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
-                df_track["speed"] = np.sqrt(df_track["dx"]**2 + df_track["dy"]**2)
+            # --- Calculate Motion Metrics (Speed + Direction from North) ---
+            df_track = df_track.sort_values(by=[id_col, frame_col])
+            df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
+            df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
+            df_track["speed"] = np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
 
+            # Calculation of Bearing relative to North (0° = North, 90° = East)
+            df_track["dir_deg_north"] = [
+                calculate_bearing_from_north(dx, dy)
+                for dx, dy in zip(df_track["dx"], df_track["dy"])
+            ]
+
+            # --- Grid Alignment (VGA Node Mapping) ---
+            vga_nodes = st.session_state.get("vga_floorplan_nodes", [])
+            if vga_nodes:
+                df_track = map_points_to_grid_nodes(
+                    df_track, vga_nodes, x_col, y_col
+                )
+                st.info(
+                    f"🔗 Matched movement tracking data to {len(vga_nodes)} floorplan grid nodes."
+                )
+
+            # --- 2. Motion Playback ---
             st.markdown("### 2. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
             selected_f = st.slider(
@@ -937,128 +997,220 @@ with tab_playback:
 
             col_fb1, col_fb2 = st.columns(2)
 
-            # Helper for explicit layout updating to force wall visibility
-            def apply_layout_with_bounds(fig, bounds, title_text=""):
-                fig.update_layout(
-                    title=title_text,
-                    template="plotly_dark",
-                    height=420,
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-                )
-                if bounds:
-                    # Pad axis bounds by 5% so walls aren't clipped at the extreme edges
-                    x_min, x_max, y_min, y_max = bounds
-                    x_pad = (x_max - x_min) * 0.05 if x_max != x_min else 1.0
-                    y_pad = (y_max - y_min) * 0.05 if y_max != y_min else 1.0
-                    fig.update_xaxes(range=[x_min - x_pad, x_max + x_pad])
-                    fig.update_yaxes(range=[y_min - y_pad, y_max + y_pad], scaleanchor="x", scaleratio=1)
-                else:
-                    fig.update_xaxes(autorange=True)
-                    fig.update_yaxes(autorange=True, scaleanchor="x", scaleratio=1)
-
             with col_fb1:
-                st.markdown(f"**Pedestrian Plan View (Frame #{selected_f})**")
+                st.markdown(
+                    f"**Pedestrian Plan View (Frame #{selected_f})**"
+                )
                 fig_play = go.Figure()
-                
-                # 1. Add Pedestrians
-                fig_play.add_trace(go.Scatter(
-                    x=curr_frame_df[x_col],
-                    y=curr_frame_df[y_col],
-                    mode="markers+text",
-                    marker=dict(size=10, color="#FF3D00"),
-                    text=curr_frame_df[id_col].astype(str),
-                    textposition="top center",
-                    name="Pedestrians"
-                ))
-                
-                # 2. Add CAD Walls & Apply Bounds Fix
-                fig_play, bounds = add_cad_walls_to_fig(fig_play, wall_color="#00E5FF", width=2.0)
-                apply_layout_with_bounds(fig_play, bounds)
+                fig_play = add_cad_walls_to_fig(fig_play)
+
+                fig_play.add_trace(
+                    go.Scatter(
+                        x=curr_frame_df[x_col],
+                        y=curr_frame_df[y_col],
+                        mode="markers+text",
+                        marker=dict(size=12, color="#FF5722"),
+                        text=curr_frame_df[id_col].astype(str),
+                        textposition="top center",
+                        name="Pedestrians",
+                    )
+                )
+                fig_play.update_layout(
+                    template="plotly_dark",
+                    height=400,
+                    margin=dict(l=10, r=10, t=20, b=10),
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_play, use_container_width=True)
 
             with col_fb2:
-                st.markdown(f"**Instant Density Heatmap (Frame #{selected_f})**")
+                st.markdown(
+                    f"**Instant Density Heatmap (Frame #{selected_f})**"
+                )
                 fig_f_hm = go.Figure()
-                fig_f_hm.add_trace(go.Histogram2dContour(
-                    x=curr_frame_df[x_col],
-                    y=curr_frame_df[y_col],
-                    colorscale="Jet",
-                    showscale=True
-                ))
-                fig_f_hm, bounds = add_cad_walls_to_fig(fig_f_hm, wall_color="#FFFFFF", width=2.0)
-                apply_layout_with_bounds(fig_f_hm, bounds)
+                fig_f_hm = add_cad_walls_to_fig(
+                    fig_f_hm, line_color="#FFFFFF", line_width=1.5
+                )
+
+                fig_f_hm.add_trace(
+                    go.Histogram2dContour(
+                        x=curr_frame_df[x_col],
+                        y=curr_frame_df[y_col],
+                        colorscale="Jet",
+                        showscale=True,
+                    )
+                )
+                fig_f_hm.update_layout(
+                    template="plotly_dark",
+                    height=400,
+                    margin=dict(l=10, r=10, t=20, b=10),
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_f_hm, use_container_width=True)
 
             st.markdown("---")
 
+            # --- 3. Aggregated Metrics ---
             st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
 
-            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs([
-                "📊 Crowd Volume", "🔥 Density Heatmap", "⚡ Speed Distribution", "🧭 Directional Flow"
-            ])
+            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs(
+                [
+                    "📊 Crowd Volume",
+                    "🔥 Density Heatmap",
+                    "⚡ Speed Distribution",
+                    "🧭 Directional Flow",
+                ]
+            )
 
             with m_tab1:
                 st.markdown("#### Cumulative Occupancy Heatmap")
                 fig_vol = go.Figure()
-                fig_vol.add_trace(go.Histogram2dContour(
-                    x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
-                ))
-                fig_vol, bounds = add_cad_walls_to_fig(fig_vol, wall_color="#FFFFFF", width=2.0)
-                apply_layout_with_bounds(fig_vol, bounds)
+                fig_vol = add_cad_walls_to_fig(
+                    fig_vol, line_color="#FFFFFF", line_width=1.5
+                )
+                fig_vol.add_trace(
+                    go.Histogram2dContour(
+                        x=df_track[x_col],
+                        y=df_track[y_col],
+                        colorscale="Viridis",
+                        showscale=True,
+                    )
+                )
+                fig_vol.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_vol, use_container_width=True)
 
             with m_tab2:
                 st.markdown("#### Binned Pedestrian Density Grid")
                 fig_dens = go.Figure()
-                fig_dens.add_trace(go.Histogram2d(
-                    x=df_track[x_col], y=df_track[y_col], colorscale="Hot", showscale=True, nbinsx=35, nbinsy=35
-                ))
-                fig_dens, bounds = add_cad_walls_to_fig(fig_dens, wall_color="#FFFFFF", width=2.0)
-                apply_layout_with_bounds(fig_dens, bounds)
+                fig_dens = add_cad_walls_to_fig(
+                    fig_dens, line_color="#FFFFFF", line_width=1.5
+                )
+
+                # Use node coordinates if available for grid binning
+                plot_x = (
+                    df_track["grid_node_x"]
+                    if "grid_node_x" in df_track
+                    else df_track[x_col]
+                )
+                plot_y = (
+                    df_track["grid_node_y"]
+                    if "grid_node_y" in df_track
+                    else df_track[y_col]
+                )
+
+                fig_dens.add_trace(
+                    go.Histogram2d(
+                        x=plot_x,
+                        y=plot_y,
+                        colorscale="Hot",
+                        showscale=True,
+                        nbinsx=35,
+                        nbinsy=35,
+                    )
+                )
+                fig_dens.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_dens, use_container_width=True)
 
             with m_tab3:
                 st.markdown("#### Velocity Heatmap")
                 fig_spd = px.scatter(
-                    df_track, x=x_col, y=y_col, color="speed", color_continuous_scale="Plasma",
-                    title="Pedestrian Speed Distribution"
+                    df_track,
+                    x=x_col,
+                    y=y_col,
+                    color="speed",
+                    color_continuous_scale="Plasma",
+                    title="Pedestrian Speed Distribution",
                 )
-                fig_spd, bounds = add_cad_walls_to_fig(fig_spd, wall_color="#00E5FF", width=2.0)
-                apply_layout_with_bounds(fig_spd, bounds)
+                fig_spd = add_cad_walls_to_fig(fig_spd)
+                fig_spd.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_spd, use_container_width=True)
 
             with m_tab4:
-                st.markdown("#### Movement Direction Vectors")
+                st.markdown("#### Directional Shift Field (Degrees from North)")
                 fig_dir = px.scatter(
-                    df_track, x=x_col, y=y_col, color="dx", color_continuous_scale="RdBu",
-                    title="Directional Shift Field (dx)"
+                    df_track,
+                    x=x_col,
+                    y=y_col,
+                    color="dir_deg_north",
+                    color_continuous_scale="twilight",  # Cyclic colormap for angles 0° to 360°
+                    range_color=[0, 360],
+                    labels={"dir_deg_north": "Heading (° North)"},
+                    title="Movement Direction Relative to North (0° = Up/North)",
                 )
-                fig_dir, bounds = add_cad_walls_to_fig(fig_dir, wall_color="#00E5FF", width=2.0)
-                apply_layout_with_bounds(fig_dir, bounds)
+                fig_dir = add_cad_walls_to_fig(fig_dir)
+                fig_dir.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
                 st.plotly_chart(fig_dir, use_container_width=True)
 
             st.markdown("---")
             st.markdown("### 4. Export Aggregated Analytics")
+
+            # --- Grid Node Aggregation for Correlation Analysis ---
+            grid_node_metrics = []
+            if "grid_node_idx" in df_track and vga_nodes:
+                grid_grouped = df_track.groupby("grid_node_idx")
+                for node_idx, group in grid_grouped:
+                    node_data = vga_nodes[node_idx].copy()
+                    node_data.update(
+                        {
+                            "pedestrian_count": len(group),
+                            "unique_pedestrians": int(group[id_col].nunique()),
+                            "avg_speed": float(group["speed"].mean()),
+                            "mean_heading_deg": float(
+                                group["dir_deg_north"].mean()
+                            ),
+                        }
+                    )
+                    grid_node_metrics.append(node_data)
 
             crowd_metrics_export = {
                 "total_frames": int(df_track[frame_col].nunique()),
                 "total_unique_pedestrians": int(df_track[id_col].nunique()),
                 "average_speed": float(df_track["speed"].mean()),
                 "max_speed": float(df_track["speed"].max()),
-                "trajectories": df_track[[frame_col, id_col, x_col, y_col, "speed"]].to_dict(orient="records")
+                "grid_node_aggregated_analytics": grid_node_metrics,
+                "trajectories": df_track[
+                    [
+                        frame_col,
+                        id_col,
+                        x_col,
+                        y_col,
+                        "speed",
+                        "dir_deg_north",
+                    ]
+                    + (["grid_node_idx"] if "grid_node_idx" in df_track else [])
+                ].to_dict(orient="records"),
             }
 
             st.download_button(
-                label="💾 Export Analytics JSON",
+                label="💾 Export Grid-Aligned Analytics JSON",
                 data=json.dumps(crowd_metrics_export, indent=2),
-                file_name="crowd_analytics.json",
+                file_name="crowd_grid_analytics.json",
                 mime="application/json",
                 use_container_width=True,
             )
 
         else:
-            st.error(f"⚠️ Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}")
+            st.error(
+                f"⚠️ Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}"
+            )
 
     else:
-        st.info("💡 Upload a JSON/CSV tracking file above or run tracking in Step 2.3 to view movement playback and heatmaps.")
+        st.info(
+            "💡 Upload a JSON/CSV tracking file above or run tracking in Step 2.3 to view movement playback and heatmaps."
+        )
