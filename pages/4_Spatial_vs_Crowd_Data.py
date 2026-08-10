@@ -209,14 +209,23 @@ if uploaded_file is not None:
             key="metric_selector",
         )
 
+        st.sidebar.markdown("---")
+        run_matrix = st.sidebar.button(
+            "Calculate Correlation Matrix",
+            type="primary",
+            use_container_width=True,
+        )
+
         if len(selected_metrics) < 2:
             st.warning("Please select at least **2 metrics** to generate the matrix.")
-        else:
+        elif run_matrix:
             st.subheader(f"Correlation Matrix ({len(selected_metrics)} Metrics Analyzed)")
-            
+
             # Render custom pairplot
             fig = plot_vga_pairs_matrix(df_nodes, selected_metrics)
             st.pyplot(fig)
+        elif selected_metrics:
+            st.info("Selected metrics are ready. Press the button above to calculate the matrix.")
 
             # Display numeric correlation values in tabular view
             with st.expander("View Numerical Pearson Correlation Matrix Table"):

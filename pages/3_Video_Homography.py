@@ -973,7 +973,7 @@ def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
 # TAB 4: 2D PLAYBACK & CROWD HEATMAPS
 # ==========================================
 with tab_playback:
-    st.subheader("Step 2.4: 2D Playback & Crowd Trajectory Analytics")
+    st.subheader("Step 3.4: 2D Playback & Crowd Trajectory Analytics")
 
     st.markdown("### 1. Import Tracking Dataset")
     col_up1, col_up2 = st.columns(2)
@@ -1012,7 +1012,7 @@ with tab_playback:
 
     with col_up1:
         uploaded_tb_json = st.file_uploader(
-            "Upload JSON Export (from Step 2.3 / Spatial Analysis)",
+            "Upload JSON Export (from Step 3.3 / Spatial Analysis)",
             type=["json"],
             key="tb_json_up",
         )
@@ -1049,7 +1049,7 @@ with tab_playback:
         st.caption("🟢 CAD Floorplan geometry loaded and active for overlays.")
     else:
         st.caption(
-            "🟡 No CAD floorplan geometry found in session. (Upload CAD floorplan in Step 2.1 to display walls)."
+            "🟡 No CAD floorplan geometry found in session. (Upload CAD floorplan in Step 3.1 to display walls)."
         )
 
     st.markdown("---")
@@ -1409,5 +1409,5 @@ with tab_playback:
 
     else:
         st.info(
-            "💡 Upload a JSON/CSV tracking file above or run tracking in Step 2.3 to view movement playback and heatmaps."
+            "💡 Upload a JSON/CSV tracking file above or run tracking in Step 3.3 to view movement playback and heatmaps."
         )
