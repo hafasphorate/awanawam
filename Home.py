@@ -14,8 +14,8 @@ Welcome! This toolkit provides spatial analysis and computer vision tools to eva
 
 ### Available Modules:
 1. **Visibility Graph Analysis (VGA):** Upload DXF floorplans to calculate visual integration, entropy, and isovist metrics.
-    1b. **Urban Space Syntax:** idk what to put here yet let's KIV.
-2. **Video Homography & Tracking:** Track human movement from site videos and project coordinates onto floorplans.
-3. **Spatial vs. Crowd Data:** Upload analysis JSON files to run Pearson/Spearman spatial correlation tests.
-4. **Aggregated Insights:** Explore crowd dynamic trends across multiple architectural case studies.
+2. **Urban Space Syntax:** idk what to put here yet let's KIV.
+3. **Video Homography & Tracking:** Track human movement from site videos and project coordinates onto floorplans.
+4. **Spatial vs. Crowd Data:** Upload analysis JSON files to run Pearson/Spearman spatial correlation tests.
+5. **Aggregated Insights:** Explore crowd dynamic trends across multiple architectural case studies.
 """)

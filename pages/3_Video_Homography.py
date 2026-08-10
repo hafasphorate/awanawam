@@ -17,7 +17,7 @@ from views.tracking_view import render_tracking_view
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
 
-st.title("📹 Module 2: Video Homography & Region Selection")
+st.title("📹 Module 3: Video Homography & Region Selection")
 
 # ==========================================
 # SESSION STATE INITIALIZATION
@@ -61,10 +61,10 @@ if "mask_canvas_key_ver" not in st.session_state:
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
-    "📂 2.1 Import CAD / Session & Video",
-    "📐 2.2 Define ROI & Video Masking",
-    "🔥 2.3 Occupancy Analytics",
-    "🎬 2.4 2D Playback & Crowd Heatmaps",
+    "📂 3.1 Import CAD / Session & Video",
+    "📐 3.2 Define ROI & Video Masking",
+    "🔥 3.3 Occupancy Analytics",
+    "🎬 3.4 2D Playback & Crowd Heatmaps",
 ])
 
 # ==========================================
@@ -146,7 +146,7 @@ def add_cad_walls_to_fig(fig, wall_color="#00ADB5", width=1.5):
 # TAB 1: FILE & VIDEO IMPORT
 # ==========================================
 with tab_import:
-    st.subheader("Step 2.1: Load CAD (DXF/DWG) or JSON Config & Surveillance Video")
+    st.subheader("Step 3.1: Load CAD (DXF/DWG) or JSON Config & Surveillance Video")
 
     col_json, col_dxf = st.columns(2)
 
@@ -245,7 +245,7 @@ with tab_import:
 # 3. TAB 2: REGION SELECTION & MASKING
 # ==========================================
 with tab_region:
-    st.subheader("Step 2.2: Video Masking & ROI Corner Calibration")
+    st.subheader("Step 3.2: Video Masking & ROI Corner Calibration")
 
     # --- SECTION A: VIDEO PREVIEW & POLYGON MASKING ---
     st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
@@ -754,7 +754,7 @@ with tab_tracking:
 # TAB 4: 2D PLAYBACK & CROWD HEATMAPS
 # ==========================================
 with tab_playback:
-    st.subheader("Step 2.4: 2D Playback & Crowd Trajectory Analytics")
+    st.subheader("Step 3.4: 2D Playback & Crowd Trajectory Analytics")
 
     st.markdown("### 1. Import Tracking Dataset")
     col_up1, col_up2 = st.columns(2)
@@ -771,7 +771,7 @@ with tab_playback:
         return pd.json_normalize(raw_json)
 
     with col_up1:
-        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 2.3)", type=["json"], key="tb_json_up")
+        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 3.3)", type=["json"], key="tb_json_up")
         if uploaded_tb_json is not None:
             try:
                 raw_json = json.load(uploaded_tb_json)

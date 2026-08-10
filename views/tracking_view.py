@@ -41,14 +41,14 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Check for Uploaded Video
     uploaded_video = st.session_state.get("uploaded_video_file", None)
     if uploaded_video is None:
-        st.warning("⚠️ Please upload a surveillance video file in **Tab 2.1** first.")
+        st.warning("⚠️ Please upload a surveillance video file in **Tab 3.1** first.")
         return
 
     # Check for Floorplan Corners
     four_corners = st.session_state.get("four_corners", [])
     if len(four_corners) < 4:
         st.warning(
-            f"⚠️ Please select all **4 ROI corners** on the 2D floorplan in **Tab 2.2** first "
+            f"⚠️ Please select all **4 ROI corners** on the 2D floorplan in **Tab 3.2** first "
             f"(Currently selected: {len(four_corners)}/4)."
         )
         return
@@ -130,7 +130,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Extract single raw frame for preview without running YOLO yet
     raw_frame = extract_frame_from_video(uploaded_video, frame_number=frame_idx)
     if raw_frame is None:
-        st.error("❌ Failed to decode frame from video. Try re-uploading the video file in Tab 2.1.")
+        st.error("❌ Failed to decode frame from video. Try re-uploading the video file in Tab 3.1.")
         return
 
     img_h, img_w, _ = raw_frame.shape
