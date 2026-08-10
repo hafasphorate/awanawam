@@ -470,7 +470,7 @@ with tab_region:
 
     else:
         st.warning(
-            "⚠️ Please upload a video file in Step 2.1 to display the frame preview."
+            "⚠️ Please upload a video file in Step 3.1 to display the frame preview."
         )
 
     st.markdown("---")
@@ -937,4 +937,4 @@ with tab_playback:
             st.error(f"⚠️ Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}")
 
     else:
-        st.info("💡 Upload a JSON/CSV tracking file above or run tracking in Step 2.3 to view movement playback and heatmaps.")
+        st.info("💡 Upload a JSON/CSV tracking file above or run tracking in Step 3.3 to view movement playback and heatmaps.")
