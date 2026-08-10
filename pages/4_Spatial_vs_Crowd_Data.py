@@ -218,18 +218,20 @@ if uploaded_file is not None:
 
         if len(selected_metrics) < 2:
             st.warning("Please select at least **2 metrics** to generate the matrix.")
-        elif run_matrix:
-            st.subheader(f"Correlation Matrix ({len(selected_metrics)} Metrics Analyzed)")
+        else:
+            if run_matrix:
+                st.subheader(f"Correlation Matrix ({len(selected_metrics)} Metrics Analyzed)")
 
-            # Render custom pairplot
-            fig = plot_vga_pairs_matrix(df_nodes, selected_metrics)
-            st.pyplot(fig)
-        elif selected_metrics:
-            st.info("Selected metrics are ready. Press the button above to calculate the matrix.")
+                # Render custom pairplot
+                fig = plot_vga_pairs_matrix(df_nodes, selected_metrics)
+                st.pyplot(fig)
+            elif selected_metrics:
+                st.info("Selected metrics are ready. Press the button above to calculate the matrix.")
+
+            corr_df = df_nodes[selected_metrics].corr(method="pearson")
 
             # Display numeric correlation values in tabular view
             with st.expander("View Numerical Pearson Correlation Matrix Table"):
-                corr_df = df_nodes[selected_metrics].corr(method="pearson")
                 st.dataframe(
                     corr_df.style.background_gradient(
                         cmap="coolwarm", vmin=-1, vmax=1
