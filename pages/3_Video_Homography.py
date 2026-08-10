@@ -123,6 +123,76 @@ def serialize_vga_nodes(vga_nodes):
     return []
 
 
+def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, x_col, y_col):
+    """Merge VGA node metadata with per-grid crowd metrics keyed by grid_node_idx."""
+    vga_rows = []
+    if isinstance(vga_nodes, pd.DataFrame):
+        vga_nodes = vga_nodes.to_dict(orient="records")
+    elif not isinstance(vga_nodes, list):
+        vga_nodes = []
+
+    crowd_by_grid = {}
+    if "grid_node_idx" in df_track.columns:
+        crowd_by_grid = (
+            df_track.groupby("grid_node_idx")
+            .agg(
+                pedestrian_count=(id_col, "count"),
+                unique_pedestrians=(id_col, "nunique"),
+                avg_speed=("speed", "mean"),
+                mean_heading_deg=("dir_deg_north", "mean"),
+                crowd_volume=(id_col, "count"),
+                crowd_density=(id_col, "count"),
+            )
+            .to_dict("index")
+        )
+
+    for idx, node in enumerate(vga_nodes):
+        row = dict(node) if isinstance(node, dict) else {"node_id": idx}
+        row.setdefault("node_id", idx)
+        row.setdefault("grid_node_idx", idx)
+        grid_key = row.get("grid_node_idx", row.get("node_id", idx))
+        if isinstance(grid_key, float) and np.isfinite(grid_key):
+            grid_key = int(grid_key)
+
+        agg = crowd_by_grid.get(grid_key, {})
+        row.update(
+            {
+                "pedestrian_count": int(agg.get("pedestrian_count", row.get("pedestrian_count", 0))),
+                "unique_pedestrians": int(agg.get("unique_pedestrians", row.get("unique_pedestrians", 0))),
+                "avg_speed": float(agg.get("avg_speed", row.get("avg_speed", 0.0))),
+                "mean_heading_deg": float(agg.get("mean_heading_deg", row.get("mean_heading_deg", 0.0))),
+                "crowd_volume": int(agg.get("crowd_volume", row.get("crowd_volume", row.get("pedestrian_count", 0)))),
+                "crowd_density": float(agg.get("crowd_density", row.get("crowd_density", row.get("pedestrian_count", 0.0)))),
+                "volume": float(agg.get("crowd_volume", row.get("crowd_volume", row.get("pedestrian_count", 0.0)))),
+                "density": float(agg.get("crowd_density", row.get("crowd_density", row.get("pedestrian_count", 0.0)))),
+                "speed": float(agg.get("avg_speed", row.get("speed", row.get("avg_speed", 0.0)))),
+                "direction": float(agg.get("mean_heading_deg", row.get("direction", row.get("mean_heading_deg", 0.0)))),
+            }
+        )
+        vga_rows.append(row)
+
+    if not vga_rows and "grid_node_idx" in df_track.columns:
+        for grid_idx, group in df_track.groupby("grid_node_idx"):
+            vga_rows.append(
+                {
+                    "node_id": int(grid_idx),
+                    "grid_node_idx": int(grid_idx),
+                    "pedestrian_count": int(group[id_col].count()),
+                    "unique_pedestrians": int(group[id_col].nunique()),
+                    "avg_speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
+                    "mean_heading_deg": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
+                    "crowd_volume": int(group[id_col].count()),
+                    "crowd_density": float(group[id_col].count()),
+                    "volume": float(group[id_col].count()),
+                    "density": float(group[id_col].count()),
+                    "speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
+                    "direction": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
+                }
+            )
+
+    return vga_rows
+
+
 def extract_walls_from_session(data):
     """Recursively searches for wall lines across common JSON export structures and normalizes them to Shapely LineString objects."""
     normalized_walls = []
@@ -1253,43 +1323,13 @@ with tab_playback:
             # --- Retrieve Full VGA Analysis Metrics ---
             raw_vga_analysis = st.session_state.get("vga_results", {})
 
-            # Prepare unified node-level dataset merging VGA + Movement metrics
-            integrated_correlation_nodes = []
-
-            if vga_nodes:
-                # Compute tracking aggregates per node
-                if "grid_node_idx" in df_track:
-                    group_stats = (
-                        df_track.groupby("grid_node_idx")
-                        .agg(
-                            pedestrian_count=(id_col, "count"),
-                            unique_pedestrians=(id_col, "nunique"),
-                            avg_speed=("speed", "mean"),
-                            mean_heading_deg=("dir_deg_north", "mean"),
-                        )
-                        .to_dict("index")
-                    )
-                else:
-                    group_stats = {}
-
-                for i, node in enumerate(vga_nodes):
-                    node_entry = (
-                        node.copy() if isinstance(node, dict) else {"node_id": i}
-                    )
-                    stats = group_stats.get(
-                        i,
-                        {
-                            "pedestrian_count": 0,
-                            "unique_pedestrians": 0,
-                            "avg_speed": 0.0,
-                            "mean_heading_deg": 0.0,
-                        },
-                    )
-                    node_entry.update(stats)
-                    integrated_correlation_nodes.append(node_entry)
+            # Build a single grid-aligned dataset where each node contains both VGA and crowd metrics.
+            integrated_correlation_nodes = build_grid_aligned_crowd_vga_export(
+                vga_nodes, df_track, id_col, frame_col, x_col, y_col
+            )
 
             wall_lines_serialized = serialize_session_walls()
-            vga_nodes_export = serialize_vga_nodes(vga_nodes)
+            vga_nodes_export = integrated_correlation_nodes if integrated_correlation_nodes else serialize_vga_nodes(vga_nodes)
             if not vga_nodes_export and isinstance(raw_vga_analysis, list):
                 vga_nodes_export = raw_vga_analysis
             if not vga_nodes_export:
@@ -1334,6 +1374,7 @@ with tab_playback:
                 "vga_grid": raw_vga_analysis,
                 "vga_global_results": raw_vga_analysis,
                 "grid_nodes_correlation_data": integrated_correlation_nodes,
+                "crowd_metrics_by_grid": integrated_correlation_nodes,
                 "trajectories": df_track[
                     [
                         frame_col,
