@@ -89,6 +89,40 @@ def normalize_line_to_dict(line):
         pass
     return None
 
+
+def serialize_session_walls():
+    """Convert stored wall geometries into JSON-safe coordinate dictionaries."""
+    raw_walls = (
+        st.session_state.get("wall_lines")
+        or st.session_state.get("dxf_walls")
+        or st.session_state.get("cad_walls")
+        or st.session_state.get("walls")
+        or []
+    )
+
+    serialized = []
+    for line in raw_walls:
+        normalized = normalize_line_to_dict(line)
+        if normalized:
+            serialized.append(normalized)
+    return serialized
+
+
+def serialize_vga_nodes(vga_nodes):
+    """Normalize VGA node payloads that may be a DataFrame, list, or dict."""
+    if isinstance(vga_nodes, pd.DataFrame):
+        return vga_nodes.to_dict(orient="records")
+    if isinstance(vga_nodes, list):
+        return vga_nodes
+    if isinstance(vga_nodes, dict):
+        if "nodes" in vga_nodes and isinstance(vga_nodes["nodes"], list):
+            return vga_nodes["nodes"]
+        if "vga_floorplan_nodes" in vga_nodes and isinstance(vga_nodes["vga_floorplan_nodes"], list):
+            return vga_nodes["vga_floorplan_nodes"]
+        return [value for value in vga_nodes.values() if isinstance(value, dict)]
+    return []
+
+
 def extract_walls_from_session(data):
     """Recursively searches for wall lines across common JSON export structures and normalizes them to Shapely LineString objects."""
     normalized_walls = []
@@ -1254,7 +1288,29 @@ with tab_playback:
                     node_entry.update(stats)
                     integrated_correlation_nodes.append(node_entry)
 
+            wall_lines_serialized = serialize_session_walls()
+            vga_nodes_export = serialize_vga_nodes(vga_nodes)
+            if not vga_nodes_export and isinstance(raw_vga_analysis, list):
+                vga_nodes_export = raw_vga_analysis
+            if not vga_nodes_export:
+                vga_grid_df = st.session_state.get("vga_grid_df")
+                if isinstance(vga_grid_df, pd.DataFrame):
+                    vga_nodes_export = vga_grid_df.to_dict(orient="records")
+
+            export_homography = st.session_state.get("homography_matrix")
+            if isinstance(export_homography, np.ndarray):
+                export_homography = export_homography.tolist()
+
             crowd_vga_export = {
+                "metadata": {
+                    "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "four_corners_roi": st.session_state.get("four_corners", []),
+                    "selected_polygon_pts": st.session_state.get("selected_polygon_pts", []),
+                    "frame_column": frame_col,
+                    "track_id_column": id_col,
+                    "x_column": x_col,
+                    "y_column": y_col,
+                },
                 "summary": {
                     "total_frames": int(df_track[frame_col].nunique()),
                     "total_unique_pedestrians": int(
@@ -1264,6 +1320,18 @@ with tab_playback:
                     "max_speed": float(df_track["speed"].max()),
                     "total_grid_nodes": len(integrated_correlation_nodes),
                 },
+                "floorplan": {
+                    "wall_lines": wall_lines_serialized,
+                    "cad_walls": wall_lines_serialized,
+                    "polygon_points": st.session_state.get("selected_polygon_pts", []),
+                    "homography_matrix": export_homography,
+                    "exclusion_masks": st.session_state.get("exclusion_masks", []),
+                },
+                "wall_lines": wall_lines_serialized,
+                "cad_walls": wall_lines_serialized,
+                "vga_floorplan_nodes": vga_nodes_export,
+                "vga_results": raw_vga_analysis,
+                "vga_grid": raw_vga_analysis,
                 "vga_global_results": raw_vga_analysis,
                 "grid_nodes_correlation_data": integrated_correlation_nodes,
                 "trajectories": df_track[
