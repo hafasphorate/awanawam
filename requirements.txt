@@ -14,6 +14,7 @@ lapx
 torch
 torchvision
 
+seaborn>=0.12.0
 matplotlib
 streamlit-plotly-events
 streamlit-drawable-canvas
