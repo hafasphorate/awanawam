@@ -767,25 +767,47 @@ from scipy.spatial import cKDTree
 # ==========================================
 
 
-def add_cad_walls_to_fig(fig, line_color="#666666", line_width=1.5):
-    """Underlays CAD floorplan wall lines stored in session state to Plotly figure."""
-    wall_lines = st.session_state.get(
-        "wall_lines", st.session_state.get("cad_walls", [])
+def add_cad_walls_to_fig(fig, line_color="#888888", line_width=1.5):
+    """Underlays CAD floorplan wall lines from all possible session state keys."""
+    # Attempt to retrieve wall geometries from all common key names
+    wall_lines = (
+        st.session_state.get("wall_lines")
+        or st.session_state.get("cad_walls")
+        or st.session_state.get("vga_walls")
+        or st.session_state.get("walls")
+        or []
     )
+
     if not wall_lines:
         return fig
 
     wall_x, wall_y = [], []
+
     for line in wall_lines:
-        # Handles shapely LineString or raw tuple coordinate pairs
-        if hasattr(line, "xy"):
-            x, y = line.xy
-            wall_x.extend([x[0], x[1], None])
-            wall_y.extend([y[0], y[1], None])
-        elif isinstance(line, (list, tuple)) and len(line) == 2:
-            p1, p2 = line[0], line[1]
-            wall_x.extend([p1[0], p2[0], None])
-            wall_y.extend([p1[1], p2[1], None])
+        try:
+            # Case 1: Shapely LineString object
+            if hasattr(line, "xy"):
+                x, y = line.xy
+                wall_x.extend([list(x)[0], list(x)[1], None])
+                wall_y.extend([list(y)[0], list(y)[1], None])
+
+            # Case 2: Dict schema like {"x1": 0, "y1": 0, "x2": 10, "y2": 10}
+            elif isinstance(line, dict):
+                x1 = line.get("x1", line.get("start_x"))
+                y1 = line.get("y1", line.get("start_y"))
+                x2 = line.get("x2", line.get("end_x"))
+                y2 = line.get("y2", line.get("end_y"))
+                if None not in (x1, y1, x2, y2):
+                    wall_x.extend([x1, x2, None])
+                    wall_y.extend([y1, y2, None])
+
+            # Case 3: List/Tuple pair of coordinates [ (x1,y1), (x2,y2) ]
+            elif isinstance(line, (list, tuple)) and len(line) == 2:
+                p1, p2 = line[0], line[1]
+                wall_x.extend([p1[0], p2[0], None])
+                wall_y.extend([p1[1], p2[1], None])
+        except Exception:
+            continue
 
     if wall_x and wall_y:
         fig.add_trace(
@@ -796,7 +818,7 @@ def add_cad_walls_to_fig(fig, line_color="#666666", line_width=1.5):
                 line=dict(color=line_color, width=line_width),
                 hoverinfo="none",
                 showlegend=False,
-                name="CAD Walls",
+                name="CAD Floorplan",
             )
         )
     return fig
@@ -809,7 +831,6 @@ def calculate_bearing_from_north(dx, dy):
     """
     if dx == 0 and dy == 0:
         return 0.0
-    # math.atan2(dx, dy) yields 0 at (0, 1) [North], +pi/2 at (1, 0) [East]
     angle_rad = math.atan2(dx, dy)
     angle_deg = math.degrees(angle_rad)
     return float(angle_deg % 360)
@@ -820,15 +841,26 @@ def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
     if not grid_nodes or df_track.empty:
         return df_track
 
-    node_coords = np.array([[n["x"], n["y"]] for n in grid_nodes])
-    tree = cKDTree(node_coords)
+    # Extract node positions (handles both list of dicts or DataFrame-like dicts)
+    node_coords = []
+    for n in grid_nodes:
+        nx = n.get("x", n.get("world_x", n.get("pos_x")))
+        ny = n.get("y", n.get("world_y", n.get("pos_y")))
+        if nx is not None and ny is not None:
+            node_coords.append([nx, ny])
+
+    if not node_coords:
+        return df_track
+
+    node_coords_arr = np.array(node_coords)
+    tree = cKDTree(node_coords_arr)
 
     track_coords = df_track[[x_col, y_col]].values
     distances, indices = tree.query(track_coords)
 
     df_track["grid_node_idx"] = indices
-    df_track["grid_node_x"] = node_coords[indices, 0]
-    df_track["grid_node_y"] = node_coords[indices, 1]
+    df_track["grid_node_x"] = node_coords_arr[indices, 0]
+    df_track["grid_node_y"] = node_coords_arr[indices, 1]
 
     return df_track
 
@@ -843,13 +875,16 @@ with tab_playback:
     col_up1, col_up2 = st.columns(2)
 
     def parse_tracking_json(raw_json):
-        df_nodes = None
-
-        # Check for grid nodes inside the JSON export
-        if isinstance(raw_json, dict) and "vga_floorplan_nodes" in raw_json:
-            st.session_state.vga_floorplan_nodes = raw_json[
-                "vga_floorplan_nodes"
-            ]
+        # Extract VGA Grid Nodes if included in JSON upload
+        if isinstance(raw_json, dict):
+            if "vga_floorplan_nodes" in raw_json:
+                st.session_state.vga_floorplan_nodes = raw_json[
+                    "vga_floorplan_nodes"
+                ]
+            if "vga_results" in raw_json:
+                st.session_state.vga_results = raw_json["vga_results"]
+            if "wall_lines" in raw_json:
+                st.session_state.wall_lines = raw_json["wall_lines"]
 
         if isinstance(raw_json, list):
             return pd.DataFrame(raw_json)
@@ -900,6 +935,18 @@ with tab_playback:
                 st.success("✅ Successfully imported CSV tracking records!")
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
+
+    # Wall upload status indicator
+    has_walls = any(
+        st.session_state.get(k)
+        for k in ["wall_lines", "cad_walls", "vga_walls", "walls"]
+    )
+    if has_walls:
+        st.caption("🟢 CAD Floorplan geometry loaded and active for overlays.")
+    else:
+        st.caption(
+            "🟡 No CAD floorplan geometry found in session. (Upload CAD floorplan in Step 2.1 to display walls)."
+        )
 
     st.markdown("---")
 
@@ -961,13 +1008,13 @@ with tab_playback:
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
 
-            # --- Calculate Motion Metrics (Speed + Direction from North) ---
+            # --- Calculate Motion Metrics ---
             df_track = df_track.sort_values(by=[id_col, frame_col])
             df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
             df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
             df_track["speed"] = np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
 
-            # Calculation of Bearing relative to North (0° = North, 90° = East)
+            # Compass Bearing (0° North)
             df_track["dir_deg_north"] = [
                 calculate_bearing_from_north(dx, dy)
                 for dx, dy in zip(df_track["dx"], df_track["dy"])
@@ -975,6 +1022,14 @@ with tab_playback:
 
             # --- Grid Alignment (VGA Node Mapping) ---
             vga_nodes = st.session_state.get("vga_floorplan_nodes", [])
+            if not vga_nodes and "vga_results" in st.session_state:
+                # Fallback to extracting nodes from vga_results if available
+                vga_res = st.session_state.vga_results
+                if isinstance(vga_res, list):
+                    vga_nodes = vga_res
+                elif isinstance(vga_res, dict) and "nodes" in vga_res:
+                    vga_nodes = vga_res["nodes"]
+
             if vga_nodes:
                 df_track = map_points_to_grid_nodes(
                     df_track, vga_nodes, x_col, y_col
@@ -1090,7 +1145,6 @@ with tab_playback:
                     fig_dens, line_color="#FFFFFF", line_width=1.5
                 )
 
-                # Use node coordinates if available for grid binning
                 plot_x = (
                     df_track["grid_node_x"]
                     if "grid_node_x" in df_track
@@ -1144,7 +1198,7 @@ with tab_playback:
                     x=x_col,
                     y=y_col,
                     color="dir_deg_north",
-                    color_continuous_scale="twilight",  # Cyclic colormap for angles 0° to 360°
+                    color_continuous_scale="twilight",
                     range_color=[0, 360],
                     labels={"dir_deg_north": "Heading (° North)"},
                     title="Movement Direction Relative to North (0° = Up/North)",
@@ -1158,32 +1212,60 @@ with tab_playback:
                 st.plotly_chart(fig_dir, use_container_width=True)
 
             st.markdown("---")
-            st.markdown("### 4. Export Aggregated Analytics")
+            st.markdown(
+                "### 4. Export Combined Correlation Dataset (VGA + Crowd)"
+            )
 
-            # --- Grid Node Aggregation for Correlation Analysis ---
-            grid_node_metrics = []
-            if "grid_node_idx" in df_track and vga_nodes:
-                grid_grouped = df_track.groupby("grid_node_idx")
-                for node_idx, group in grid_grouped:
-                    node_data = vga_nodes[node_idx].copy()
-                    node_data.update(
-                        {
-                            "pedestrian_count": len(group),
-                            "unique_pedestrians": int(group[id_col].nunique()),
-                            "avg_speed": float(group["speed"].mean()),
-                            "mean_heading_deg": float(
-                                group["dir_deg_north"].mean()
-                            ),
-                        }
+            # --- Retrieve Full VGA Analysis Metrics ---
+            raw_vga_analysis = st.session_state.get("vga_results", {})
+
+            # Prepare unified node-level dataset merging VGA + Movement metrics
+            integrated_correlation_nodes = []
+
+            if vga_nodes:
+                # Compute tracking aggregates per node
+                if "grid_node_idx" in df_track:
+                    group_stats = (
+                        df_track.groupby("grid_node_idx")
+                        .agg(
+                            pedestrian_count=(id_col, "count"),
+                            unique_pedestrians=(id_col, "nunique"),
+                            avg_speed=("speed", "mean"),
+                            mean_heading_deg=("dir_deg_north", "mean"),
+                        )
+                        .to_dict("index")
                     )
-                    grid_node_metrics.append(node_data)
+                else:
+                    group_stats = {}
 
-            crowd_metrics_export = {
-                "total_frames": int(df_track[frame_col].nunique()),
-                "total_unique_pedestrians": int(df_track[id_col].nunique()),
-                "average_speed": float(df_track["speed"].mean()),
-                "max_speed": float(df_track["speed"].max()),
-                "grid_node_aggregated_analytics": grid_node_metrics,
+                for i, node in enumerate(vga_nodes):
+                    node_entry = (
+                        node.copy() if isinstance(node, dict) else {"node_id": i}
+                    )
+                    stats = group_stats.get(
+                        i,
+                        {
+                            "pedestrian_count": 0,
+                            "unique_pedestrians": 0,
+                            "avg_speed": 0.0,
+                            "mean_heading_deg": 0.0,
+                        },
+                    )
+                    node_entry.update(stats)
+                    integrated_correlation_nodes.append(node_entry)
+
+            crowd_vga_export = {
+                "summary": {
+                    "total_frames": int(df_track[frame_col].nunique()),
+                    "total_unique_pedestrians": int(
+                        df_track[id_col].nunique()
+                    ),
+                    "average_speed": float(df_track["speed"].mean()),
+                    "max_speed": float(df_track["speed"].max()),
+                    "total_grid_nodes": len(integrated_correlation_nodes),
+                },
+                "vga_global_results": raw_vga_analysis,
+                "grid_nodes_correlation_data": integrated_correlation_nodes,
                 "trajectories": df_track[
                     [
                         frame_col,
@@ -1198,12 +1280,18 @@ with tab_playback:
             }
 
             st.download_button(
-                label="💾 Export Grid-Aligned Analytics JSON",
-                data=json.dumps(crowd_metrics_export, indent=2),
-                file_name="crowd_grid_analytics.json",
+                label="💾 Export Integrated VGA & Crowd Correlation Dataset (JSON)",
+                data=json.dumps(crowd_vga_export, indent=2),
+                file_name="integrated_vga_crowd_analysis.json",
                 mime="application/json",
                 use_container_width=True,
             )
+
+            # Quick preview table for correlation analysis
+            if integrated_correlation_nodes:
+                st.markdown("#### Preview Node Correlation Data")
+                df_corr_preview = pd.DataFrame(integrated_correlation_nodes)
+                st.dataframe(df_corr_preview.head(10), use_container_width=True)
 
         else:
             st.error(
