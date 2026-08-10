@@ -753,15 +753,16 @@ with tab_tracking:
         st.session_state.get("vga_grid_df", None),
     )
 
+
 # ==========================================
 # TAB 4: 2D PLAYBACK & CROWD HEATMAPS
 # ==========================================
 
 # ==========================================
-# CAD WALL OVERLAY HELPER
+# UNIVERSAL CAD WALL OVERLAY HELPER
 # ==========================================
 def add_cad_walls_to_fig(fig, wall_color="#FFFFFF", width=1.5):
-    """Overlay CAD wall geometries from st.session_state onto Plotly figures."""
+    """Deep-unpacks and overlays CAD wall geometries from st.session_state onto Plotly figures."""
     walls = st.session_state.get("wall_lines", []) or st.session_state.get("dxf_walls", [])
 
     if not walls:
@@ -770,39 +771,65 @@ def add_cad_walls_to_fig(fig, wall_color="#FFFFFF", width=1.5):
     x_coords = []
     y_coords = []
 
-    for line in walls:
-        # Format 1: Point pairs -> ((x1, y1), (x2, y2))
-        if isinstance(line, (tuple, list)) and len(line) == 2:
-            p1, p2 = line
-            if isinstance(p1, (tuple, list)) and isinstance(p2, (tuple, list)) and len(p1) >= 2 and len(p2) >= 2:
-                x_coords.extend([p1[0], p2[0], None])
-                y_coords.extend([p1[1], p2[1], None])
-
-        # Format 2: Flat list/tuple -> [x1, y1, x2, y2]
-        elif isinstance(line, (tuple, list)) and len(line) == 4:
-            x_coords.extend([line[0], line[2], None])
-            y_coords.extend([line[1], line[3], None])
-
-        # Format 3: Dictionary -> {'x1': ..., 'y1': ..., 'x2': ..., 'y2': ...}
-        elif isinstance(line, dict):
-            x1 = line.get("x1", line.get("start_x"))
-            y1 = line.get("y1", line.get("start_y"))
-            x2 = line.get("x2", line.get("end_x"))
-            y2 = line.get("y2", line.get("end_y"))
-            if None not in (x1, y1, x2, y2):
-                x_coords.extend([x1, x2, None])
-                y_coords.extend([y1, y2, None])
-
-        # Format 4: Shapely LineString / Geometry object
-        elif hasattr(line, "geom_type") or hasattr(line, "xy"):
-            try:
-                x, y = line.xy
-                x_coords.extend(list(x) + [None])
-                y_coords.extend(list(y) + [None])
-            except Exception:
+    for item in walls:
+        try:
+            # 1. Handle ezdxf / CAD Entity Objects (e.g., ezdxf.entities.Line, LWPolyline)
+            if hasattr(item, "dxftype"):
+                dxf_type = item.dxftype()
+                if dxf_type == "LINE":
+                    x_coords.extend([item.dxf.start.x, item.dxf.end.x, None])
+                    y_coords.extend([item.dxf.start.y, item.dxf.end.y, None])
+                elif dxf_type in ["LWPOLYLINE", "POLYLINE"]:
+                    points = item.get_points() if hasattr(item, "get_points") else item.vertices
+                    for i in range(len(points) - 1):
+                        x_coords.extend([points[i][0], points[i+1][0], None])
+                        y_coords.extend([points[i][1], points[i+1][1], None])
+                    if getattr(item, "is_closed", False) or item.dxf.flags & 1:
+                        x_coords.extend([points[-1][0], points[0][0], None])
+                        y_coords.extend([points[-1][1], points[0][1], None])
                 continue
 
-    # Single-trace fast batch render
+            # 2. Handle Shapely LineString / Polygon / MultiLineString
+            if hasattr(item, "geom_type"):
+                if item.geom_type == "LineString":
+                    x, y = item.xy
+                    x_coords.extend(list(x) + [None])
+                    y_coords.extend(list(y) + [None])
+                elif item.geom_type in ["Polygon", "LinearRing"]:
+                    x, y = item.exterior.xy
+                    x_coords.extend(list(x) + [None])
+                    y_coords.extend(list(y) + [None])
+                elif item.geom_type == "MultiLineString":
+                    for line in item.geoms:
+                        x, y = line.xy
+                        x_coords.extend(list(x) + [None])
+                        y_coords.extend(list(y) + [None])
+                continue
+
+            # 3. Handle Dictionary format: {'x1':..., 'y1':..., 'x2':..., 'y2':...} or {'start': (x,y), 'end': (x,y)}
+            if isinstance(item, dict):
+                x1 = item.get("x1", item.get("start", [None, None])[0])
+                y1 = item.get("y1", item.get("start", [None, None])[1])
+                x2 = item.get("x2", item.get("end", [None, None])[0])
+                y2 = item.get("y2", item.get("end", [None, None])[1])
+                if None not in (x1, y1, x2, y2):
+                    x_coords.extend([x1, x2, None])
+                    y_coords.extend([y1, y2, None])
+                continue
+
+            # 4. Handle Direct Coordinate Tuples/Lists: ((x1, y1), (x2, y2)) or [x1, y1, x2, y2]
+            if isinstance(item, (tuple, list)):
+                if len(item) == 2 and isinstance(item[0], (tuple, list)):
+                    x_coords.extend([item[0][0], item[1][0], None])
+                    y_coords.extend([item[0][1], item[1][1], None])
+                elif len(item) == 4:
+                    x_coords.extend([item[0], item[2], None])
+                    y_coords.extend([item[1], item[3], None])
+
+        except Exception:
+            continue
+
+    # Plot batch lines in a single trace for optimal performance
     if x_coords:
         fig.add_trace(
             go.Scatter(
@@ -810,7 +837,7 @@ def add_cad_walls_to_fig(fig, wall_color="#FFFFFF", width=1.5):
                 y=y_coords,
                 mode="lines",
                 line=dict(color=wall_color, width=width),
-                name="CAD Walls",
+                name="CAD Floorplan",
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -821,7 +848,7 @@ def add_cad_walls_to_fig(fig, wall_color="#FFFFFF", width=1.5):
 with tab_playback:
     st.subheader("Step 3.4: 2D Playback & Crowd Trajectory Analytics")
 
-    # 0. Auto-Sync VGA Grid from Session State if available
+    # 0. Auto-Sync VGA Grid from Session State if present
     if st.session_state.get("vga_grid_df") is not None:
         vga_df_session = st.session_state["vga_grid_df"]
         if isinstance(vga_df_session, pd.DataFrame) and not vga_df_session.empty:
@@ -967,8 +994,8 @@ with tab_playback:
                 ))
                 fig_play.update_layout(
                     template="plotly_dark", height=420, margin=dict(l=10, r=10, t=20, b=10),
-                    xaxis=dict(scaleanchor="y", scaleratio=1, title="X (m)"),
-                    yaxis=dict(title="Y (m)")
+                    xaxis=dict(scaleanchor="y", scaleratio=1, title="X (m)", autorange=True),
+                    yaxis=dict(title="Y (m)", autorange=True)
                 )
                 st.plotly_chart(fig_play, use_container_width=True)
 
@@ -985,15 +1012,15 @@ with tab_playback:
                 ))
                 fig_f_hm.update_layout(
                     template="plotly_dark", height=420, margin=dict(l=10, r=10, t=20, b=10),
-                    xaxis=dict(scaleanchor="y", scaleratio=1, title="X (m)"),
-                    yaxis=dict(title="Y (m)")
+                    xaxis=dict(scaleanchor="y", scaleratio=1, title="X (m)", autorange=True),
+                    yaxis=dict(title="Y (m)", autorange=True)
                 )
                 st.plotly_chart(fig_f_hm, use_container_width=True)
 
             st.markdown("---")
 
             # ----------------------------------------------------
-            # Section 3: Aggregated Crowd Heatmaps (Grid Aligned)
+            # Section 3: Aggregated Crowd Analytics & Heatmaps
             # ----------------------------------------------------
             st.markdown("### 3. Aggregated Crowd Analytics & Heatmaps")
 
@@ -1020,7 +1047,11 @@ with tab_playback:
                         x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
                     ))
                 fig_vol = add_cad_walls_to_fig(fig_vol, wall_color="#FFFFFF", width=1.5)
-                fig_vol.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
+                fig_vol.update_layout(
+                    template="plotly_dark", height=500, 
+                    xaxis=dict(scaleanchor="y", scaleratio=1, autorange=True),
+                    yaxis=dict(autorange=True)
+                )
                 st.plotly_chart(fig_vol, use_container_width=True)
 
             with m_tab2:
@@ -1030,7 +1061,11 @@ with tab_playback:
                 fig_dens.add_trace(go.Histogram2d(
                     x=df_track[x_col], y=df_track[y_col], colorscale="Hot", showscale=True, nbinsx=40, nbinsy=40
                 ))
-                fig_dens.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
+                fig_dens.update_layout(
+                    template="plotly_dark", height=500, 
+                    xaxis=dict(scaleanchor="y", scaleratio=1, autorange=True),
+                    yaxis=dict(autorange=True)
+                )
                 st.plotly_chart(fig_dens, use_container_width=True)
 
             with m_tab3:
@@ -1040,7 +1075,11 @@ with tab_playback:
                     title="Speed Intensity Distribution across Plan View"
                 )
                 fig_spd = add_cad_walls_to_fig(fig_spd, wall_color="#FFFFFF", width=1.5)
-                fig_spd.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
+                fig_spd.update_layout(
+                    template="plotly_dark", height=500, 
+                    xaxis=dict(scaleanchor="y", scaleratio=1, autorange=True),
+                    yaxis=dict(autorange=True)
+                )
                 st.plotly_chart(fig_spd, use_container_width=True)
 
             with m_tab4:
@@ -1057,7 +1096,11 @@ with tab_playback:
                         title="Movement Heading Angles (Clockwise from North)"
                     )
                     fig_dir = add_cad_walls_to_fig(fig_dir, wall_color="#FFFFFF", width=1.5)
-                    fig_dir.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
+                    fig_dir.update_layout(
+                        template="plotly_dark", height=500, 
+                        xaxis=dict(scaleanchor="y", scaleratio=1, autorange=True),
+                        yaxis=dict(autorange=True)
+                    )
                     st.plotly_chart(fig_dir, use_container_width=True)
 
                 with col_d2:
