@@ -6,61 +6,68 @@ import pandas as pd
 import seaborn as sns
 import streamlit as st
 
-# Set Streamlit page layout
+# Page Configuration
 st.set_page_config(
-    page_title="VGA & Crowd Metrics Correlation Analysis", layout="wide"
+    page_title="VGA & Crowd Metrics Correlation Analysis",
+    layout="wide"
 )
 
-st.title("VGA Metrics Pairwise Correlation Analysis")
+st.title("VGA & Crowd Metrics Pairwise Correlation Analysis")
 st.write(
-    "Upload your VGA JSON dataset to compute pairwise correlations and visualize "
-    "the relationship between space syntax metrics."
+    "Upload your combined dataset (JSON) to compute pairwise correlations and "
+    "analyze relationships across all spatial, visibility, and crowd metrics."
 )
 
 # -----------------------------------------------------------------------------
 # 1. File Upload Section
 # -----------------------------------------------------------------------------
-uploaded_file = st.file_uploader("Upload VGA JSON File", type=["json"])
+uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 
 
 def load_and_parse_json(file):
-    """Parse VGA JSON data into a pandas DataFrame."""
+    """Parse JSON dataset into a pandas DataFrame."""
     data = json.load(file)
-    if "vga_floorplan_nodes" in data:
+    if isinstance(data, dict) and "vga_floorplan_nodes" in data:
         df = pd.DataFrame(data["vga_floorplan_nodes"])
+    elif isinstance(data, dict) and "nodes" in data:
+        df = pd.DataFrame(data["nodes"])
     else:
-        # Fallback if top-level list or different key structure
         df = pd.DataFrame(data)
     return df
 
 
 # -----------------------------------------------------------------------------
-# 2. Pairs Plot Matrix Rendering Engine
+# 2. Pairs Plot Matrix Rendering Engine (Dynamically Scaled)
 # -----------------------------------------------------------------------------
 def plot_vga_pairs_matrix(df, selected_cols):
-    """Generates a custom pairplot:
-
-    - Diagonal: Red Density (KDE) curve
-    - Lower Triangle: Scatter Plot
-    - Upper Triangle: Square Heatmap with Pearson R overlay
     """
-    sub_df = df[selected_cols].dropna()
+    Generates a custom pairplot matrix for all selected variables:
+    - Diagonal: Density (KDE) distribution curve (Red)
+    - Lower Triangle: Scatter plot of spatial/crowd data points
+    - Upper Triangle: Pearson R magnitude box overlay with numeric overlay
+    """
+    sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
 
-    # Calculate Pearson Correlation Matrix
+    # Compute Pearson correlation matrix
     corr_matrix = sub_df.corr(method="pearson")
 
-    # Custom Diverging Colormap (Blue = -1, White = 0, Red = 1)
+    # Diverging colormap: Blue (-1) -> White (0) -> Red (+1)
     cmap = mcolors.LinearSegmentedColormap.from_list(
         "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
     )
 
-    fig, axes = plt.subplots(
-        n_vars, n_vars, figsize=(3.2 * n_vars, 3.2 * n_vars)
-    )
-    plt.subplots_adjust(wspace=0.15, hspace=0.15)
+    # Dynamic plot dimension and font sizing based on grid size
+    cell_size = max(2.0, min(3.2, 20.0 / n_vars))
+    font_size = max(6, min(11, int(14 - 0.6 * n_vars)))
+    text_val_size = max(7, min(13, int(15 - 0.7 * n_vars)))
 
-    # Format axis tick labels clean display name
+    fig, axes = plt.subplots(
+        n_vars, n_vars, figsize=(cell_size * n_vars, cell_size * n_vars)
+    )
+    plt.subplots_adjust(wspace=0.18, hspace=0.18)
+
+    # Clean label formatting (strips prefixes and formats names)
     clean_labels = [
         col.replace("isovist_", "").replace("_", " ").title()
         for col in selected_cols
@@ -74,7 +81,7 @@ def plot_vga_pairs_matrix(df, selected_cols):
             col_y = selected_cols[i]
 
             # -----------------------------------------------------------------
-            # DIAGONAL: Red Density Curve
+            # DIAGONAL: Variable Density (KDE) Curve
             # -----------------------------------------------------------------
             if i == j:
                 sns.kdeplot(
@@ -83,7 +90,7 @@ def plot_vga_pairs_matrix(df, selected_cols):
                     color="#d73027",
                     fill=True,
                     alpha=0.25,
-                    linewidth=2,
+                    linewidth=1.5,
                 )
                 ax.set_ylabel("")
                 ax.set_xlabel("")
@@ -95,28 +102,27 @@ def plot_vga_pairs_matrix(df, selected_cols):
                 ax.scatter(
                     sub_df[col_x],
                     sub_df[col_y],
-                    alpha=0.6,
+                    alpha=0.5,
                     edgecolor="none",
-                    s=25,
-                    color="#333333",
+                    s=max(10, int(30 - 1.5 * n_vars)),
+                    color="#2c3e50",
                 )
 
             # -----------------------------------------------------------------
-            # UPPER TRIANGLE: Pearson R Squares with Opacity Scaling
+            # UPPER TRIANGLE: Pearson R Box Overlays
             # -----------------------------------------------------------------
             else:
                 r_val = corr_matrix.loc[col_y, col_x]
 
-                # Map [-1, 1] correlation value to colormap [0, 1]
-                norm_val = (r_val + 1) / 2
+                # Map [-1, 1] correlation value to [0, 1] color range
+                norm_val = (r_val + 1) / 2 if not np.isnan(r_val) else 0.5
                 sq_color = cmap(norm_val)
 
-                # Size & Opacity proportional to magnitude |r|
+                # Scale box size and transparency proportional to correlation magnitude |r|
                 abs_r = abs(r_val) if not np.isnan(r_val) else 0
-                sq_size = 0.2 + (0.75 * abs_r)  # Box dimension scale
-                alpha_val = 0.3 + (0.7 * abs_r)  # Box transparency
+                sq_size = 0.25 + (0.70 * abs_r)
+                alpha_val = 0.25 + (0.75 * abs_r)
 
-                # Draw Correlation Square
                 rect = plt.Rectangle(
                     (0.5 - sq_size / 2, 0.5 - sq_size / 2),
                     sq_size,
@@ -127,16 +133,16 @@ def plot_vga_pairs_matrix(df, selected_cols):
                 )
                 ax.add_patch(rect)
 
-                # Overlay Text Value
+                # Numeric text overlay
                 text_str = f"{r_val:.2f}" if not np.isnan(r_val) else "N/A"
-                text_color = "white" if abs_r > 0.65 else "black"
+                text_color = "white" if abs_r > 0.6 else "#111111"
                 ax.text(
                     0.5,
                     0.5,
                     text_str,
                     ha="center",
                     va="center",
-                    fontsize=12 + n_vars,
+                    fontsize=text_val_size,
                     weight="bold",
                     color=text_color,
                 )
@@ -146,60 +152,86 @@ def plot_vga_pairs_matrix(df, selected_cols):
                 ax.axis("off")
 
             # -----------------------------------------------------------------
-            # Subplot Axis Formatting & Ticks
+            # Axis Tick & Label Formatting
             # -----------------------------------------------------------------
             if i < n_vars - 1:
                 ax.set_xticklabels([])
             else:
-                ax.set_xlabel(clean_labels[j], fontsize=10, fontweight="bold")
+                ax.set_xlabel(
+                    clean_labels[j], fontsize=font_size, fontweight="bold"
+                )
+                ax.tick_params(axis="x", rotation=45, labelsize=font_size - 1)
 
             if j > 0 and i != j:
                 ax.set_yticklabels([])
             if j == 0:
-                ax.set_ylabel(clean_labels[i], fontsize=10, fontweight="bold")
-
-            ax.tick_params(labelsize=8)
+                ax.set_ylabel(
+                    clean_labels[i], fontsize=font_size, fontweight="bold"
+                )
+                ax.tick_params(axis="y", labelsize=font_size - 1)
 
     plt.tight_layout()
     return fig
 
 
 # -----------------------------------------------------------------------------
-# 3. Streamlit Workflow Execution
+# 3. Streamlit App Execution
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         df_nodes = load_and_parse_json(uploaded_file)
 
-        # Exclude positional spatial coordinates from automatic selection
-        numeric_cols = df_nodes.select_dtypes(include=[np.number]).columns.tolist()
-        default_vga_cols = [
-            col for col in numeric_cols if col not in ["x", "y"]
+        # Identify numeric columns while excluding 2D/3D spatial position coordinates
+        coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
+        all_numeric_cols = [
+            col
+            for col in df_nodes.select_dtypes(include=[np.number]).columns
+            if col.lower() not in coord_or_id_cols
         ]
 
-        st.sidebar.header("Plot Configurations")
+        st.sidebar.header("Data Filter Settings")
+
+        # Quick selection buttons in sidebar
+        col_btn1, col_btn2 = st.sidebar.columns(2)
+        if col_btn1.button("Select All"):
+            st.session_state["selected_metrics"] = all_numeric_cols
+        if col_btn2.button("Clear All"):
+            st.session_state["selected_metrics"] = []
+
+        if "selected_metrics" not in st.session_state:
+            st.session_state["selected_metrics"] = all_numeric_cols
+
+        # Multiselect input defaulting to ALL detected metrics (VGA + Crowd)
         selected_metrics = st.sidebar.multiselect(
-            "Select Metrics to Correlate:",
-            options=numeric_cols,
-            default=(
-                default_vga_cols[:5]
-                if len(default_vga_cols) >= 5
-                else default_vga_cols
-            ),
+            "Select Metrics for Correlation Matrix:",
+            options=all_numeric_cols,
+            default=st.session_state["selected_metrics"],
+            key="metric_selector",
         )
 
         if len(selected_metrics) < 2:
-            st.warning("Please select at least two metrics to plot pairs.")
+            st.warning("Please select at least **2 metrics** to generate the matrix.")
         else:
-            st.subheader("Pairwise Matrix & Pearson Correlation Plot")
+            st.subheader(f"Correlation Matrix ({len(selected_metrics)} Metrics Analyzed)")
+            
+            # Render custom pairplot
             fig = plot_vga_pairs_matrix(df_nodes, selected_metrics)
             st.pyplot(fig)
 
-            # Optional: Display raw data preview inside an expander
-            with st.expander("View Uploaded Raw VGA Nodes Data"):
+            # Display numeric correlation values in tabular view
+            with st.expander("View Numerical Pearson Correlation Matrix Table"):
+                corr_df = df_nodes[selected_metrics].corr(method="pearson")
+                st.dataframe(
+                    corr_df.style.background_gradient(
+                        cmap="coolwarm", vmin=-1, vmax=1
+                    ).format("{:.3f}")
+                )
+
+            # Raw Data Table View
+            with st.expander("View Full Dataset Table"):
                 st.dataframe(df_nodes)
 
     except Exception as e:
-        st.error(f"Error parsing JSON dataset: {e}")
+        st.error(f"Error parsing JSON file: {e}")
 else:
-    st.info("👆 Please upload a `.json` file to begin analysis.")
+    st.info("👆 Please upload your VGA & Crowd `.json` file to run analysis.")
