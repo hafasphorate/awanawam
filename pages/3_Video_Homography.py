@@ -753,31 +753,66 @@ with tab_tracking:
 # ==========================================
 # TAB 4: 2D PLAYBACK & CROWD HEATMAPS
 # ==========================================
+
+import math
+import json
+import numpy as np
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy.spatial import KDTree
+
+# Ensure CAD wall plotting function dummy wrapper exists if not imported
+if "add_cad_walls_to_fig" not in globals():
+    def add_cad_walls_to_fig(fig, wall_color="#FFFFFF", width=2):
+        return fig
+
 with tab_playback:
     st.subheader("Step 3.4: 2D Playback & Crowd Trajectory Analytics")
 
-    st.markdown("### 1. Import Tracking Dataset")
+    st.markdown("### 1. Import Tracking & VGA Grid Dataset")
     col_up1, col_up2 = st.columns(2)
 
     def parse_tracking_json(raw_json):
-        if isinstance(raw_json, list):
-            return pd.DataFrame(raw_json)
+        """Extracts tracking dataframe and VGA nodes metadata from JSON upload."""
+        df_track = pd.DataFrame()
+        vga_nodes = []
 
+        # Extract VGA Nodes if present
         if isinstance(raw_json, dict):
+            if "vga_floorplan_nodes" in raw_json:
+                vga_nodes = raw_json["vga_floorplan_nodes"]
+            elif "nodes" in raw_json:
+                vga_nodes = raw_json["nodes"]
+
+            # Extract tracking points
             for key in ["tracking_points", "tracking_results", "pedestrian_trajectories", "trajectories", "tracking_data"]:
                 if key in raw_json and isinstance(raw_json[key], list) and len(raw_json[key]) > 0:
-                    return pd.DataFrame(raw_json[key])
+                    df_track = pd.DataFrame(raw_json[key])
+                    break
+            
+            if df_track.empty and not any(k in raw_json for k in ["vga_floorplan_nodes", "nodes"]):
+                df_track = pd.json_normalize(raw_json)
 
-        return pd.json_normalize(raw_json)
+        elif isinstance(raw_json, list):
+            df_track = pd.DataFrame(raw_json)
+
+        return df_track, vga_nodes
 
     with col_up1:
-        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 3.3)", type=["json"], key="tb_json_up")
+        uploaded_tb_json = st.file_uploader("Upload JSON Export (from Step 3.3 or VGA)", type=["json"], key="tb_json_up")
         if uploaded_tb_json is not None:
             try:
                 raw_json = json.load(uploaded_tb_json)
-                df_loaded = parse_tracking_json(raw_json)
-                st.session_state.tracking_results_df = df_loaded
-                st.success(f"✅ Successfully imported {len(df_loaded)} tracking records!")
+                df_loaded, vga_nodes_loaded = parse_tracking_json(raw_json)
+                
+                if not df_loaded.empty:
+                    st.session_state.tracking_results_df = df_loaded
+                    st.success(f"✅ Successfully imported {len(df_loaded)} tracking records!")
+                if vga_nodes_loaded:
+                    st.session_state.vga_nodes = vga_nodes_loaded
+                    st.success(f"✅ Successfully mapped {len(vga_nodes_loaded)} VGA grid nodes!")
             except Exception as e:
                 st.error(f"Error reading JSON: {e}")
 
@@ -793,10 +828,12 @@ with tab_playback:
     st.markdown("---")
 
     df_track = st.session_state.get("tracking_results_df")
+    vga_nodes = st.session_state.get("vga_nodes", [])
 
     if df_track is not None and not df_track.empty:
         df_track.columns = [str(c).lower().strip() for c in df_track.columns]
 
+        # Resolve field column names
         frame_col = next((c for c in ["frame_idx", "frame", "frame_number", "timestamp"] if c in df_track.columns), None)
         x_col = next((c for c in ["world_x", "x", "x (m)", "x_m", "pos_x", "x_canvas", "img_x"] if c in df_track.columns), None)
         y_col = next((c for c in ["world_y", "y", "y (m)", "y_m", "pos_y", "y_canvas", "img_y"] if c in df_track.columns), None)
@@ -810,12 +847,38 @@ with tab_playback:
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
 
+            # ----------------------------------------------------
+            # Speed & Compass Heading Calculation (0° = North/Up)
+            # ----------------------------------------------------
+            df_track = df_track.sort_values(by=[id_col, frame_col])
+            df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
+            df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
+            
             if "speed" not in df_track.columns:
-                df_track = df_track.sort_values(by=[id_col, frame_col])
-                df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
-                df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
                 df_track["speed"] = np.sqrt(df_track["dx"]**2 + df_track["dy"]**2)
 
+            # Heading angle: 0° = North (+Y), 90° = East (+X), 180° = South (-Y), 270° = West (-X)
+            # arctan2(dx, dy) yields angle from +Y axis in radians
+            df_track["heading_deg"] = (np.degrees(np.arctan2(df_track["dx"], df_track["dy"])) + 360) % 360
+
+            # ----------------------------------------------------
+            # Map Trajectories to VGA Analysis Grid Nodes
+            # ----------------------------------------------------
+            df_vga_nodes = pd.DataFrame(vga_nodes) if vga_nodes else pd.DataFrame()
+            if not df_vga_nodes.empty and "x" in df_vga_nodes.columns and "y" in df_vga_nodes.columns:
+                vga_tree = KDTree(df_vga_nodes[["x", "y"]].values)
+                _, node_indices = vga_tree.query(df_track[[x_col, y_col]].values)
+                df_track["vga_node_idx"] = node_indices
+                df_track["vga_node_x"] = df_vga_nodes.iloc[node_indices]["x"].values
+                df_track["vga_node_y"] = df_vga_nodes.iloc[node_indices]["y"].values
+            else:
+                df_track["vga_node_idx"] = -1
+                df_track["vga_node_x"] = df_track[x_col]
+                df_track["vga_node_y"] = df_track[y_col]
+
+            # ----------------------------------------------------
+            # Section 2: Motion Playback & Frame Analytics
+            # ----------------------------------------------------
             st.markdown("### 2. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
             selected_f = st.slider(
@@ -868,24 +931,39 @@ with tab_playback:
 
             st.markdown("---")
 
-            st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
+            # ----------------------------------------------------
+            # Section 3: Aggregated Crowd Metrics Grid Alignment
+            # ----------------------------------------------------
+            st.markdown("### 3. Aggregated Crowd Metrics (Aligned to VGA Grid)")
 
             m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs([
-                "📊 Crowd Volume", "🔥 Density Heatmap", "⚡ Speed Distribution", "🧭 Directional Flow"
+                "📊 Grid Occupancy", "🔥 Continuous Heatmap", "⚡ Speed Distribution", "🧭 Directional Flow"
             ])
 
             with m_tab1:
-                st.markdown("#### Cumulative Occupancy Heatmap")
-                fig_vol = go.Figure()
+                st.markdown("#### VGA Node Binned Occupancy")
+                if not df_vga_nodes.empty:
+                    # Aggregate counts per VGA Node
+                    node_counts = df_track.groupby("vga_node_idx").size().reset_index(name="occupancy_count")
+                    merged_vga = df_vga_nodes.copy()
+                    merged_vga["occupancy_count"] = merged_vga.index.map(node_counts.set_index("vga_node_idx")["occupancy_count"]).fillna(0)
+
+                    fig_vol = px.scatter(
+                        merged_vga, x="x", y="y", color="occupancy_count",
+                        size=merged_vga["occupancy_count"] + 1,
+                        color_continuous_scale="Viridis",
+                        title="Occupancy Counts mapped directly to VGA Grid Nodes"
+                    )
+                else:
+                    fig_vol = go.Figure(go.Histogram2dContour(
+                        x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
+                    ))
                 fig_vol = add_cad_walls_to_fig(fig_vol, wall_color="#FFFFFF", width=2)
-                fig_vol.add_trace(go.Histogram2dContour(
-                    x=df_track[x_col], y=df_track[y_col], colorscale="Viridis", showscale=True
-                ))
                 fig_vol.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
                 st.plotly_chart(fig_vol, use_container_width=True)
 
             with m_tab2:
-                st.markdown("#### Binned Pedestrian Density Grid")
+                st.markdown("#### Pedestrian Density Grid")
                 fig_dens = go.Figure()
                 fig_dens = add_cad_walls_to_fig(fig_dens, wall_color="#FFFFFF", width=2)
                 fig_dens.add_trace(go.Histogram2d(
@@ -905,30 +983,72 @@ with tab_playback:
                 st.plotly_chart(fig_spd, use_container_width=True)
 
             with m_tab4:
-                st.markdown("#### Movement Direction Vectors")
-                fig_dir = px.scatter(
-                    df_track, x=x_col, y=y_col, color="dx", color_continuous_scale="RdBu",
-                    title="Directional Shift Field (dx)"
-                )
-                fig_dir = add_cad_walls_to_fig(fig_dir)
-                fig_dir.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
-                st.plotly_chart(fig_dir, use_container_width=True)
+                st.markdown("#### Compass Directional Flow (North = 0°)")
+                col_d1, col_d2 = st.columns([2, 1])
+
+                with col_d1:
+                    fig_dir = px.scatter(
+                        df_track[df_track["speed"] > 0.01], x=x_col, y=y_col, 
+                        color="heading_deg", color_continuous_scale="HSV",
+                        range_color=[0, 360],
+                        title="Pedestrian Movement Heading Angle (Degrees clockwise from North)"
+                    )
+                    fig_dir = add_cad_walls_to_fig(fig_dir)
+                    fig_dir.update_layout(template="plotly_dark", height=500, xaxis=dict(scaleanchor="y", scaleratio=1))
+                    st.plotly_chart(fig_dir, use_container_width=True)
+
+                with col_d2:
+                    st.markdown("##### Compass Rose Distribution")
+                    moving_df = df_track[df_track["speed"] > 0.01]
+                    fig_polar = px.bar_polar(
+                        moving_df, r=np.ones(len(moving_df)), theta="heading_deg",
+                        nbins=16, color_discrete_sequence=["#00E5FF"],
+                        template="plotly_dark", height=450
+                    )
+                    fig_polar.update_layout(polar_radialaxis_visible=False, polar=dict(angularaxis=dict(direction="clockwise", rotation=90)))
+                    st.plotly_chart(fig_polar, use_container_width=True)
 
             st.markdown("---")
+
+            # ----------------------------------------------------
+            # Section 4: Grid-Bound Analytics Export
+            # ----------------------------------------------------
             st.markdown("### 4. Export Aggregated Analytics")
 
+            # Calculate aggregated node metrics for export/correlation analysis
+            node_summary = []
+            if not df_vga_nodes.empty:
+                grouped = df_track.groupby("vga_node_idx")
+                for node_idx, node_data in grouped:
+                    if node_idx < 0:
+                        continue
+                    v_node = df_vga_nodes.iloc[node_idx].to_dict()
+                    v_node["vga_node_idx"] = int(node_idx)
+                    v_node["crowd_occupancy_count"] = int(len(node_data))
+                    v_node["crowd_avg_speed"] = float(node_data["speed"].mean())
+                    
+                    # Circular mean direction calculation
+                    rads = np.radians(node_data["heading_deg"].values)
+                    mean_sin = np.sin(rads).mean()
+                    mean_cos = np.cos(rads).mean()
+                    v_node["crowd_mean_heading_deg"] = float((np.degrees(np.arctan2(mean_sin, mean_cos)) + 360) % 360)
+                    
+                    node_summary.append(v_node)
+
             crowd_metrics_export = {
+                "metadata": st.session_state.get("metadata", {}),
+                "vga_floorplan_nodes": node_summary if node_summary else vga_nodes,
                 "total_frames": int(df_track[frame_col].nunique()),
                 "total_unique_pedestrians": int(df_track[id_col].nunique()),
                 "average_speed": float(df_track["speed"].mean()),
                 "max_speed": float(df_track["speed"].max()),
-                "trajectories": df_track[[frame_col, id_col, x_col, y_col, "speed"]].to_dict(orient="records")
+                "trajectories": df_track[[frame_col, id_col, x_col, y_col, "speed", "heading_deg", "vga_node_idx"]].to_dict(orient="records")
             }
 
             st.download_button(
-                label="💾 Export Analytics JSON",
+                label="💾 Export Integrated VGA & Crowd Analytics JSON",
                 data=json.dumps(crowd_metrics_export, indent=2),
-                file_name="crowd_analytics.json",
+                file_name="integrated_vga_crowd_analytics.json",
                 mime="application/json",
                 use_container_width=True,
             )
