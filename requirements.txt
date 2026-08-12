@@ -14,6 +14,7 @@ lapx
 torch
 torchvision
 
+supabase
 scipy
 seaborn>=0.12.0
 matplotlib
