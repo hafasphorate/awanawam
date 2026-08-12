@@ -294,8 +294,8 @@ if uploaded_file is not None:
             ):
                 st.markdown("""
                 Please ensure your analysis followed standard VGA protocols prior to upload:
-                - **Grid Resolution:** Set between **0.4m to 0.8m** step size.
-                - **Eye/Height Horizon:** Fixed at **1.60m** standard view height.
+                - **Grid Dimension:** Set between at **1000mm**.
+                - **Ray Angle Step (Degrees):** Fixed at **2.00** standard.
                 - **Isovist Radius:** **360° unobstructed field** (or consistent truncation limit).
                 - **Data Cleanliness:** Ensure crowd numbers match node timestamps accurately.
                 """)
