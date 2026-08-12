@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,7 +36,7 @@ except Exception:
     supabase = None
 
 # -----------------------------------------------------------------------------
-# 1. File Upload Section
+# 1. File Upload & Metadata Section
 # -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 
@@ -196,6 +197,26 @@ if uploaded_file is not None:
         )
 
         st.sidebar.markdown("---")
+
+        # ---------------------------------------------------------------------
+        # Metadata Labeling Form (Sidebar)
+        # ---------------------------------------------------------------------
+        st.sidebar.header("🏷️ Dataset Labeling Metadata")
+        meta_location = st.sidebar.text_input(
+            "Location", placeholder="e.g., Main Concourse Floor 1"
+        )
+        meta_date = st.sidebar.date_input("Date", value=datetime.today())
+        
+        # Auto-compute Day of the Week
+        meta_day = meta_date.strftime("%A")
+        st.sidebar.text_input("Day of Week (Auto)", value=meta_day, disabled=True)
+
+        meta_time = st.sidebar.time_input("Time", value=datetime.now().time())
+        meta_comments = st.sidebar.text_area(
+            "Comments", placeholder="e.g., Recorded during peak morning rush."
+        )
+
+        st.sidebar.markdown("---")
         run_matrix = st.sidebar.button(
             "Calculate Correlation Matrix",
             type="primary",
@@ -235,7 +256,7 @@ if uploaded_file is not None:
                 st.dataframe(df_nodes)
 
             # -----------------------------------------------------------------
-            # 4. Cloud Upload Section (Omit Incomplete Data & Apply Checklist)
+            # 4. Cloud Upload Section (Targeted Omission & Metadata Packaging)
             # -----------------------------------------------------------------
             st.markdown("---")
             st.subheader("🌐 Store Dataset to Cloud Repository")
@@ -258,11 +279,21 @@ if uploaded_file is not None:
                 pd.to_numeric, errors="coerce"
             )
 
-            # Drop rows containing NaNs across the selected metrics
+            # 1. Drop rows containing NaNs across any selected metrics
             valid_df = numeric_df.dropna(subset=selected_metrics)
 
-            # Filter out zero values (assuming 0 indicates missing/unmeasured crowd data)
-            valid_df = valid_df[(valid_df != 0).all(axis=1)]
+            # 2. Identify crowd metrics specifically
+            crowd_cols = [
+                col for col in selected_metrics 
+                if any(k in col.lower() for k in ["crowd", "pedestrian", "count", "density", "people"])
+            ]
+
+            # 3. Target crowd metrics for zero checks (allows VGA = 0 to pass through)
+            if crowd_cols:
+                valid_df = valid_df[(valid_df[crowd_cols] > 0).all(axis=1)]
+            else:
+                # Fallback if no specific crowd column name matched: drop rows where ALL metrics are 0
+                valid_df = valid_df[~(valid_df == 0).all(axis=1)]
 
             omitted_count = len(df_nodes) - len(valid_df)
 
@@ -280,9 +311,16 @@ if uploaded_file is not None:
                     st.error("No valid completed rows to upload.")
                 else:
                     batch_id = str(uuid.uuid4())
+                    
+                    # Package record with metadata labels
                     records = [
                         {
                             "upload_batch_id": batch_id,
+                            "location": meta_location,
+                            "date": str(meta_date),
+                            "day_of_week": meta_day,
+                            "time": str(meta_time),
+                            "comments": meta_comments,
                             "metrics_data": row.to_dict(),
                         }
                         for _, row in valid_df.iterrows()
@@ -297,7 +335,7 @@ if uploaded_file is not None:
 
                     if res.data:
                         st.success(
-                            f"Successfully uploaded {len(records)} data points to global repository!"
+                            f"Successfully uploaded {len(records)} data points with metadata to global repository!"
                         )
                     else:
                         st.error("Failed to upload data points.")
