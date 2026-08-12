@@ -1,6 +1,9 @@
 import json
+import re
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo  # Built-in Python 3.9+ timezone library
+
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -205,13 +208,36 @@ if uploaded_file is not None:
         meta_location = st.sidebar.text_input(
             "Location", placeholder="e.g., Main Concourse Floor 1"
         )
-        meta_date = st.sidebar.date_input("Date", value=datetime.today())
-        
+
+        # Get local Singapore time by default for inputs
+        sgt_now = datetime.now(ZoneInfo("Asia/Singapore"))
+
+        meta_date = st.sidebar.date_input("Date", value=sgt_now.date())
+
         # Auto-compute Day of the Week
         meta_day = meta_date.strftime("%A")
-        st.sidebar.text_input("Day of Week (Auto)", value=meta_day, disabled=True)
+        st.sidebar.text_input(
+            "Day of Week (Auto)", value=meta_day, disabled=True
+        )
 
-        meta_time = st.sidebar.time_input("Time", value=datetime.now().time())
+        # Direct 24-hour key-in input field
+        default_24h_time = sgt_now.strftime("%H:%M")
+        meta_time_str = st.sidebar.text_input(
+            "Time (24-Hour Format)",
+            value=default_24h_time,
+            placeholder="e.g., 14:30 or 08:15",
+            help="Type in the video/recording time in HH:MM format (24-hour clock).",
+        )
+
+        # Validate 24-hour time format
+        time_pattern = r"^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+        is_valid_time = bool(re.match(time_pattern, meta_time_str.strip()))
+
+        if not is_valid_time:
+            st.sidebar.error(
+                "⚠️ Invalid time format. Please use **HH:MM** (e.g., 08:30 or 17:45)."
+            )
+
         meta_comments = st.sidebar.text_area(
             "Comments", placeholder="e.g., Recorded during peak morning rush."
         )
@@ -284,8 +310,12 @@ if uploaded_file is not None:
 
             # 2. Identify crowd metrics specifically
             crowd_cols = [
-                col for col in selected_metrics 
-                if any(k in col.lower() for k in ["crowd", "pedestrian", "count", "density", "people"])
+                col
+                for col in selected_metrics
+                if any(
+                    k in col.lower()
+                    for k in ["crowd", "pedestrian", "count", "density", "people"]
+                )
             ]
 
             # 3. Target crowd metrics for zero checks (allows VGA = 0 to pass through)
@@ -303,7 +333,11 @@ if uploaded_file is not None:
             )
 
             if st.button("Publish Data to Aggregated Cloud Database"):
-                if supabase is None:
+                if not is_valid_time:
+                    st.error(
+                        "Cannot upload: Please correct the time format (HH:MM) in the sidebar."
+                    )
+                elif supabase is None:
                     st.error(
                         "Database connection not available. Please configure your secrets.toml."
                     )
@@ -311,7 +345,7 @@ if uploaded_file is not None:
                     st.error("No valid completed rows to upload.")
                 else:
                     batch_id = str(uuid.uuid4())
-                    
+
                     # Package record with metadata labels
                     records = [
                         {
@@ -319,7 +353,7 @@ if uploaded_file is not None:
                             "location": meta_location,
                             "date": str(meta_date),
                             "day_of_week": meta_day,
-                            "time": str(meta_time),
+                            "time": meta_time_str.strip(),
                             "comments": meta_comments,
                             "metrics_data": row.to_dict(),
                         }
