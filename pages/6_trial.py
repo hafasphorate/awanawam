@@ -1,4 +1,5 @@
 import json
+import uuid
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -169,7 +170,7 @@ if uploaded_file is not None:
         coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
         all_numeric_cols = [
             col
-            for col in df_nodes.select_dtypes(include=[np.number]).columns
+            for col in df_nodes.columns
             if col.lower() not in coord_or_id_cols
         ]
 
@@ -214,7 +215,11 @@ if uploaded_file is not None:
                     "Selected metrics are ready. Press the button above to calculate the matrix."
                 )
 
-            corr_df = df_nodes[selected_metrics].corr(method="pearson")
+            corr_df = (
+                df_nodes[selected_metrics]
+                .apply(pd.to_numeric, errors="coerce")
+                .corr(method="pearson")
+            )
 
             with st.expander("View Numerical Pearson Correlation Matrix Table"):
                 st.dataframe(
@@ -245,16 +250,23 @@ if uploaded_file is not None:
                 - **Data Cleanliness:** Ensure crowd numbers match node timestamps accurately.
                 """)
 
-            # Prepare filtered dataset (dropping nodes missing ANY selected metrics)
-            valid_df = df_nodes[selected_metrics].dropna()
+            # Convert selected columns to numeric (forces strings/nulls to NaN)
+            numeric_df = df_nodes[selected_metrics].apply(
+                pd.to_numeric, errors="coerce"
+            )
+
+            # Drop rows with NaN in any of the selected metrics
+            valid_df = numeric_df.dropna()
+
+            # Optional: Uncomment if zero counts represent unmeasured crowd data
+            # valid_df = valid_df[(valid_df != 0).all(axis=1)]
+
             omitted_count = len(df_nodes) - len(valid_df)
 
             st.info(
                 f"**Data Audit:** {len(valid_df)} nodes contain full spatial and crowd data across "
                 f"selected metrics. ({omitted_count} incomplete nodes will be omitted)."
             )
-
-            import uuid
 
             if st.button("Publish Data to Aggregated Cloud Database"):
                 if supabase is None:
