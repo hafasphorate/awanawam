@@ -41,14 +41,17 @@ uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 
 
 def load_and_parse_json(file):
-    """Parse JSON dataset into a pandas DataFrame."""
+    """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present."""
     data = json.load(file)
     if isinstance(data, dict) and "vga_floorplan_nodes" in data:
-        df = pd.DataFrame(data["vga_floorplan_nodes"])
+        raw_nodes = data["vga_floorplan_nodes"]
     elif isinstance(data, dict) and "nodes" in data:
-        df = pd.DataFrame(data["nodes"])
+        raw_nodes = data["nodes"]
     else:
-        df = pd.DataFrame(data)
+        raw_nodes = data
+
+    # pd.json_normalize flattens nested dicts into dot-notation columns
+    df = pd.json_normalize(raw_nodes)
     return df
 
 
@@ -250,16 +253,16 @@ if uploaded_file is not None:
                 - **Data Cleanliness:** Ensure crowd numbers match node timestamps accurately.
                 """)
 
-            # Convert selected columns to numeric (forces strings/nulls to NaN)
+            # Convert selected columns to numeric (forces non-numeric strings/invalid types to NaN)
             numeric_df = df_nodes[selected_metrics].apply(
                 pd.to_numeric, errors="coerce"
             )
 
-            # Drop rows with NaN in any of the selected metrics
-            valid_df = numeric_df.dropna()
+            # Drop rows containing NaNs across the selected metrics
+            valid_df = numeric_df.dropna(subset=selected_metrics)
 
-            # Optional: Uncomment if zero counts represent unmeasured crowd data
-            # valid_df = valid_df[(valid_df != 0).all(axis=1)]
+            # Filter out zero values (assuming 0 indicates missing/unmeasured crowd data)
+            valid_df = valid_df[(valid_df != 0).all(axis=1)]
 
             omitted_count = len(df_nodes) - len(valid_df)
 
