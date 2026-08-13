@@ -163,10 +163,10 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
 
 
 # -----------------------------------------------------------------------------
-# 3. Focused Pair Inspector (Expanded Graph + Multi-Correlation Comparison)
+# 3. Focused Pair Inspector (Expanded Graph + Non-Linear Trendlines)
 # -----------------------------------------------------------------------------
 def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
-    """Large scatter plot with non-parametric linear & rank correlation metrics."""
+    """Large scatter plot with both linear (Pearson) and non-linear/monotonic (Spearman) trendlines."""
     clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
     clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
 
@@ -189,26 +189,42 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
                 x=sub_df[col_x],
                 y=sub_df[col_y],
                 mode="markers",
-                marker=dict(color="#2b5c8f", opacity=0.6, size=8),
+                marker=dict(color="#2b5c8f", opacity=0.5, size=7),
                 name="Data Points",
             )
         )
 
-        # NumPy Trendline
-        if len(sub_df) > 1:
+        if len(sub_df) > 2:
             x_vals = sub_df[col_x].values
             y_vals = sub_df[col_y].values
-            m, b = np.polyfit(x_vals, y_vals, 1)
             x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
-            y_line = m * x_line + b
+
+            # 1. Linear OLS Fit (Pearson r)
+            m, b = np.polyfit(x_vals, y_vals, 1)
+            y_linear = m * x_line + b
 
             fig_scatter.add_trace(
                 go.Scatter(
                     x=x_line,
-                    y=y_line,
+                    y=y_linear,
                     mode="lines",
-                    line=dict(color="#d73027", width=3),
-                    name="Trendline",
+                    line=dict(color="#d73027", width=2.5),
+                    name="Linear Trend (Pearson)",
+                )
+            )
+
+            # 2. Polynomial 2nd Degree Curved Fit (Monotonic / Spearman curve alignment)
+            p_coefs = np.polyfit(x_vals, y_vals, 2)
+            p_func = np.poly1d(p_coefs)
+            y_curved = p_func(x_line)
+
+            fig_scatter.add_trace(
+                go.Scatter(
+                    x=x_line,
+                    y=y_curved,
+                    mode="lines",
+                    line=dict(color="#2b5c8f", width=2.5, dash="dash"),
+                    name="Curved/Monotonic Fit (Spearman/Kendall)",
                 )
             )
 
@@ -217,7 +233,9 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
             margin=dict(l=20, r=20, t=20, b=20),
             xaxis_title=clean_x,
             yaxis_title=clean_y,
-            showlegend=False,
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+            ),
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
@@ -245,12 +263,12 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
             unsafe_allow_html=True,
         )
 
-        with st.expander("📖 Understanding these metrics", expanded=True):
+        with st.expander("📖 Understanding these metrics & trendlines", expanded=True):
             st.markdown(
                 """
-                * **Pearson ($r$):** Measures **linear** relationship. Assumes normal distribution and is sensitive to extreme outliers.
-                * **Spearman ($\rho$):** Measures **monotonic** relationship (whether metrics increase together regardless of line shape) based on rank order. Resilient to outliers.
-                * **Kendall ($\tau$):** Measures **concordance** (pair order agreement). Highly robust for smaller sample sizes or data with tied ranks.
+                * **Red Solid Line — Pearson ($r$):** Fits a straight-line model. Evaluates pure **linear** proportionality.
+                * **Blue Dashed Line — Spearman ($\rho$) & Kendall ($\tau$):** Fits a non-linear polynomial curve to track monotonic trends (data bending smoothly upwards/downwards).
+                * **Comparing metrics:** If Spearman ($\rho$) is higher than Pearson ($r$), the relationship is strong but **curved** rather than strictly straight.
                 """
             )
 
