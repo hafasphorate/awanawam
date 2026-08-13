@@ -1,3 +1,4 @@
+import io
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -44,14 +45,14 @@ def fetch_aggregated_records():
 
 
 # -----------------------------------------------------------------------------
-# 2. Matplotlib Precision Pairs Matrix Engine
+# 2. Matplotlib Precision Pairs Matrix Engine (High-Res Ready)
 # -----------------------------------------------------------------------------
-def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
+def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 100):
     """
     Recreates the exact visual matrix:
-    - Diagonal: Red KDE Filled Density Distribution Curves
+    - Diagonal: Red KDE Density Curves
     - Lower Triangle: Scatter Plots
-    - Upper Triangle: Dynamically Scaled & Sized Correlation Squares
+    - Upper Triangle: Dynamically Scaled Correlation Squares
     """
     sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
@@ -61,11 +62,10 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
         "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
     )
 
-    # Scale overall figure dimensions so 14+ variables remain readable
-    cell_size = max(1.8, min(3.0, 24.0 / n_vars))
+    cell_size = max(2.2, min(3.5, 26.0 / n_vars))
     fig_size = cell_size * n_vars
 
-    fig, axes = plt.subplots(n_vars, n_vars, figsize=(fig_size, fig_size))
+    fig, axes = plt.subplots(n_vars, n_vars, figsize=(fig_size, fig_size), dpi=dpi_val)
     plt.subplots_adjust(wspace=0.15, hspace=0.15)
 
     clean_labels = [
@@ -73,8 +73,8 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
         for col in selected_cols
     ]
 
-    font_size = max(5, int(13 - 0.45 * n_vars))
-    text_val_size = max(6, int(14 - 0.55 * n_vars))
+    font_size = max(6, int(14 - 0.45 * n_vars))
+    text_val_size = max(7, int(15 - 0.55 * n_vars))
 
     for i in range(n_vars):
         for j in range(n_vars):
@@ -103,25 +103,23 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
                     sub_df[col_y],
                     alpha=0.4,
                     edgecolor="none",
-                    s=max(4, int(22 - 1.1 * n_vars)),
+                    s=max(6, int(26 - 1.1 * n_vars)),
                     color="#2c3e50",
                 )
 
             # --- UPPER TRIANGLE: Sized Correlation Squares ---
             else:
-                ax.axis("off")  # Clear axes background
+                ax.axis("off")
                 ax.set_xlim(0, 1)
                 ax.set_ylim(0, 1)
 
                 r_val = corr_matrix.loc[col_y, col_x]
 
                 if not np.isnan(r_val):
-                    # Normalized color mapping (-1 to 1 mapped to 0 to 1)
                     norm_val = (r_val + 1) / 2
                     sq_color = cmap(norm_val)
 
                     abs_r = abs(r_val)
-                    # Dynamic sizing: bigger |r| = bigger square
                     sq_size = 0.20 + (0.75 * abs_r)
                     alpha_val = 0.25 + (0.75 * abs_r)
 
@@ -135,7 +133,6 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
                     )
                     ax.add_patch(rect)
 
-                    # Text label placed exactly inside the square
                     text_str = f"{r_val:.2f}"
                     text_color = "white" if abs_r > 0.65 else "#111111"
                     ax.text(
@@ -149,21 +146,16 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
                         color=text_color,
                     )
 
-            # Axis Label formatting
             if i < n_vars - 1:
                 ax.set_xticklabels([])
             else:
-                ax.set_xlabel(
-                    clean_labels[j], fontsize=font_size, fontweight="bold"
-                )
+                ax.set_xlabel(clean_labels[j], fontsize=font_size, fontweight="bold")
                 ax.tick_params(axis="x", rotation=45, labelsize=font_size - 1)
 
             if j > 0 and i != j:
                 ax.set_yticklabels([])
             if j == 0:
-                ax.set_ylabel(
-                    clean_labels[i], fontsize=font_size, fontweight="bold"
-                )
+                ax.set_ylabel(clean_labels[i], fontsize=font_size, fontweight="bold")
                 ax.tick_params(axis="y", labelsize=font_size - 1)
 
     plt.tight_layout()
@@ -171,35 +163,38 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
 
 
 # -----------------------------------------------------------------------------
-# 3. Focused Pair Inspector (Fixed Trendline Error)
+# 3. Focused Pair Inspector (Expanded Graph + Multi-Correlation Comparison)
 # -----------------------------------------------------------------------------
-def render_pair_focused_inspector(
-    df: pd.DataFrame, col_x: str, col_y: str, r_val: float
-):
-    """Isolated high-resolution card display with numpy linear fit to prevent statsmodels error."""
+def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
+    """Large scatter plot with non-parametric linear & rank correlation metrics."""
     clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
     clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
 
     sub_df = df[[col_x, col_y]].apply(pd.to_numeric, errors="coerce").dropna()
 
-    c1, c2, c3 = st.columns([2.2, 1, 2.2])
+    # Calculate all three correlation metrics
+    p_r = sub_df.corr(method="pearson").iloc[0, 1]
+    s_rho = sub_df.corr(method="spearman").iloc[0, 1]
+    k_tau = sub_df.corr(method="kendall").iloc[0, 1]
+
+    c1, c2 = st.columns([1.6, 1])
 
     with c1:
-        st.markdown(f"##### 📉 Scatter Plot: `{clean_y}` vs `{clean_x}`")
+        st.markdown(f"##### 📉 Pair Scatter Analysis: `{clean_y}` vs `{clean_x}`")
         fig_scatter = go.Figure()
 
-        # Raw scatter points
+        # Scatter points
         fig_scatter.add_trace(
             go.Scatter(
                 x=sub_df[col_x],
                 y=sub_df[col_y],
                 mode="markers",
-                marker=dict(color="#2b5c8f", opacity=0.6, size=6),
+                marker=dict(color="#2b5c8f", opacity=0.6, size=8),
                 name="Data Points",
             )
         )
 
-        # Pure NumPy OLS Trendline fit (No statsmodels dependency needed!)
+        # NumPy Trendline
         if len(sub_df) > 1:
             x_vals = sub_df[col_x].values
             y_vals = sub_df[col_y].values
@@ -212,13 +207,13 @@ def render_pair_focused_inspector(
                     x=x_line,
                     y=y_line,
                     mode="lines",
-                    line=dict(color="#d73027", width=2),
+                    line=dict(color="#d73027", width=3),
                     name="Trendline",
                 )
             )
 
         fig_scatter.update_layout(
-            height=320,
+            height=480,
             margin=dict(l=20, r=20, t=20, b=20),
             xaxis_title=clean_x,
             yaxis_title=clean_y,
@@ -227,60 +222,226 @@ def render_pair_focused_inspector(
         st.plotly_chart(fig_scatter, use_container_width=True)
 
     with c2:
-        st.markdown("##### 🧮 Pearson Correlation")
-        bg_color = (
-            "#d73027"
-            if r_val > 0.5
-            else ("#2b5c8f" if r_val < -0.5 else "#888888")
-        )
+        st.markdown("##### 🧮 Statistical Relationship Comparison")
+
+        # Metric Display Cards
         st.markdown(
             f"""
-            <div style="
-                background-color: {bg_color};
-                padding: 25px 15px;
-                border-radius: 12px;
-                text-align: center;
-                color: white;
-                margin-top: 15px;">
-                <h1 style="margin: 0; font-size: 40px;">{r_val:.3f}</h1>
-                <p style="margin: 5px 0 0 0; opacity: 0.9;">Pearson r</p>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <div style="background: #f8f9fa; border-left: 5px solid #d73027; padding: 12px; flex: 1; border-radius: 4px;">
+                    <span style="font-size: 12px; color: #666;">Pearson (r)</span>
+                    <h2 style="margin:0; color:#111;">{p_r:.3f}</h2>
+                </div>
+                <div style="background: #f8f9fa; border-left: 5px solid #2b5c8f; padding: 12px; flex: 1; border-radius: 4px;">
+                    <span style="font-size: 12px; color: #666;">Spearman (ρ)</span>
+                    <h2 style="margin:0; color:#111;">{s_rho:.3f}</h2>
+                </div>
+                <div style="background: #f8f9fa; border-left: 5px solid #27ae60; padding: 12px; flex: 1; border-radius: 4px;">
+                    <span style="font-size: 12px; color: #666;">Kendall (τ)</span>
+                    <h2 style="margin:0; color:#111;">{k_tau:.3f}</h2>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with c3:
-        st.markdown(f"##### 📊 Metrics Distribution Skew")
-        fig_dist = go.Figure()
-        fig_dist.add_trace(
-            go.Histogram(
-                x=sub_df[col_x],
-                name=clean_x,
-                opacity=0.55,
-                marker_color="#2b5c8f",
+        with st.expander("📖 Understanding these metrics", expanded=True):
+            st.markdown(
+                """
+                * **Pearson ($r$):** Measures **linear** relationship. Assumes normal distribution and is sensitive to extreme outliers.
+                * **Spearman ($\rho$):** Measures **monotonic** relationship (whether metrics increase together regardless of line shape) based on rank order. Resilient to outliers.
+                * **Kendall ($\tau$):** Measures **concordance** (pair order agreement). Highly robust for smaller sample sizes or data with tied ranks.
+                """
             )
-        )
-        fig_dist.add_trace(
-            go.Histogram(
-                x=sub_df[col_y],
-                name=clean_y,
-                opacity=0.55,
-                marker_color="#d73027",
-            )
-        )
-        fig_dist.update_layout(
-            barmode="overlay",
-            height=320,
-            margin=dict(l=20, r=20, t=20, b=20),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-            ),
-        )
-        st.plotly_chart(fig_dist, use_container_width=True)
 
 
 # -----------------------------------------------------------------------------
-# 4. Main Data Extraction & Analysis
+# 4. Multivariate Feature Driver Regression Analysis (Linear / Ridge / Lasso)
+# -----------------------------------------------------------------------------
+def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
+    """Pure NumPy implementation of Standardized Linear, Ridge, and Lasso Regression."""
+    st.markdown("---")
+    st.subheader("🎯 Drivers Analysis (Multivariate Regression)")
+    st.write(
+        "Identify which specific spatial properties exert the strongest influence on a key target metric. "
+        "Variables are **$Z$-score standardized** so coefficient magnitudes can be directly compared."
+    )
+
+    clean_options = {
+        col.replace("isovist_", "").replace("_", " ").title(): col
+        for col in numeric_cols
+    }
+
+    reg_col1, reg_col2, reg_col3 = st.columns([2, 2, 1])
+
+    with reg_col1:
+        target_lbl = st.selectbox(
+            "Select Target Metric (Dependent Variable Y):",
+            options=list(clean_options.keys()),
+            index=0,
+        )
+    target_var = clean_options[target_lbl]
+
+    feature_cols = [c for c in numeric_cols if c != target_var]
+
+    with reg_col2:
+        selected_features = st.multiselect(
+            "Select Predictor Properties (X):",
+            options=[
+                k for k, v in clean_options.items() if v in feature_cols
+            ],
+            default=[
+                k for k, v in clean_options.items() if v in feature_cols
+            ],
+        )
+
+    with reg_col3:
+        model_type = st.selectbox(
+            "Regression Model:",
+            options=["Standard OLS", "Ridge (L2)", "Lasso (L1)"],
+        )
+
+    if not selected_features:
+        st.warning("Select at least one predictor feature to build the model.")
+        return
+
+    chosen_feature_vars = [clean_options[k] for k in selected_features]
+
+    # Prepare Data
+    reg_df = df[[target_var] + chosen_feature_vars].apply(
+        pd.to_numeric, errors="coerce"
+    ).dropna()
+
+    if len(reg_df) < len(chosen_feature_vars) + 1:
+        st.error("Not enough valid data points to perform regression.")
+        return
+
+    Y = reg_df[target_var].values
+    X_raw = reg_df[chosen_feature_vars].values
+
+    # Z-score standardization: (X - mu) / sigma
+    X_mean = X_raw.mean(axis=0)
+    X_std = X_raw.std(axis=0)
+    X_std[X_std == 0] = 1.0  # avoid division by zero
+    X_scaled = (X_raw - X_mean) / X_std
+
+    Y_mean = Y.mean()
+    Y_std = Y.std() if Y.std() != 0 else 1.0
+    Y_scaled = (Y - Y_mean) / Y_std
+
+    # Add Intercept
+    N = len(Y_scaled)
+    X_design = np.hstack([np.ones((N, 1)), X_scaled])
+
+    alpha = 1.0  # Regularization parameter
+    coefs = None
+
+    if model_type == "Standard OLS":
+        # (X^T X)^(-1) X^T Y
+        try:
+            weights = np.linalg.lstsq(X_design, Y_scaled, rcond=None)[0]
+            coefs = weights[1:]
+        except np.linalg.LinAlgError:
+            st.error("Matrix singular. Try removing collinear features.")
+            return
+
+    elif model_type == "Ridge (L2)":
+        # (X^T X + alpha*I)^(-1) X^T Y
+        I = np.eye(X_design.shape[1])
+        I[0, 0] = 0  # Do not penalize intercept
+        try:
+            weights = np.linalg.inv(X_design.T @ X_design + alpha * I) @ X_design.T @ Y_scaled
+            coefs = weights[1:]
+        except np.linalg.LinAlgError:
+            st.error("Computation error during Ridge estimation.")
+            return
+
+    elif model_type == "Lasso (L1)":
+        # Iterative Coordinate Descent for Lasso
+        w = np.zeros(X_design.shape[1])
+        for _ in range(200):
+            for j in range(X_design.shape[1]):
+                X_j = X_design[:, j]
+                y_pred = X_design @ w
+                r = Y_scaled - y_pred + w[j] * X_j
+                rho = np.dot(X_j, r)
+                if j == 0:
+                    w[j] = rho / N
+                else:
+                    # Soft thresholding
+                    lam = alpha * 0.1
+                    if rho < -lam:
+                        w[j] = (rho + lam) / N
+                    elif rho > lam:
+                        w[j] = (rho - lam) / N
+                    else:
+                        w[j] = 0.0
+        coefs = w[1:]
+
+    # Calculate R-Squared
+    y_pred_scaled = X_design @ np.hstack(
+        [
+            [
+                Y_scaled.mean()
+                if model_type != "Standard OLS"
+                else weights[0]
+            ],
+            coefs,
+        ]
+    )
+    ss_res = np.sum((Y_scaled - y_pred_scaled) ** 2)
+    ss_tot = np.sum((Y_scaled - Y_scaled.mean()) ** 2)
+    r2_score = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
+
+    # Display Results
+    res_df = pd.DataFrame(
+        {
+            "Property Feature": selected_features,
+            "Standardized Coefficient Weight": coefs,
+            "Impact Direction": [
+                "Positive (+)" if c > 0 else ("Negative (-)" if c < 0 else "Neutral")
+                for c in coefs
+            ],
+            "Absolute Importance": np.abs(coefs),
+        }
+    ).sort_values(by="Absolute Importance", ascending=False)
+
+    rc1, rc2 = st.columns([1.5, 1])
+
+    with rc1:
+        fig_bar = px.bar(
+            res_df,
+            x="Standardized Coefficient Weight",
+            y="Property Feature",
+            orientation="h",
+            color="Standardized Coefficient Weight",
+            color_continuous_scale="RdBu_r",
+            title=f"Relative Driver Weights on '{target_lbl}' (R² = {r2_score:.3f})",
+        )
+        fig_bar.update_layout(
+            height=380,
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with rc2:
+        st.markdown("##### 🏆 Ranked Feature Impact")
+        st.dataframe(
+            res_df[
+                [
+                    "Property Feature",
+                    "Standardized Coefficient Weight",
+                    "Impact Direction",
+                ]
+            ].style.format({"Standardized Coefficient Weight": "{:.3f}"}),
+            use_container_width=True,
+            height=320,
+        )
+
+
+# -----------------------------------------------------------------------------
+# 5. Main Application Workflow
 # -----------------------------------------------------------------------------
 raw_db_df = fetch_aggregated_records()
 
@@ -305,9 +466,7 @@ else:
     ]
 
     if len(numeric_cols) < 2:
-        st.error(
-            "Insufficient numeric metrics in the database to form a matrix."
-        )
+        st.error("Insufficient numeric metrics in the database to form a matrix.")
     else:
         st.sidebar.header("Global Analysis Filters")
         selected_metrics = st.sidebar.multiselect(
@@ -321,15 +480,30 @@ else:
                 f"Global Spatial Analysis ({len(selected_metrics)} Metrics)"
             )
 
-            # Render Matplotlib matrix
-            fig = plot_vga_pairs_matrix(df_global, selected_metrics)
+            # Matplotlib Grid Display
+            fig = plot_vga_pairs_matrix(df_global, selected_metrics, dpi_val=100)
             st.pyplot(fig)
+
+            # High-Res Export Buffer
+            buffer = io.BytesIO()
+            fig_highres = plot_vga_pairs_matrix(
+                df_global, selected_metrics, dpi_val=300
+            )
+            fig_highres.savefig(buffer, format="png", bbox_inches="tight")
+            plt.close(fig_highres)
+
+            st.download_button(
+                label="📥 Download High-Res Matrix Image (300 DPI PNG)",
+                data=buffer.getvalue(),
+                file_name="spatial_correlation_matrix_300dpi.png",
+                mime="image/png",
+            )
 
             # Focused Inspector Tool
             st.markdown("---")
             st.subheader("🔍 Focused Pair Inspector")
             st.write(
-                "Select any variable pair below to inspect their detailed Scatter Plot, Pearson score, and Skew Distributions:"
+                "Select any variable pair below to inspect their detailed scatter plot and multi-correlation metrics:"
             )
 
             clean_options = {
@@ -357,13 +531,12 @@ else:
             if var1 == var2:
                 st.info("Select two different metrics to inspect.")
             else:
-                pair_df = df_global[[var1, var2]].apply(
-                    pd.to_numeric, errors="coerce"
-                )
-                r_val = pair_df.corr().iloc[0, 1]
-                render_pair_focused_inspector(df_global, var1, var2, r_val)
+                render_pair_focused_inspector(df_global, var1, var2)
 
-            # Numerical table expander
+            # Multivariate Regression Feature Drivers Section
+            render_multivariate_regression(df_global, selected_metrics)
+
+            # Numerical Table Expander
             with st.expander("View Numerical Pearson Correlation Matrix Table"):
                 agg_corr = df_global[selected_metrics].corr(method="pearson")
                 st.dataframe(
@@ -381,7 +554,7 @@ else:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 5. Admin Management Section
+# 6. Admin Management Section
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.header("🔒 Admin Portal")
