@@ -1,8 +1,10 @@
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 
@@ -42,190 +44,190 @@ def fetch_aggregated_records():
 
 
 # -----------------------------------------------------------------------------
-# 2. Interactive Tile Matrix Engine (Scatter, Distributions & Correlation Tiles)
+# 2. Matplotlib Precision Pairs Matrix Engine
 # -----------------------------------------------------------------------------
-def build_custom_tile_matrix(df: pd.DataFrame, selected_cols: list):
+def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list):
     """
-    Recreates the custom pairs plot format in Plotly:
-    - Diagonal: Histograms / Distribution curves
+    Recreates the exact visual matrix:
+    - Diagonal: Red KDE Filled Density Distribution Curves
     - Lower Triangle: Scatter Plots
-    - Upper Triangle: Correlation Tiles with Pearson 'r'
+    - Upper Triangle: Dynamically Scaled & Sized Correlation Squares
     """
     sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
+
     corr_matrix = sub_df.corr(method="pearson")
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
+    )
+
+    # Scale overall figure dimensions so 14+ variables remain readable
+    cell_size = max(1.8, min(3.0, 24.0 / n_vars))
+    fig_size = cell_size * n_vars
+
+    fig, axes = plt.subplots(n_vars, n_vars, figsize=(fig_size, fig_size))
+    plt.subplots_adjust(wspace=0.15, hspace=0.15)
 
     clean_labels = [
         col.replace("isovist_", "").replace("_", " ").title()
         for col in selected_cols
     ]
 
-    # Create empty subplot grid with shared axes across rows/columns
-    fig = make_subplots(
-        rows=n_vars,
-        cols=n_vars,
-        shared_xaxes=False,
-        shared_yaxes=False,
-        horizontal_spacing=0.015,
-        vertical_spacing=0.015,
-    )
+    font_size = max(5, int(13 - 0.45 * n_vars))
+    text_val_size = max(6, int(14 - 0.55 * n_vars))
 
     for i in range(n_vars):
         for j in range(n_vars):
+            ax = axes[i, j] if n_vars > 1 else axes
             col_x = selected_cols[j]
             col_y = selected_cols[i]
-            lbl_x = clean_labels[j]
-            lbl_y = clean_labels[i]
 
-            row_idx = i + 1
-            col_idx = j + 1
-
-            # --- DIAGONAL: Distribution Histogram ---
+            # --- DIAGONAL: Red Filled KDE Density Curve ---
             if i == j:
-                fig.add_trace(
-                    go.Histogram(
-                        x=sub_df[col_x],
-                        marker_color="#d73027",
-                        opacity=0.6,
-                        name=f"{lbl_x} Distribution",
-                        showlegend=False,
-                        hovertemplate=f"<b>{lbl_x}</b><br>Value: %{{x}}<br>Count: %{{y}}<extra></extra>",
-                    ),
-                    row=row_idx,
-                    col=col_idx,
+                sns.kdeplot(
+                    data=sub_df[col_x],
+                    ax=ax,
+                    color="#d73027",
+                    fill=True,
+                    alpha=0.35,
+                    linewidth=1.2,
                 )
+                ax.set_ylabel("")
+                ax.set_xlabel("")
+                ax.set_xlim(sub_df[col_x].min(), sub_df[col_x].max())
 
-            # --- LOWER TRIANGLE: Scatter Plots ---
+            # --- LOWER TRIANGLE: Scatter Plot ---
             elif i > j:
-                fig.add_trace(
-                    go.Scatter(
-                        x=sub_df[col_x],
-                        y=sub_df[col_y],
-                        mode="markers",
-                        marker=dict(
-                            size=3,
-                            color="#2b5c8f",
-                            opacity=0.5,
-                        ),
-                        name=f"{lbl_y} vs {lbl_x}",
-                        showlegend=False,
-                        hovertemplate=(
-                            f"<b>{lbl_x}</b>: %{{x:.2f}}<br>"
-                            f"<b>{lbl_y}</b>: %{{y:.2f}}<extra></extra>"
-                        ),
-                    ),
-                    row=row_idx,
-                    col=col_idx,
+                ax.scatter(
+                    sub_df[col_x],
+                    sub_df[col_y],
+                    alpha=0.4,
+                    edgecolor="none",
+                    s=max(4, int(22 - 1.1 * n_vars)),
+                    color="#2c3e50",
                 )
 
-            # --- UPPER TRIANGLE: Correlation Tiles ---
+            # --- UPPER TRIANGLE: Sized Correlation Squares ---
             else:
+                ax.axis("off")  # Clear axes background
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+
                 r_val = corr_matrix.loc[col_y, col_x]
-                r_str = f"{r_val:.2f}" if not np.isnan(r_val) else "N/A"
 
-                # Single-cell heatmap tile representation
-                fig.add_trace(
-                    go.Heatmap(
-                        z=[[r_val]],
-                        colorscale="RdBu_r",
-                        zmin=-1,
-                        zmax=1,
-                        showscale=False,
-                        hoverongaps=False,
-                        hovertemplate=(
-                            f"<b>Correlation Pair:</b><br>"
-                            f"{lbl_y} ↔ {lbl_x}<br>"
-                            f"<b>Pearson r:</b> {r_str}<extra></extra>"
-                        ),
-                    ),
-                    row=row_idx,
-                    col=col_idx,
-                )
+                if not np.isnan(r_val):
+                    # Normalized color mapping (-1 to 1 mapped to 0 to 1)
+                    norm_val = (r_val + 1) / 2
+                    sq_color = cmap(norm_val)
 
-                # Overlay big legible text on top of the tile
-                fig.add_annotation(
-                    text=f"<b>{r_str}</b>",
-                    x=0,
-                    y=0,
-                    xref=f"x{col_idx if col_idx > 1 else ''}",
-                    yref=f"y{row_idx if row_idx > 1 else ''}",
-                    showarrow=False,
-                    font=dict(
-                        size=max(8, int(16 - 0.6 * n_vars)),
-                        color="white" if abs(r_val) > 0.5 else "#111111",
-                    ),
-                    row=row_idx,
-                    col=col_idx,
-                )
+                    abs_r = abs(r_val)
+                    # Dynamic sizing: bigger |r| = bigger square
+                    sq_size = 0.20 + (0.75 * abs_r)
+                    alpha_val = 0.25 + (0.75 * abs_r)
 
-            # Hide tick marks on internal cells to keep tiles clean
+                    rect = plt.Rectangle(
+                        (0.5 - sq_size / 2, 0.5 - sq_size / 2),
+                        sq_size,
+                        sq_size,
+                        facecolor=sq_color,
+                        alpha=alpha_val,
+                        edgecolor="none",
+                    )
+                    ax.add_patch(rect)
+
+                    # Text label placed exactly inside the square
+                    text_str = f"{r_val:.2f}"
+                    text_color = "white" if abs_r > 0.65 else "#111111"
+                    ax.text(
+                        0.5,
+                        0.5,
+                        text_str,
+                        ha="center",
+                        va="center",
+                        fontsize=text_val_size,
+                        weight="bold",
+                        color=text_color,
+                    )
+
+            # Axis Label formatting
             if i < n_vars - 1:
-                fig.update_xaxes(showticklabels=False, row=row_idx, col=col_idx)
+                ax.set_xticklabels([])
             else:
-                fig.update_xaxes(
-                    title_text=lbl_x,
-                    title_font=dict(size=max(7, int(11 - 0.3 * n_vars))),
-                    tickangle=-45,
-                    row=row_idx,
-                    col=col_idx,
+                ax.set_xlabel(
+                    clean_labels[j], fontsize=font_size, fontweight="bold"
                 )
+                ax.tick_params(axis="x", rotation=45, labelsize=font_size - 1)
 
-            if j > 0:
-                fig.update_yaxes(showticklabels=False, row=row_idx, col=col_idx)
-            else:
-                fig.update_yaxes(
-                    title_text=lbl_y,
-                    title_font=dict(size=max(7, int(11 - 0.3 * n_vars))),
-                    row=row_idx,
-                    col=col_idx,
+            if j > 0 and i != j:
+                ax.set_yticklabels([])
+            if j == 0:
+                ax.set_ylabel(
+                    clean_labels[i], fontsize=font_size, fontweight="bold"
                 )
+                ax.tick_params(axis="y", labelsize=font_size - 1)
 
-    # Dynamic canvas sizing so tiles stay square and readable
-    grid_size = max(650, min(1400, 85 * n_vars))
-    fig.update_layout(
-        height=grid_size,
-        width=grid_size,
-        margin=dict(l=70, r=20, t=30, b=70),
-        plot_bgcolor="#fcfcfc",
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-
+    plt.tight_layout()
     return fig
 
 
+# -----------------------------------------------------------------------------
+# 3. Focused Pair Inspector (Fixed Trendline Error)
+# -----------------------------------------------------------------------------
 def render_pair_focused_inspector(
     df: pd.DataFrame, col_x: str, col_y: str, r_val: float
 ):
-    """
-    Renders an isolated high-res card displaying:
-    1. Scatter Plot for Col X vs Col Y
-    2. Large Correlation Score Box
-    3. Distribution Histograms for both metrics
-    """
+    """Isolated high-resolution card display with numpy linear fit to prevent statsmodels error."""
     clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
     clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
 
-    c1, c2, c3 = st.columns([2, 1, 2])
+    sub_df = df[[col_x, col_y]].apply(pd.to_numeric, errors="coerce").dropna()
+
+    c1, c2, c3 = st.columns([2.2, 1, 2.2])
 
     with c1:
         st.markdown(f"##### 📉 Scatter Plot: `{clean_y}` vs `{clean_x}`")
-        fig_scatter = px.scatter(
-            df,
-            x=col_x,
-            y=col_y,
-            trendline="ols",
-            opacity=0.6,
-            labels={col_x: clean_x, col_y: clean_y},
-            color_discrete_sequence=["#2b5c8f"],
+        fig_scatter = go.Figure()
+
+        # Raw scatter points
+        fig_scatter.add_trace(
+            go.Scatter(
+                x=sub_df[col_x],
+                y=sub_df[col_y],
+                mode="markers",
+                marker=dict(color="#2b5c8f", opacity=0.6, size=6),
+                name="Data Points",
+            )
         )
+
+        # Pure NumPy OLS Trendline fit (No statsmodels dependency needed!)
+        if len(sub_df) > 1:
+            x_vals = sub_df[col_x].values
+            y_vals = sub_df[col_y].values
+            m, b = np.polyfit(x_vals, y_vals, 1)
+            x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+            y_line = m * x_line + b
+
+            fig_scatter.add_trace(
+                go.Scatter(
+                    x=x_line,
+                    y=y_line,
+                    mode="lines",
+                    line=dict(color="#d73027", width=2),
+                    name="Trendline",
+                )
+            )
+
         fig_scatter.update_layout(
-            height=320, margin=dict(l=20, r=20, t=20, b=20)
+            height=320,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis_title=clean_x,
+            yaxis_title=clean_y,
+            showlegend=False,
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
 
     with c2:
         st.markdown("##### 🧮 Pearson Correlation")
-        # Color coding correlation severity
         bg_color = (
             "#d73027"
             if r_val > 0.5
@@ -235,37 +237,34 @@ def render_pair_focused_inspector(
             f"""
             <div style="
                 background-color: {bg_color};
-                padding: 25px;
+                padding: 25px 15px;
                 border-radius: 12px;
                 text-align: center;
                 color: white;
                 margin-top: 15px;">
-                <h1 style="margin: 0; font-size: 42px;">{r_val:.3f}</h1>
-                <p style="margin: 5px 0 0 0; opacity: 0.9;">r-value</p>
+                <h1 style="margin: 0; font-size: 40px;">{r_val:.3f}</h1>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Pearson r</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        st.caption(
-            f"Shows linear relation between **{clean_x}** and **{clean_y}**."
-        )
 
     with c3:
-        st.markdown(f"##### 📊 Distribution Comparison")
+        st.markdown(f"##### 📊 Metrics Distribution Skew")
         fig_dist = go.Figure()
         fig_dist.add_trace(
             go.Histogram(
-                x=df[col_x],
+                x=sub_df[col_x],
                 name=clean_x,
-                opacity=0.6,
+                opacity=0.55,
                 marker_color="#2b5c8f",
             )
         )
         fig_dist.add_trace(
             go.Histogram(
-                x=df[col_y],
+                x=sub_df[col_y],
                 name=clean_y,
-                opacity=0.6,
+                opacity=0.55,
                 marker_color="#d73027",
             )
         )
@@ -281,7 +280,7 @@ def render_pair_focused_inspector(
 
 
 # -----------------------------------------------------------------------------
-# 3. Main Data Extraction & Analysis
+# 4. Main Data Extraction & Analysis
 # -----------------------------------------------------------------------------
 raw_db_df = fetch_aggregated_records()
 
@@ -319,21 +318,18 @@ else:
 
         if len(selected_metrics) >= 2:
             st.subheader(
-                f"Global Spatial Matrix ({len(selected_metrics)} Metrics)"
+                f"Global Spatial Analysis ({len(selected_metrics)} Metrics)"
             )
 
-            # --- Matrix Rendering ---
-            st.caption(
-                "💡 **Tile Grid Overview:** Scatter Plots (bottom-left), Histograms (diagonal), Correlation Tiles (top-right)."
-            )
-            fig_matrix = build_custom_tile_matrix(df_global, selected_metrics)
-            st.plotly_chart(fig_matrix, use_container_width=True)
+            # Render Matplotlib matrix
+            fig = plot_vga_pairs_matrix(df_global, selected_metrics)
+            st.pyplot(fig)
 
-            # --- Interactive Pair Inspector Section ---
+            # Focused Inspector Tool
             st.markdown("---")
-            st.subheader("🔍 Focused Tile Pair Inspector")
+            st.subheader("🔍 Focused Pair Inspector")
             st.write(
-                "Select any pair of variables below to expand and inspect their **Scatter Plot**, **Correlation Box**, and **Distributions** side-by-side:"
+                "Select any variable pair below to inspect their detailed Scatter Plot, Pearson score, and Skew Distributions:"
             )
 
             clean_options = {
@@ -341,21 +337,41 @@ else:
                 for col in selected_metrics
             }
 
-            col_sel1, col_sel2 = st.columns(2)
-            with col_sel1:
-                var1_label = st.selectbox("Select Variable X (Horizontal Tile):", options=list(clean_options.keys()), index=0)
-            with col_sel2:
-                var2_label = st.selectbox("Select Variable Y (Vertical Tile):", options=list(clean_options.keys()), index=min(1, len(clean_options)-1))
+            c_select1, c_select2 = st.columns(2)
+            with c_select1:
+                var1_lbl = st.selectbox(
+                    "Select Variable X:",
+                    options=list(clean_options.keys()),
+                    index=0,
+                )
+            with c_select2:
+                var2_lbl = st.selectbox(
+                    "Select Variable Y:",
+                    options=list(clean_options.keys()),
+                    index=min(1, len(clean_options) - 1),
+                )
 
-            var1 = clean_options[var1_label]
-            var2 = clean_options[var2_label]
+            var1 = clean_options[var1_lbl]
+            var2 = clean_options[var2_lbl]
 
             if var1 == var2:
-                st.info("Select two different metrics to inspect correlation.")
+                st.info("Select two different metrics to inspect.")
             else:
-                r_val = df_global[[var1, var2]].apply(pd.to_numeric, errors="coerce").corr().iloc[0, 1]
+                pair_df = df_global[[var1, var2]].apply(
+                    pd.to_numeric, errors="coerce"
+                )
+                r_val = pair_df.corr().iloc[0, 1]
                 render_pair_focused_inspector(df_global, var1, var2, r_val)
 
+            # Numerical table expander
+            with st.expander("View Numerical Pearson Correlation Matrix Table"):
+                agg_corr = df_global[selected_metrics].corr(method="pearson")
+                st.dataframe(
+                    agg_corr.style.background_gradient(
+                        cmap="coolwarm", vmin=-1, vmax=1
+                    ).format("{:.3f}"),
+                    use_container_width=True,
+                )
         else:
             st.warning("Please select at least **2 metrics** to plot.")
 
@@ -365,7 +381,7 @@ else:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 4. Admin Management Section (Password Protected Dataset Deletion)
+# 5. Admin Management Section
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.header("🔒 Admin Portal")
@@ -378,9 +394,6 @@ if input_pass == admin_password:
 
     st.markdown("---")
     st.header("🔑 Admin Dataset Management")
-    st.write(
-        "Inspect individual batch uploads and delete datasets that contain anomalies or errors."
-    )
 
     if not raw_db_df.empty and "upload_batch_id" in raw_db_df.columns:
         meta_cols = [
@@ -434,10 +447,10 @@ if input_pass == admin_password:
 
             with st.expander(f"Inspect Dataset Matrix ({selected_label})"):
                 if len(single_numeric_cols) >= 2:
-                    fig_single = build_custom_tile_matrix(
+                    fig_single = plot_vga_pairs_matrix(
                         single_ds_metrics, single_numeric_cols
                     )
-                    st.plotly_chart(fig_single, use_container_width=True)
+                    st.pyplot(fig_single)
                 else:
                     st.info(
                         "Not enough numeric variables in this dataset to generate a plot."
