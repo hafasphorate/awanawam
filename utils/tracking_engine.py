@@ -15,7 +15,6 @@ except ImportError:
 
 from utils.homography_engine import project_points
 
-# Model mapping dictionary
 MODEL_MAPPING = {
     "yolov8n.pt": "yolov8n.pt",
     "keremberke/yolov8n-head": "yolov8n.pt",
@@ -46,14 +45,10 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
 
 
 def parse_polygon_mask(mask) -> list:
-    """Normalizes mask objects (SVG paths, dictionaries, lists) into
-
-    a list of [x, y] float coordinates.
-    """
+    """Normalizes mask objects into [x, y] float coordinates."""
     pts = []
 
     if isinstance(mask, str):
-        # Extract numerical pairs from SVG path strings (e.g. 'M 10 20 L 30 40 ...')
         nums = re.findall(r"[-+]?\d*\.\d+|\d+", mask)
         if len(nums) >= 6:
             coords = [float(n) for n in nums]
@@ -75,57 +70,35 @@ def parse_polygon_mask(mask) -> list:
     return pts
 
 
-def get_projected_exclusion_polygons(
-    video_masks: list, frame_shape: tuple, H_matrix: np.ndarray
-) -> list:
-    """Scales drawn canvas points to full video resolution, then projects
+def apply_exclusion_masks_to_frame(
+    frame_rgb: np.ndarray, video_masks: list, fill_color: tuple = (0, 0, 0)
+) -> np.ndarray:
+    """Fills drawn polygon regions on the video image so the AI detector cannot see pixels in those areas."""
+    if not video_masks:
+        return frame_rgb
 
-    the video mask polygon vertices onto the 2D floorplan space via Homography.
-    """
-    if H_matrix is None or not video_masks:
-        return []
+    masked_frame = frame_rgb.copy()
+    frame_h, frame_w = frame_rgb.shape[:2]
 
-    frame_h, frame_w = frame_shape[:2]
-
-    # Get canvas dimensions (fallback to native frame size if unpopulated)
     canvas_w = st.session_state.get("mask_canvas_width", frame_w)
     canvas_h = st.session_state.get("mask_canvas_height", frame_h)
 
     scale_x = frame_w / float(canvas_w) if canvas_w > 0 else 1.0
     scale_y = frame_h / float(canvas_h) if canvas_h > 0 else 1.0
 
-    projected_polygons = []
-
     for mask in video_masks:
         raw_pts = parse_polygon_mask(mask)
         if len(raw_pts) >= 3:
-            # 1. Rescale canvas coordinates to native frame pixels
-            scaled_pts = [[pt[0] * scale_x, pt[1] * scale_y] for pt in raw_pts]
+            # Rescale points to native video frame resolution
+            scaled_pts = [
+                [int(pt[0] * scale_x), int(pt[1] * scale_y)] for pt in raw_pts
+            ]
+            poly_arr = np.array([scaled_pts], dtype=np.int32)
 
-            # 2. Map video frame pixels to 2D floorplan coordinates
-            world_poly_pts = project_points(scaled_pts, H_matrix)
+            # Draw filled solid polygon on the frame before inference
+            cv2.fillPoly(masked_frame, poly_arr, fill_color)
 
-            if len(world_poly_pts) >= 3:
-                # Store as int32/float32 contour array for cv2 point polygon testing
-                poly_arr = np.array(world_poly_pts, dtype=np.float32)
-                projected_polygons.append(poly_arr)
-
-    return projected_polygons
-
-
-def is_world_point_in_exclusion(
-    world_x: float, world_y: float, projected_polygons: list
-) -> bool:
-    """Evaluates whether a projected 2D ground point falls inside
-
-    any mapped exclusion zone on the 2D floorplan.
-    """
-    point = (float(world_x), float(world_y))
-    for poly_arr in projected_polygons:
-        # cv2.pointPolygonTest returns >= 0 if point is inside or on edge
-        if cv2.pointPolygonTest(poly_arr, point, False) >= 0:
-            return True
-    return False
+    return masked_frame
 
 
 def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
@@ -190,28 +163,28 @@ def process_video_frame(
     detect_target: str = "Head",
     model_name: str = "yolov8n.pt",
 ) -> tuple:
-    """Detects individuals in video, projects coordinates onto 2D floorplan space,
-
-    and excludes detections falling into video-drawn, projected exclusion zones.
-    """
+    """Masks out video exclusion zones FIRST, then detects humans and maps valid detections to 2D space."""
     if frame_rgb is None:
         return None, pd.DataFrame()
 
-    annotated_frame = frame_rgb.copy()
-
     if not YOLO_AVAILABLE:
-        return annotated_frame, pd.DataFrame()
+        return frame_rgb.copy(), pd.DataFrame()
 
+    # 1. APPLY EXCLUSION MASKS TO VIDEO FRAME BEFORE DETECTION
+    video_masks = st.session_state.get("exclusion_masks", [])
+    inference_frame = apply_exclusion_masks_to_frame(
+        frame_rgb, video_masks, fill_color=(0, 0, 0)
+    )
+
+    annotated_frame = inference_frame.copy()
     model = load_detection_model(model_name)
     raw_detections = []
     pixel_points = []
 
-    # Retrieve drawn video mask polygons
-    video_masks = st.session_state.get("exclusion_masks", [])
-
+    # 2. RUN MODEL PREDICTION ON THE MASKED FRAME
     if model is not None:
         results = model.predict(
-            annotated_frame,
+            inference_frame,
             conf=conf_threshold,
             iou=iou_threshold,
             imgsz=inference_size,
@@ -221,7 +194,7 @@ def process_video_frame(
         if results and len(results) > 0:
             res = results[0]
 
-            # 1. Pose Keypoint Models
+            # Pose Keypoint Models
             if (
                 hasattr(res, "keypoints")
                 and res.keypoints is not None
@@ -253,7 +226,7 @@ def process_video_frame(
                             }
                         )
 
-            # 2. Object Bounding Box Models (Person Class = 0)
+            # Bounding Box Models (Person Class = 0)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
@@ -272,9 +245,9 @@ def process_video_frame(
                     if detect_target.lower().startswith(
                         "feet"
                     ) or detect_target.lower().startswith("ground"):
-                        target_y = float(y2)  # Bottom-center for ground feet
+                        target_y = float(y2)
                     else:
-                        target_y = float(y1)  # Top-center for head
+                        target_y = float(y1)
 
                     pixel_points.append([target_x, target_y])
                     raw_detections.append(
@@ -285,46 +258,19 @@ def process_video_frame(
                         }
                     )
 
+    # 3. PROJECT VALID DETECTIONS TO 2D FLOORPLAN
     final_detections = []
 
     if H_matrix is not None and len(pixel_points) > 0:
-        # Project raw image detection points to 2D floorplan coordinates
         world_pts = project_points(pixel_points, H_matrix)
 
-        # Convert video masks into 2D floorplan space using H_matrix
-        projected_exclusion_zones = get_projected_exclusion_polygons(
-            video_masks, frame_rgb.shape, H_matrix
-        )
-
-        # Save zones to session state so UI scripts can render them on the 2D plot
-        st.session_state["projected_exclusion_zones"] = (
-            projected_exclusion_zones
-        )
-
-        # Debug sidebar info to inspect active exclusion zone coordinates
-        if video_masks and len(projected_exclusion_zones) > 0:
-            with st.sidebar.expander("Exclusion Zone Debug Data", expanded=False):
-                st.write(
-                    f"Active Exclusion Masks: {len(projected_exclusion_zones)}"
-                )
-                st.write("First Zone 2D Points:", projected_exclusion_zones[0])
-
         for idx, w_pt in enumerate(world_pts):
-            world_x, world_y = float(w_pt[0]), float(w_pt[1])
-
-            # EXCLUSION CHECK: Discard points inside projected polygons
-            if is_world_point_in_exclusion(
-                world_x, world_y, projected_exclusion_zones
-            ):
-                continue
-
             det_info = raw_detections[idx]
-            det_info["world_x"] = world_x
-            det_info["world_y"] = world_y
+            det_info["world_x"] = float(w_pt[0])
+            det_info["world_y"] = float(w_pt[1])
             det_info["track_id"] = len(final_detections) + 1
             final_detections.append(det_info)
 
-            # Draw annotations only for non-excluded points
             if det_info["bbox"]:
                 x1, y1, x2, y2 = det_info["bbox"]
                 cv2.rectangle(
@@ -338,7 +284,6 @@ def process_video_frame(
                 -1,
             )
     else:
-        # Fallback if homography matrix is not provided
         for idx, det_info in enumerate(raw_detections):
             det_info["track_id"] = idx + 1
             final_detections.append(det_info)
