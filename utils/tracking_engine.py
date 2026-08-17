@@ -45,22 +45,36 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
         return None
 
 
-def is_point_excluded(point: tuple, exclusion_masks: list) -> bool:
-    """Checks whether a target pixel point (x, y) falls within any drawn exclusion zone."""
+def is_point_excluded(point: tuple, exclusion_masks: list, frame_shape: tuple) -> bool:
+    """Checks whether a target pixel point (x, y) falls within any drawn exclusion zone,
+
+    accounting for screen UI scale vs original frame resolution scale.
+    """
     if not exclusion_masks:
         return False
 
+    frame_h, frame_w = frame_shape[:2]
+
+    # Check if UI canvas dimensions were saved when drawing the mask
+    canvas_w = st.session_state.get("mask_canvas_width", frame_w)
+    canvas_h = st.session_state.get("mask_canvas_height", frame_h)
+
+    # Compute scale factor between UI drawing canvas and actual video frame
+    scale_x = frame_w / float(canvas_w) if canvas_w > 0 else 1.0
+    scale_y = frame_h / float(canvas_h) if canvas_h > 0 else 1.0
+
+    target_x, target_y = float(point[0]), float(point[1])
+
     for mask in exclusion_masks:
         if len(mask) >= 3:
-            pts_arr = np.array(mask, dtype=np.float32)
-            # cv2.pointPolygonTest returns >= 0 if the point is inside or on the boundary
-            if (
-                cv2.pointPolygonTest(
-                    pts_arr, (float(point[0]), float(point[1])), False
-                )
-                >= 0
-            ):
+            # Scale mask vertices to match current frame resolution
+            scaled_mask = [[pt[0] * scale_x, pt[1] * scale_y] for pt in mask]
+            pts_arr = np.array(scaled_mask, dtype=np.float32)
+
+            # cv2.pointPolygonTest returns >= 0 if point is inside or on edge
+            if cv2.pointPolygonTest(pts_arr, (target_x, target_y), False) >= 0:
                 return True
+
     return False
 
 
@@ -180,9 +194,9 @@ def process_video_frame(
                         target_x = float(np.mean([pt[0] for pt in valid_pts]))
                         target_y = float(np.mean([pt[1] for pt in valid_pts]))
 
-                        # EXCLUSION MASK CHECK
+                        # EXCLUSION MASK CHECK (Checks both head/feet and bounding box center)
                         if is_point_excluded(
-                            (target_x, target_y), exclusion_masks
+                            (target_x, target_y), exclusion_masks, frame_rgb.shape
                         ):
                             continue
 
@@ -218,6 +232,7 @@ def process_video_frame(
                     x1, y1, x2, y2 = xyxy
 
                     target_x = float((x1 + x2) / 2.0)
+                    center_y = float((y1 + y2) / 2.0)
 
                     if detect_target.lower().startswith(
                         "feet"
@@ -226,8 +241,12 @@ def process_video_frame(
                     else:
                         target_y = float(y1)  # Top center for head target
 
-                    # EXCLUSION MASK CHECK
-                    if is_point_excluded((target_x, target_y), exclusion_masks):
+                    # EXCLUSION MASK CHECK (Checks target point OR bbox center point)
+                    if is_point_excluded(
+                        (target_x, target_y), exclusion_masks, frame_rgb.shape
+                    ) or is_point_excluded(
+                        (target_x, center_y), exclusion_masks, frame_rgb.shape
+                    ):
                         continue
 
                     pixel_points.append([target_x, target_y])
