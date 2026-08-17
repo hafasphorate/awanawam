@@ -450,146 +450,69 @@ with tab_region:
 
         if raw_frame_rgb is not None:
             img_h, img_w, _ = raw_frame_rgb.shape
-            pil_img = PIL.Image.fromarray(raw_frame_rgb)
-
             st.session_state.mask_canvas_width = img_w
             st.session_state.mask_canvas_height = img_h
 
-            fig_img = go.Figure()
+            from streamlit_drawable_canvas import st_canvas
+            from PIL import Image as PILImage
 
-            # Add Frame Image as Canvas Background
-            fig_img.add_layout_image(
-                dict(
-                    source=pil_img,
-                    xref="x",
-                    yref="y",
-                    x=0,
-                    y=0,
-                    sizex=img_w,
-                    sizey=img_h,
-                    sizing="stretch",
-                    opacity=1,
-                    layer="below",
-                )
-            )
-
-            # Draw Saved Exclusion Masks
-            for idx, mask in enumerate(
-                st.session_state.get("exclusion_masks", [])
-            ):
-                if len(mask) >= 3:
-                    mx = [p[0] for p in mask] + [mask[0][0]]
-                    my = [p[1] for p in mask] + [mask[0][1]]
-                    fig_img.add_trace(
-                        go.Scatter(
-                            x=mx,
-                            y=my,
-                            mode="lines+markers",
-                            fill="toself",
-                            fillcolor="rgba(255, 0, 0, 0.45)",
-                            line=dict(color="#FF0000", width=3),
-                            marker=dict(size=6, color="#FF0000"),
-                            name=f"Mask Zone #{idx+1}",
-                        )
-                    )
-
-            fig_img.update_layout(
-                template="plotly_dark",
-                height=550,
-                margin=dict(l=0, r=0, t=20, b=0),
-                xaxis=dict(
-                    range=[0, img_w],
-                    showgrid=False,
-                    zeroline=False,
-                    constrain="domain",
-                ),
-                yaxis=dict(
-                    range=[img_h, 0],
-                    showgrid=False,
-                    zeroline=False,
-                    scaleanchor="x",
-                    scaleratio=1,
-                ),
-                dragmode="drawclosedpath",
-                newshape=dict(
-                    fillcolor="rgba(255, 0, 0, 0.4)",
-                    line=dict(color="#FF0000", width=2),
-                ),
-                showlegend=False,
-                uirevision=f"MASK_REV_{st.session_state.get('mask_canvas_key_ver', 0)}",
-            )
-
-            plotly_config = {
-                "modeBarButtonsToAdd": [
-                    "drawclosedpath",
-                    "drawrect",
-                    "eraseshape",
-                ],
-                "displayModeBar": True,
-            }
-
-            v_events = st.plotly_chart(
-                fig_img,
-                use_container_width=True,
-                on_select="rerun",
-                config=plotly_config,
+            canvas_result = st_canvas(
+                fill_color="rgba(0,0,0,0.95)",
+                stroke_width=2,
+                stroke_color="#FFFFFF",
+                background_color="#000000",
+                background_image=PILImage.fromarray(raw_frame_rgb),
+                update_streamlit=True,
+                width=img_w,
+                height=img_h,
+                drawing_mode="polygon",
+                point_display_radius=0,
+                display_toolbar=True,
                 key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}",
             )
 
-            # Parse Drawn Shapes from the Plotly canvas. This is the path used by the
-            # drawclosedpath tool; it is stored in the event payload and must be
-            # normalized before being saved into session state for YOLO masking.
-            if v_events:
-                shapes = []
-                for key in ["selection", "selectedData"]:
-                    if isinstance(v_events, dict) and key in v_events and isinstance(v_events[key], dict):
-                        sel = v_events[key]
-                        if isinstance(sel.get("shapes"), list):
-                            shapes.extend(sel["shapes"])
-                        if isinstance(sel.get("points"), list):
-                            for pt in sel["points"]:
-                                if isinstance(pt, dict) and "x" in pt and "y" in pt:
-                                    shapes.append({"type": "point", "x": pt["x"], "y": pt["y"]})
-
-                if not shapes and isinstance(v_events, dict):
-                    shapes = v_events.get("shapes", [])
-
+            if canvas_result is not None and canvas_result.json_data is not None:
+                objects = canvas_result.json_data.get("objects", [])
                 parsed_masks = []
-                for shape in shapes:
-                    if not isinstance(shape, dict):
+
+                for obj in objects:
+                    if not isinstance(obj, dict):
                         continue
+                    if obj.get("type") in {"path", "polygon"}:
+                        path = obj.get("path")
+                        if isinstance(path, str):
+                            nums = re.findall(r"[-+]?\d*\.?\d+", path)
+                            if len(nums) >= 6:
+                                coords = [float(n) for n in nums]
+                                pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords) - 1, 2)]
+                                if len(pts) >= 3:
+                                    parsed_masks.append(pts)
+                        elif isinstance(path, list):
+                            pts = []
+                            for item in path:
+                                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                                    pts.append([float(item[0]), float(item[1])])
+                            if len(pts) >= 3:
+                                parsed_masks.append(pts)
 
-                    shape_type = shape.get("type")
-                    if shape_type == "path":
-                        path_str = shape.get("path", "")
-                        tokens = re.findall(r"([MLZz])\s*([-\d\.\,\s]*)", path_str)
-                        pts = []
-                        for cmd, coords_str in tokens:
-                            if cmd in ["M", "L", "m", "l"]:
-                                nums = re.findall(r"[-\d\.]+", coords_str)
-                                if len(nums) >= 2:
-                                    pts.append([float(nums[0]), float(nums[1])])
-
-                        if len(pts) >= 3:
-                            step = max(1, len(pts) // 15)
-                            parsed_masks.append(pts[::step])
-
-                    elif shape_type == "rect":
-                        x0, x1 = float(shape["x0"]), float(shape["x1"])
-                        y0, y1 = float(shape["y0"]), float(shape["y1"])
-                        parsed_masks.append([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
-
-                    elif shape_type == "point" and "x" in shape and "y" in shape:
-                        parsed_masks.append([[float(shape["x"]), float(shape["y"])], [float(shape["x"]) + 1, float(shape["y"])], [float(shape["x"]) + 1, float(shape["y"]) + 1], [float(shape["x"]), float(shape["y"]) + 1]])
+                    elif obj.get("type") == "rect":
+                        left = float(obj.get("left", 0))
+                        top = float(obj.get("top", 0))
+                        width = float(obj.get("width", 0))
+                        height = float(obj.get("height", 0))
+                        parsed_masks.append(
+                            [[left, top], [left + width, top], [left + width, top + height], [left, top + height]]
+                        )
 
                 if parsed_masks and parsed_masks != st.session_state.get("exclusion_masks", []):
                     st.session_state.exclusion_masks = parsed_masks
                     st.session_state.mask_polygons = parsed_masks
-                    st.rerun()
 
             num_masks = len(st.session_state.get("exclusion_masks", []))
             if num_masks > 0:
                 st.success(f"✅ **{num_masks}** Exclusion Zone(s) Active!")
+            else:
+                st.info("🖍️ Draw a polygon over the video frame to black out a region from AI detection.")
         else:
             st.error("Failed to decode video frame at the selected frame index.")
 
