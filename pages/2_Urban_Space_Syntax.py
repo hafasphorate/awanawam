@@ -4,7 +4,7 @@ import networkx as nx
 import geopandas as gpd
 import folium
 from streamlit_folium import st_folium
-import matplotlib.cm as cm
+import matplotlib as mpl
 import matplotlib.colors as mcolors
 
 st.set_page_config(page_title="Urban Space Syntax", layout="wide")
@@ -38,11 +38,12 @@ if st.button("Run Axial Analysis"):
             # Convert graph edges to GeoDataFrame
             gdf_edges = ox.convert.graph_to_gdfs(G_undirected, nodes=False)
             
-            # 4. Normalize & Apply Classic Space Syntax Heatmap (Red = High, Blue = Low)
+            # 4. Normalize & Apply Classic Space Syntax Heatmap (Modern Matplotlib Syntax)
             min_val = gdf_edges['betweenness'].min()
             max_val = gdf_edges['betweenness'].max()
             
-            cmap = cm.get_cmap('turbo')
+            # Fixed colormap lookup
+            cmap = mpl.colormaps['turbo']
             
             def get_color_hex(val):
                 norm = (val - min_val) / (max_val - min_val + 1e-6)
