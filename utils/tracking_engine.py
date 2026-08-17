@@ -44,28 +44,65 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
         return None
 
 
+def extract_raw_shapes_from_session() -> list:
+    """Attempts to retrieve drawn shapes across the common session state keys."""
+    for key in [
+        "exclusion_masks",
+        "mask_polygons",
+        "drawn_masks",
+        "canvas_objects",
+    ]:
+        masks = st.session_state.get(key, [])
+        if isinstance(masks, list) and masks:
+            return masks
+
+    canvas_data = st.session_state.get("canvas_result", None)
+    if canvas_data and isinstance(canvas_data, dict):
+        json_data = canvas_data.get("json_data", {})
+        if "objects" in json_data:
+            return json_data["objects"]
+
+    return []
+
+
 def parse_polygon_mask(mask) -> list:
-    """Normalizes mask objects into [x, y] float coordinates."""
+    """Parses SVG path strings, canvas objects, dictionaries, and raw coordinate lists."""
     pts = []
 
+    # Case A: SVG Path String (e.g., Fabric.js canvas paths 'M 10 20 L 30 40 ... Z')
     if isinstance(mask, str):
         nums = re.findall(r"[-+]?\d*\.\d+|\d+", mask)
         if len(nums) >= 6:
             coords = [float(n) for n in nums]
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords) - 1, 2)]
 
+    # Case B: Dictionary (e.g., Fabric.js path/rect object)
     elif isinstance(mask, dict):
-        if "x" in mask and "y" in mask:
-            pts = [[float(x), float(y)] for x, y in zip(mask["x"], mask["y"])]
+        # SVG path inside fabric object
+        if "path" in mask and isinstance(mask["path"], list):
+            for cmd in mask["path"]:
+                if len(cmd) >= 3 and isinstance(cmd[1], (int, float)) and isinstance(cmd[2], (int, float)):
+                    pts.append([float(cmd[1]), float(cmd[2])])
         elif "path" in mask and isinstance(mask["path"], str):
             return parse_polygon_mask(mask["path"])
+        
+        # Rectangles (left, top, width, height)
+        elif "left" in mask and "top" in mask and "width" in mask and "height" in mask:
+            l, t, w, h = float(mask["left"]), float(mask["top"]), float(mask["width"]), float(mask["height"])
+            pts = [[l, t], [l + w, t], [l + w, t + h], [l, t + h]]
+            
+        # Point arrays
+        elif "x" in mask and "y" in mask:
+            pts = [[float(x), float(y)] for x, y in zip(mask["x"], mask["y"])]
 
+    # Case C: List of points
     elif isinstance(mask, (list, tuple)):
         for item in mask:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
                 pts.append([float(item[0]), float(item[1])])
-            elif isinstance(item, dict) and "x" in item and "y" in item:
-                pts.append([float(item["x"]), float(item["y"])])
+            elif isinstance(item, dict):
+                p = parse_polygon_mask(item)
+                pts.extend(p)
 
     return pts
 
@@ -73,36 +110,35 @@ def parse_polygon_mask(mask) -> list:
 def apply_exclusion_masks_to_frame(
     frame_rgb: np.ndarray, video_masks: list, fill_color: tuple = (0, 0, 0)
 ) -> np.ndarray:
-    """Fills drawn polygon regions on the video image so the AI detector cannot see pixels in those areas."""
+    """Fills drawn polygon regions on the video image with a solid color to block detection."""
     if not video_masks:
-        return frame_rgb
+        return frame_rgb.copy()
 
     masked_frame = frame_rgb.copy()
     frame_h, frame_w = frame_rgb.shape[:2]
 
     canvas_w = st.session_state.get("mask_canvas_width", frame_w)
     canvas_h = st.session_state.get("mask_canvas_height", frame_h)
-
     scale_x = frame_w / float(canvas_w) if canvas_w > 0 else 1.0
     scale_y = frame_h / float(canvas_h) if canvas_h > 0 else 1.0
 
     for mask in video_masks:
         raw_pts = parse_polygon_mask(mask)
         if len(raw_pts) >= 3:
-            # Rescale points to native video frame resolution
-            scaled_pts = [
-                [int(pt[0] * scale_x), int(pt[1] * scale_y)] for pt in raw_pts
-            ]
-            poly_arr = np.array([scaled_pts], dtype=np.int32)
+            pts = []
+            for pt in raw_pts:
+                x = float(pt[0]) * scale_x
+                y = float(pt[1]) * scale_y
+                pts.append([int(np.clip(x, 0, frame_w - 1)), int(np.clip(y, 0, frame_h - 1))])
 
-            # Draw filled solid polygon on the frame before inference
-            cv2.fillPoly(masked_frame, poly_arr, fill_color)
+            if len(pts) >= 3:
+                cv2.fillPoly(masked_frame, np.array([pts], dtype=np.int32), fill_color)
 
     return masked_frame
 
 
 def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
-    """Extracts an RGB frame from an uploaded video file."""
+    """Extracts an RGB frame safely from an uploaded video file."""
     if video_file is None:
         return None
 
@@ -163,15 +199,17 @@ def process_video_frame(
     detect_target: str = "Head",
     model_name: str = "yolov8n.pt",
 ) -> tuple:
-    """Masks out video exclusion zones FIRST, then detects humans and maps valid detections to 2D space."""
+    """Applies blackout masks directly onto the frame, runs YOLO/RT-DETR, and maps detections to 2D space."""
     if frame_rgb is None:
         return None, pd.DataFrame()
 
     if not YOLO_AVAILABLE:
         return frame_rgb.copy(), pd.DataFrame()
 
-    # 1. APPLY EXCLUSION MASKS TO VIDEO FRAME BEFORE DETECTION
-    video_masks = st.session_state.get("exclusion_masks", [])
+    # 1. FETCH MASK DATA FROM SESSION STATE
+    video_masks = extract_raw_shapes_from_session()
+
+    # 2. APPLY BLACKOUT MASKS BEFORE AI DETECTION
     inference_frame = apply_exclusion_masks_to_frame(
         frame_rgb, video_masks, fill_color=(0, 0, 0)
     )
@@ -181,7 +219,7 @@ def process_video_frame(
     raw_detections = []
     pixel_points = []
 
-    # 2. RUN MODEL PREDICTION ON THE MASKED FRAME
+    # 3. RUN MODEL PREDICTION ON THE BLACKED-OUT FRAME
     if model is not None:
         results = model.predict(
             inference_frame,
@@ -202,16 +240,10 @@ def process_video_frame(
             ):
                 keypoints_data = res.keypoints.xy.cpu().numpy()
                 for idx, kpts in enumerate(keypoints_data):
-                    if detect_target.lower().startswith(
-                        "feet"
-                    ) or detect_target.lower().startswith("ground"):
-                        valid_pts = [
-                            pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0
-                        ]
+                    if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
+                        valid_pts = [pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0]
                     else:
-                        valid_pts = [
-                            pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0
-                        ]
+                        valid_pts = [pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0]
 
                     if len(valid_pts) > 0:
                         target_x = float(np.mean([pt[0] for pt in valid_pts]))
@@ -219,21 +251,14 @@ def process_video_frame(
 
                         pixel_points.append([target_x, target_y])
                         raw_detections.append(
-                            {
-                                "img_x": target_x,
-                                "img_y": target_y,
-                                "bbox": None,
-                            }
+                            {"img_x": target_x, "img_y": target_y, "bbox": None}
                         )
 
             # Bounding Box Models (Person Class = 0)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
-                    cls_id = (
-                        int(box.cls[0].cpu().numpy()) if hasattr(box, "cls") else 0
-                    )
-
+                    cls_id = int(box.cls[0].cpu().numpy()) if hasattr(box, "cls") else 0
                     if cls_id != 0:
                         continue
 
@@ -242,9 +267,7 @@ def process_video_frame(
 
                     target_x = float((x1 + x2) / 2.0)
 
-                    if detect_target.lower().startswith(
-                        "feet"
-                    ) or detect_target.lower().startswith("ground"):
+                    if detect_target.lower().startswith("feet") or detect_target.lower().startswith("ground"):
                         target_y = float(y2)
                     else:
                         target_y = float(y1)
@@ -258,7 +281,7 @@ def process_video_frame(
                         }
                     )
 
-    # 3. PROJECT VALID DETECTIONS TO 2D FLOORPLAN
+    # 4. PROJECT DETECTIONS TO 2D FLOORPLAN
     final_detections = []
 
     if H_matrix is not None and len(pixel_points) > 0:
@@ -273,9 +296,7 @@ def process_video_frame(
 
             if det_info["bbox"]:
                 x1, y1, x2, y2 = det_info["bbox"]
-                cv2.rectangle(
-                    annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2
-                )
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2)
             cv2.circle(
                 annotated_frame,
                 (int(det_info["img_x"]), int(det_info["img_y"])),
@@ -289,9 +310,7 @@ def process_video_frame(
             final_detections.append(det_info)
             if det_info["bbox"]:
                 x1, y1, x2, y2 = det_info["bbox"]
-                cv2.rectangle(
-                    annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2
-                )
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2)
 
     df_detections = pd.DataFrame(final_detections)
     if "bbox" in df_detections.columns:

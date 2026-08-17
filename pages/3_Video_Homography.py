@@ -452,6 +452,9 @@ with tab_region:
             img_h, img_w, _ = raw_frame_rgb.shape
             pil_img = PIL.Image.fromarray(raw_frame_rgb)
 
+            st.session_state.mask_canvas_width = img_w
+            st.session_state.mask_canvas_height = img_h
+
             fig_img = go.Figure()
 
             # Add Frame Image as Canvas Background
@@ -533,41 +536,56 @@ with tab_region:
                 key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}",
             )
 
-            # Parse Drawn Shapes from Selection
-            if v_events and "selection" in v_events:
-                shapes = v_events["selection"].get("shapes", [])
-                if shapes:
-                    parsed_masks = []
-                    for shape in shapes:
-                        shape_type = shape.get("type")
-                        if shape_type == "path":
-                            path_str = shape.get("path", "")
-                            tokens = re.findall(
-                                r"([MLZz])\s*([-\d\.\,\s]*)", path_str
-                            )
-                            pts = []
-                            for cmd, coords_str in tokens:
-                                if cmd in ["M", "L", "m", "l"]:
-                                    nums = re.findall(r"[-\d\.]+", coords_str)
-                                    if len(nums) >= 2:
-                                        pts.append([float(nums[0]), float(nums[1])])
+            # Parse Drawn Shapes from the Plotly canvas. This is the path used by the
+            # drawclosedpath tool; it is stored in the event payload and must be
+            # normalized before being saved into session state for YOLO masking.
+            if v_events:
+                shapes = []
+                for key in ["selection", "selectedData"]:
+                    if isinstance(v_events, dict) and key in v_events and isinstance(v_events[key], dict):
+                        sel = v_events[key]
+                        if isinstance(sel.get("shapes"), list):
+                            shapes.extend(sel["shapes"])
+                        if isinstance(sel.get("points"), list):
+                            for pt in sel["points"]:
+                                if isinstance(pt, dict) and "x" in pt and "y" in pt:
+                                    shapes.append({"type": "point", "x": pt["x"], "y": pt["y"]})
 
-                            if len(pts) >= 3:
-                                step = max(1, len(pts) // 15)
-                                parsed_masks.append(pts[::step])
+                if not shapes and isinstance(v_events, dict):
+                    shapes = v_events.get("shapes", [])
 
-                        elif shape_type == "rect":
-                            x0, x1 = float(shape["x0"]), float(shape["x1"])
-                            y0, y1 = float(shape["y0"]), float(shape["y1"])
-                            parsed_masks.append(
-                                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-                            )
+                parsed_masks = []
+                for shape in shapes:
+                    if not isinstance(shape, dict):
+                        continue
 
-                    if parsed_masks and parsed_masks != st.session_state.get(
-                        "exclusion_masks", []
-                    ):
-                        st.session_state.exclusion_masks = parsed_masks
-                        st.rerun()
+                    shape_type = shape.get("type")
+                    if shape_type == "path":
+                        path_str = shape.get("path", "")
+                        tokens = re.findall(r"([MLZz])\s*([-\d\.\,\s]*)", path_str)
+                        pts = []
+                        for cmd, coords_str in tokens:
+                            if cmd in ["M", "L", "m", "l"]:
+                                nums = re.findall(r"[-\d\.]+", coords_str)
+                                if len(nums) >= 2:
+                                    pts.append([float(nums[0]), float(nums[1])])
+
+                        if len(pts) >= 3:
+                            step = max(1, len(pts) // 15)
+                            parsed_masks.append(pts[::step])
+
+                    elif shape_type == "rect":
+                        x0, x1 = float(shape["x0"]), float(shape["x1"])
+                        y0, y1 = float(shape["y0"]), float(shape["y1"])
+                        parsed_masks.append([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+
+                    elif shape_type == "point" and "x" in shape and "y" in shape:
+                        parsed_masks.append([[float(shape["x"]), float(shape["y"])], [float(shape["x"]) + 1, float(shape["y"])], [float(shape["x"]) + 1, float(shape["y"]) + 1], [float(shape["x"]), float(shape["y"]) + 1]])
+
+                if parsed_masks and parsed_masks != st.session_state.get("exclusion_masks", []):
+                    st.session_state.exclusion_masks = parsed_masks
+                    st.session_state.mask_polygons = parsed_masks
+                    st.rerun()
 
             num_masks = len(st.session_state.get("exclusion_masks", []))
             if num_masks > 0:
