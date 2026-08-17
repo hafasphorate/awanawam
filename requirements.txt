@@ -26,3 +26,5 @@ networkx
 geopandas
 pydeck
 geopy
+streamlit-folium
+folium
