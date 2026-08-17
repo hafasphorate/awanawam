@@ -19,6 +19,10 @@ with col2:
 
 network_type = st.selectbox("Network Type", ["walk", "drive", "all"])
 
+# Initialize session state for map storage
+if "axial_map" not in st.session_state:
+    st.session_state.axial_map = None
+
 if st.button("Run Axial Analysis"):
     with st.spinner("Fetching street network and calculating centrality..."):
         try:
@@ -30,7 +34,7 @@ if st.button("Run Axial Analysis"):
             # Fetch network graph
             G = ox.graph_from_point((center_lat, center_lon), dist=radius, network_type=network_type)
             
-            # 3. Calculate Betweenness Centrality (Space Syntax Integration/Choice Proxy)
+            # 3. Calculate Betweenness Centrality
             G_undirected = ox.convert.to_undirected(G)
             edge_centrality = nx.edge_betweenness_centrality(G_undirected)
             nx.set_edge_attributes(G_undirected, edge_centrality, "betweenness")
@@ -38,11 +42,10 @@ if st.button("Run Axial Analysis"):
             # Convert graph edges to GeoDataFrame
             gdf_edges = ox.convert.graph_to_gdfs(G_undirected, nodes=False)
             
-            # 4. Normalize & Apply Classic Space Syntax Heatmap
+            # 4. Normalize & Color Code
             min_val = gdf_edges['betweenness'].min()
             max_val = gdf_edges['betweenness'].max()
             
-            # Compatible colormap getter across all Matplotlib versions
             cmap = plt.get_cmap('turbo')
             
             def get_color_hex(val):
@@ -54,10 +57,8 @@ if st.button("Run Axial Analysis"):
             # 5. Create Folium Map
             m = folium.Map(location=[center_lat, center_lon], zoom_start=16, tiles="CartoDB dark_matter")
             
-            # Draw line segments on the map
             for _, row in gdf_edges.iterrows():
                 if row.geometry.geom_type == 'LineString':
-                    # Folium expects [latitude, longitude] pairs
                     coords = [[p[1], p[0]] for p in row.geometry.coords]
                     folium.PolyLine(
                         locations=coords,
@@ -67,9 +68,18 @@ if st.button("Run Axial Analysis"):
                         tooltip=f"Centrality: {row['betweenness']:.4f}"
                     ).add_to(m)
             
-            # Render map in Streamlit
-            st_folium(m, width=1000, height=600)
-            st.success("Analysis generated successfully!")
+            # Store map object in session state
+            st.session_state.axial_map = m
 
         except Exception as e:
             st.error(f"Error generating analysis: {e}")
+
+# 6. Render Map persistently outside the button conditional
+if st.session_state.axial_map is not None:
+    st_folium(
+        st.session_state.axial_map, 
+        width=1000, 
+        height=600, 
+        key="space_syntax_map",
+        returned_objects=[] # Prevents rerun trigger when interacting/clicking on the map
+    )
