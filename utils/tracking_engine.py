@@ -1,5 +1,5 @@
-import re
 import os
+import re
 import tempfile
 import cv2
 import numpy as np
@@ -15,10 +15,9 @@ except ImportError:
 
 from utils.homography_engine import project_points
 
-# Map UI names to official Ultralytics models that auto-download seamlessly
 MODEL_MAPPING = {
     "yolov8n.pt": "yolov8n.pt",
-    "keremberke/yolov8n-head": "yolov8n.pt",  # Fallback to lightweight standard YOLOv8n
+    "keremberke/yolov8n-head": "yolov8n.pt",
     "yolov8s.pt": "yolov8s.pt",
     "rtdetr-l.pt": "rtdetr-l.pt",
     "yolov9e.pt": "yolov9e.pt",
@@ -32,7 +31,6 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
     if not YOLO_AVAILABLE:
         return None
 
-    # Resolve model file name
     actual_model_path = MODEL_MAPPING.get(model_name, "yolov8n.pt")
 
     try:
@@ -47,28 +45,21 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
 
 
 def parse_polygon_mask(mask) -> list:
-    """Normalizes various mask structures (SVG path strings, Plotly shape dicts,
-
-    dict lists, raw coordinate lists) into a clean list of [x, y] float pairs.
-    """
+    """Extracts (x, y) float coordinate pairs from various shape formats."""
     pts = []
 
-    # Case 1: SVG Path String (e.g. "M 100 200 L 150 250 ... Z")
     if isinstance(mask, str):
-        # Extract all floating point / integer numbers from the path string
         nums = re.findall(r"[-+]?\d*\.\d+|\d+", mask)
         if len(nums) >= 6:
             coords = [float(n) for n in nums]
             pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords) - 1, 2)]
 
-    # Case 2: Dictionary format
     elif isinstance(mask, dict):
         if "x" in mask and "y" in mask:
             pts = [[float(x), float(y)] for x, y in zip(mask["x"], mask["y"])]
         elif "path" in mask and isinstance(mask["path"], str):
             return parse_polygon_mask(mask["path"])
 
-    # Case 3: List/Tuple structure
     elif isinstance(mask, (list, tuple)):
         for item in mask:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -79,37 +70,52 @@ def parse_polygon_mask(mask) -> list:
     return pts
 
 
-def is_point_excluded(point: tuple, exclusion_masks: list, frame_shape: tuple) -> bool:
-    """Checks whether a target pixel point (x, y) falls within any drawn exclusion zone,
+def get_projected_exclusion_polygons(
+    video_masks: list, frame_shape: tuple, H_matrix: np.ndarray
+) -> list:
+    """Takes polygons drawn on the video image, scales them to native resolution,
 
-    accounting for screen UI scale vs original frame resolution scale.
+    and transforms them into 2D floorplan space via the Homography matrix.
     """
-    if not exclusion_masks:
-        return False
+    if H_matrix is None or not video_masks:
+        return []
 
     frame_h, frame_w = frame_shape[:2]
-
-    # Retrieve UI canvas dimensions if stored, default to native frame dimensions
     canvas_w = st.session_state.get("mask_canvas_width", frame_w)
     canvas_h = st.session_state.get("mask_canvas_height", frame_h)
 
-    # Calculate scale multiplier between UI representation and actual video resolution
     scale_x = frame_w / float(canvas_w) if canvas_w > 0 else 1.0
     scale_y = frame_h / float(canvas_h) if canvas_h > 0 else 1.0
 
-    target_x, target_y = float(point[0]), float(point[1])
+    projected_polygons = []
 
-    for mask in exclusion_masks:
-        parsed_pts = parse_polygon_mask(mask)
-        if len(parsed_pts) >= 3:
-            # Scale coordinates to native video frame resolution
-            scaled_mask = [[pt[0] * scale_x, pt[1] * scale_y] for pt in parsed_pts]
-            pts_arr = np.array(scaled_mask, dtype=np.float32)
+    for mask in video_masks:
+        raw_pts = parse_polygon_mask(mask)
+        if len(raw_pts) >= 3:
+            # 1. Scale points to full frame resolution
+            scaled_pts = [[pt[0] * scale_x, pt[1] * scale_y] for pt in raw_pts]
 
-            # OpenCV check: >= 0 means the point is inside or on the border of the polygon
-            if cv2.pointPolygonTest(pts_arr, (target_x, target_y), False) >= 0:
-                return True
+            # 2. Map video pixels -> floorplan 2D coordinates using Homography matrix
+            world_poly_pts = project_points(scaled_pts, H_matrix)
 
+            if len(world_poly_pts) >= 3:
+                projected_polygons.append(
+                    np.array(world_poly_pts, dtype=np.float32)
+                )
+
+    return projected_polygons
+
+
+def is_world_point_in_exclusion(
+    world_x: float, world_y: float, projected_polygons: list
+) -> bool:
+    """Checks if a 2D floorplan point falls inside any projected video exclusion zone."""
+    for poly_arr in projected_polygons:
+        if (
+            cv2.pointPolygonTest(poly_arr, (float(world_x), float(world_y)), False)
+            >= 0
+        ):
+            return True
     return False
 
 
@@ -175,9 +181,9 @@ def process_video_frame(
     detect_target: str = "Head",
     model_name: str = "yolov8n.pt",
 ) -> tuple:
-    """Detects people using YOLO / RT-DETR and maps detection coordinates,
+    """Detects people, maps them to 2D floorplan space, and excludes detections
 
-    excluding any points located within st.session_state.exclusion_masks.
+    whose 2D floorplan coordinates land inside video-drawn exclusion zones.
     """
     if frame_rgb is None:
         return None, pd.DataFrame()
@@ -188,11 +194,11 @@ def process_video_frame(
         return annotated_frame, pd.DataFrame()
 
     model = load_detection_model(model_name)
-    detection_list = []
+    raw_detections = []
     pixel_points = []
 
-    # Fetch active exclusion masks set in Tab 2 UI
-    exclusion_masks = st.session_state.get("exclusion_masks", [])
+    # Get raw video exclusion masks from session state
+    video_masks = st.session_state.get("exclusion_masks", [])
 
     if model is not None:
         results = model.predict(
@@ -219,39 +225,26 @@ def process_video_frame(
                     ) or detect_target.lower().startswith("ground"):
                         valid_pts = [
                             pt for pt in kpts[15:] if pt[0] > 0 and pt[1] > 0
-                        ]  # Ankle keypoints
+                        ]
                     else:
                         valid_pts = [
                             pt for pt in kpts[:5] if pt[0] > 0 and pt[1] > 0
-                        ]  # Nose/eyes/ears keypoints
+                        ]
 
                     if len(valid_pts) > 0:
                         target_x = float(np.mean([pt[0] for pt in valid_pts]))
                         target_y = float(np.mean([pt[1] for pt in valid_pts]))
 
-                        # EXCLUSION MASK CHECK
-                        if is_point_excluded(
-                            (target_x, target_y), exclusion_masks, frame_rgb.shape
-                        ):
-                            continue
-
                         pixel_points.append([target_x, target_y])
-                        cv2.circle(
-                            annotated_frame,
-                            (int(target_x), int(target_y)),
-                            5,
-                            (255, 0, 128),
-                            -1,
-                        )
-                        detection_list.append(
+                        raw_detections.append(
                             {
-                                "track_id": len(detection_list) + 1,
                                 "img_x": target_x,
                                 "img_y": target_y,
+                                "bbox": None,
                             }
                         )
 
-            # 2. Bounding Box Models (Filter Person Class = 0)
+            # 2. Bounding Box Models (Person Class = 0)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
@@ -259,7 +252,6 @@ def process_video_frame(
                         int(box.cls[0].cpu().numpy()) if hasattr(box, "cls") else 0
                     )
 
-                    # Filter for Person class (0) in COCO dataset models
                     if cls_id != 0:
                         continue
 
@@ -267,54 +259,74 @@ def process_video_frame(
                     x1, y1, x2, y2 = xyxy
 
                     target_x = float((x1 + x2) / 2.0)
-                    center_y = float((y1 + y2) / 2.0)
 
                     if detect_target.lower().startswith(
                         "feet"
                     ) or detect_target.lower().startswith("ground"):
-                        target_y = float(y2)  # Bottom center for feet ground contact
+                        target_y = float(y2)
                     else:
-                        target_y = float(y1)  # Top center for head target
-
-                    # EXCLUSION MASK CHECK: Checks target point OR center point of bounding box
-                    if is_point_excluded(
-                        (target_x, target_y), exclusion_masks, frame_rgb.shape
-                    ) or is_point_excluded(
-                        (target_x, center_y), exclusion_masks, frame_rgb.shape
-                    ):
-                        continue
+                        target_y = float(y1)
 
                     pixel_points.append([target_x, target_y])
-
-                    cv2.rectangle(
-                        annotated_frame,
-                        (int(x1), int(y1)),
-                        (int(x2), int(y2)),
-                        (0, 255, 128),
-                        2,
-                    )
-                    cv2.circle(
-                        annotated_frame,
-                        (int(target_x), int(target_y)),
-                        4,
-                        (255, 0, 128),
-                        -1,
-                    )
-
-                    detection_list.append(
+                    raw_detections.append(
                         {
-                            "track_id": len(detection_list) + 1,
                             "img_x": target_x,
                             "img_y": target_y,
+                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
                         }
                     )
 
-    # Project pixel points into 2D Floorplan Coordinates
-    if H_matrix is not None and len(pixel_points) > 0:
-        world_pts = project_points(pixel_points, H_matrix)
-        for idx, w_pt in enumerate(world_pts):
-            detection_list[idx]["world_x"] = w_pt[0]
-            detection_list[idx]["world_y"] = w_pt[1]
+    final_detections = []
 
-    df_detections = pd.DataFrame(detection_list)
+    if H_matrix is not None and len(pixel_points) > 0:
+        # Project raw pixel detection points to 2D floorplan space
+        world_pts = project_points(pixel_points, H_matrix)
+
+        # Convert video-drawn masks to floorplan 2D polygons using H_matrix
+        projected_exclusion_zones = get_projected_exclusion_polygons(
+            video_masks, frame_rgb.shape, H_matrix
+        )
+
+        for idx, w_pt in enumerate(world_pts):
+            world_x, world_y = float(w_pt[0]), float(w_pt[1])
+
+            # Filter out points that fall inside the projected 2D exclusion zones
+            if is_world_point_in_exclusion(
+                world_x, world_y, projected_exclusion_zones
+            ):
+                continue
+
+            det_info = raw_detections[idx]
+            det_info["world_x"] = world_x
+            det_info["world_y"] = world_y
+            det_info["track_id"] = len(final_detections) + 1
+            final_detections.append(det_info)
+
+            # Draw only valid, non-excluded detections on video
+            if det_info["bbox"]:
+                x1, y1, x2, y2 = det_info["bbox"]
+                cv2.rectangle(
+                    annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2
+                )
+            cv2.circle(
+                annotated_frame,
+                (int(det_info["img_x"]), int(det_info["img_y"])),
+                4,
+                (255, 0, 128),
+                -1,
+            )
+    else:
+        for idx, det_info in enumerate(raw_detections):
+            det_info["track_id"] = idx + 1
+            final_detections.append(det_info)
+            if det_info["bbox"]:
+                x1, y1, x2, y2 = det_info["bbox"]
+                cv2.rectangle(
+                    annotated_frame, (x1, y1), (x2, y2), (0, 255, 128), 2
+                )
+
+    df_detections = pd.DataFrame(final_detections)
+    if "bbox" in df_detections.columns:
+        df_detections = df_detections.drop(columns=["bbox"])
+
     return annotated_frame, df_detections
