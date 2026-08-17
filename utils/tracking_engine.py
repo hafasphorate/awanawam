@@ -15,6 +15,7 @@ except ImportError:
 
 from utils.homography_engine import project_points
 
+# Model mapping dictionary
 MODEL_MAPPING = {
     "yolov8n.pt": "yolov8n.pt",
     "keremberke/yolov8n-head": "yolov8n.pt",
@@ -27,7 +28,7 @@ MODEL_MAPPING = {
 
 @st.cache_resource
 def load_detection_model(model_name: str = "yolov8n.pt"):
-    """Loads and caches standard YOLO, Head Detectors, or RT-DETR models."""
+    """Loads and caches YOLO or RT-DETR models."""
     if not YOLO_AVAILABLE:
         return None
 
@@ -45,10 +46,14 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
 
 
 def parse_polygon_mask(mask) -> list:
-    """Extracts (x, y) float coordinate pairs from various shape formats."""
+    """Normalizes mask objects (SVG paths, dictionaries, lists) into
+
+    a list of [x, y] float coordinates.
+    """
     pts = []
 
     if isinstance(mask, str):
+        # Extract numerical pairs from SVG path strings (e.g. 'M 10 20 L 30 40 ...')
         nums = re.findall(r"[-+]?\d*\.\d+|\d+", mask)
         if len(nums) >= 6:
             coords = [float(n) for n in nums]
@@ -73,14 +78,16 @@ def parse_polygon_mask(mask) -> list:
 def get_projected_exclusion_polygons(
     video_masks: list, frame_shape: tuple, H_matrix: np.ndarray
 ) -> list:
-    """Takes polygons drawn on the video image, scales them to native resolution,
+    """Scales drawn canvas points to full video resolution, then projects
 
-    and transforms them into 2D floorplan space via the Homography matrix.
+    the video mask polygon vertices onto the 2D floorplan space via Homography.
     """
     if H_matrix is None or not video_masks:
         return []
 
     frame_h, frame_w = frame_shape[:2]
+
+    # Get canvas dimensions (fallback to native frame size if unpopulated)
     canvas_w = st.session_state.get("mask_canvas_width", frame_w)
     canvas_h = st.session_state.get("mask_canvas_height", frame_h)
 
@@ -92,16 +99,16 @@ def get_projected_exclusion_polygons(
     for mask in video_masks:
         raw_pts = parse_polygon_mask(mask)
         if len(raw_pts) >= 3:
-            # 1. Scale points to full frame resolution
+            # 1. Rescale canvas coordinates to native frame pixels
             scaled_pts = [[pt[0] * scale_x, pt[1] * scale_y] for pt in raw_pts]
 
-            # 2. Map video pixels -> floorplan 2D coordinates using Homography matrix
+            # 2. Map video frame pixels to 2D floorplan coordinates
             world_poly_pts = project_points(scaled_pts, H_matrix)
 
             if len(world_poly_pts) >= 3:
-                projected_polygons.append(
-                    np.array(world_poly_pts, dtype=np.float32)
-                )
+                # Store as int32/float32 contour array for cv2 point polygon testing
+                poly_arr = np.array(world_poly_pts, dtype=np.float32)
+                projected_polygons.append(poly_arr)
 
     return projected_polygons
 
@@ -109,18 +116,20 @@ def get_projected_exclusion_polygons(
 def is_world_point_in_exclusion(
     world_x: float, world_y: float, projected_polygons: list
 ) -> bool:
-    """Checks if a 2D floorplan point falls inside any projected video exclusion zone."""
+    """Evaluates whether a projected 2D ground point falls inside
+
+    any mapped exclusion zone on the 2D floorplan.
+    """
+    point = (float(world_x), float(world_y))
     for poly_arr in projected_polygons:
-        if (
-            cv2.pointPolygonTest(poly_arr, (float(world_x), float(world_y)), False)
-            >= 0
-        ):
+        # cv2.pointPolygonTest returns >= 0 if point is inside or on edge
+        if cv2.pointPolygonTest(poly_arr, point, False) >= 0:
             return True
     return False
 
 
 def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
-    """Extracts an RGB image frame safely from a Streamlit uploaded video file."""
+    """Extracts an RGB frame from an uploaded video file."""
     if video_file is None:
         return None
 
@@ -181,9 +190,9 @@ def process_video_frame(
     detect_target: str = "Head",
     model_name: str = "yolov8n.pt",
 ) -> tuple:
-    """Detects people, maps them to 2D floorplan space, and excludes detections
+    """Detects individuals in video, projects coordinates onto 2D floorplan space,
 
-    whose 2D floorplan coordinates land inside video-drawn exclusion zones.
+    and excludes detections falling into video-drawn, projected exclusion zones.
     """
     if frame_rgb is None:
         return None, pd.DataFrame()
@@ -197,7 +206,7 @@ def process_video_frame(
     raw_detections = []
     pixel_points = []
 
-    # Get raw video exclusion masks from session state
+    # Retrieve drawn video mask polygons
     video_masks = st.session_state.get("exclusion_masks", [])
 
     if model is not None:
@@ -244,7 +253,7 @@ def process_video_frame(
                             }
                         )
 
-            # 2. Bounding Box Models (Person Class = 0)
+            # 2. Object Bounding Box Models (Person Class = 0)
             elif hasattr(res, "boxes") and res.boxes is not None:
                 boxes = res.boxes
                 for idx, box in enumerate(boxes):
@@ -263,9 +272,9 @@ def process_video_frame(
                     if detect_target.lower().startswith(
                         "feet"
                     ) or detect_target.lower().startswith("ground"):
-                        target_y = float(y2)
+                        target_y = float(y2)  # Bottom-center for ground feet
                     else:
-                        target_y = float(y1)
+                        target_y = float(y1)  # Top-center for head
 
                     pixel_points.append([target_x, target_y])
                     raw_detections.append(
@@ -279,18 +288,31 @@ def process_video_frame(
     final_detections = []
 
     if H_matrix is not None and len(pixel_points) > 0:
-        # Project raw pixel detection points to 2D floorplan space
+        # Project raw image detection points to 2D floorplan coordinates
         world_pts = project_points(pixel_points, H_matrix)
 
-        # Convert video-drawn masks to floorplan 2D polygons using H_matrix
+        # Convert video masks into 2D floorplan space using H_matrix
         projected_exclusion_zones = get_projected_exclusion_polygons(
             video_masks, frame_rgb.shape, H_matrix
         )
 
+        # Save zones to session state so UI scripts can render them on the 2D plot
+        st.session_state["projected_exclusion_zones"] = (
+            projected_exclusion_zones
+        )
+
+        # Debug sidebar info to inspect active exclusion zone coordinates
+        if video_masks and len(projected_exclusion_zones) > 0:
+            with st.sidebar.expander("Exclusion Zone Debug Data", expanded=False):
+                st.write(
+                    f"Active Exclusion Masks: {len(projected_exclusion_zones)}"
+                )
+                st.write("First Zone 2D Points:", projected_exclusion_zones[0])
+
         for idx, w_pt in enumerate(world_pts):
             world_x, world_y = float(w_pt[0]), float(w_pt[1])
 
-            # Filter out points that fall inside the projected 2D exclusion zones
+            # EXCLUSION CHECK: Discard points inside projected polygons
             if is_world_point_in_exclusion(
                 world_x, world_y, projected_exclusion_zones
             ):
@@ -302,7 +324,7 @@ def process_video_frame(
             det_info["track_id"] = len(final_detections) + 1
             final_detections.append(det_info)
 
-            # Draw only valid, non-excluded detections on video
+            # Draw annotations only for non-excluded points
             if det_info["bbox"]:
                 x1, y1, x2, y2 = det_info["bbox"]
                 cv2.rectangle(
@@ -316,6 +338,7 @@ def process_video_frame(
                 -1,
             )
     else:
+        # Fallback if homography matrix is not provided
         for idx, det_info in enumerate(raw_detections):
             det_info["track_id"] = idx + 1
             final_detections.append(det_info)
