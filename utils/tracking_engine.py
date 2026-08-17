@@ -1,3 +1,4 @@
+import re
 import os
 import tempfile
 import cv2
@@ -45,6 +46,39 @@ def load_detection_model(model_name: str = "yolov8n.pt"):
         return None
 
 
+def parse_polygon_mask(mask) -> list:
+    """Normalizes various mask structures (SVG path strings, Plotly shape dicts,
+
+    dict lists, raw coordinate lists) into a clean list of [x, y] float pairs.
+    """
+    pts = []
+
+    # Case 1: SVG Path String (e.g. "M 100 200 L 150 250 ... Z")
+    if isinstance(mask, str):
+        # Extract all floating point / integer numbers from the path string
+        nums = re.findall(r"[-+]?\d*\.\d+|\d+", mask)
+        if len(nums) >= 6:
+            coords = [float(n) for n in nums]
+            pts = [[coords[i], coords[i + 1]] for i in range(0, len(coords) - 1, 2)]
+
+    # Case 2: Dictionary format
+    elif isinstance(mask, dict):
+        if "x" in mask and "y" in mask:
+            pts = [[float(x), float(y)] for x, y in zip(mask["x"], mask["y"])]
+        elif "path" in mask and isinstance(mask["path"], str):
+            return parse_polygon_mask(mask["path"])
+
+    # Case 3: List/Tuple structure
+    elif isinstance(mask, (list, tuple)):
+        for item in mask:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                pts.append([float(item[0]), float(item[1])])
+            elif isinstance(item, dict) and "x" in item and "y" in item:
+                pts.append([float(item["x"]), float(item["y"])])
+
+    return pts
+
+
 def is_point_excluded(point: tuple, exclusion_masks: list, frame_shape: tuple) -> bool:
     """Checks whether a target pixel point (x, y) falls within any drawn exclusion zone,
 
@@ -55,23 +89,24 @@ def is_point_excluded(point: tuple, exclusion_masks: list, frame_shape: tuple) -
 
     frame_h, frame_w = frame_shape[:2]
 
-    # Check if UI canvas dimensions were saved when drawing the mask
+    # Retrieve UI canvas dimensions if stored, default to native frame dimensions
     canvas_w = st.session_state.get("mask_canvas_width", frame_w)
     canvas_h = st.session_state.get("mask_canvas_height", frame_h)
 
-    # Compute scale factor between UI drawing canvas and actual video frame
+    # Calculate scale multiplier between UI representation and actual video resolution
     scale_x = frame_w / float(canvas_w) if canvas_w > 0 else 1.0
     scale_y = frame_h / float(canvas_h) if canvas_h > 0 else 1.0
 
     target_x, target_y = float(point[0]), float(point[1])
 
     for mask in exclusion_masks:
-        if len(mask) >= 3:
-            # Scale mask vertices to match current frame resolution
-            scaled_mask = [[pt[0] * scale_x, pt[1] * scale_y] for pt in mask]
+        parsed_pts = parse_polygon_mask(mask)
+        if len(parsed_pts) >= 3:
+            # Scale coordinates to native video frame resolution
+            scaled_mask = [[pt[0] * scale_x, pt[1] * scale_y] for pt in parsed_pts]
             pts_arr = np.array(scaled_mask, dtype=np.float32)
 
-            # cv2.pointPolygonTest returns >= 0 if point is inside or on edge
+            # OpenCV check: >= 0 means the point is inside or on the border of the polygon
             if cv2.pointPolygonTest(pts_arr, (target_x, target_y), False) >= 0:
                 return True
 
@@ -194,7 +229,7 @@ def process_video_frame(
                         target_x = float(np.mean([pt[0] for pt in valid_pts]))
                         target_y = float(np.mean([pt[1] for pt in valid_pts]))
 
-                        # EXCLUSION MASK CHECK (Checks both head/feet and bounding box center)
+                        # EXCLUSION MASK CHECK
                         if is_point_excluded(
                             (target_x, target_y), exclusion_masks, frame_rgb.shape
                         ):
@@ -241,7 +276,7 @@ def process_video_frame(
                     else:
                         target_y = float(y1)  # Top center for head target
 
-                    # EXCLUSION MASK CHECK (Checks target point OR bbox center point)
+                    # EXCLUSION MASK CHECK: Checks target point OR center point of bounding box
                     if is_point_excluded(
                         (target_x, target_y), exclusion_masks, frame_rgb.shape
                     ) or is_point_excluded(
