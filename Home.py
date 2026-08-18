@@ -104,6 +104,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 4. **2D Playback (Tab 3.4):**
    - Replay tracked movement overlaid on floorplan
    - View crowd density heatmaps
+   - Use frame slider to navigate; click Play button in animated charts for continuous replay
    - Export results for further analysis
 
 **Model Options:**
@@ -250,12 +251,12 @@ SUPABASE_KEY = "your-anon-key"
 
 ---
 
-## 📝 Keyboard Shortcuts & Tips
+## 📝 Tips & Interactions
 
 - **VGA Selection:** Click inside a zone to select; hold and drag to pan
-- **Video Playback:** Use frame slider to navigate; play button for continuous replay
-- **Exports:** Right-click charts to download as PNG or SVG
-- **Keyboard:** Use keyboard numbers (1-5) to jump between modules
+- **Video Playback:** Use frame slider to navigate; click Play button in animated charts for continuous replay (Plotly feature)
+- **Exports:** Right-click Plotly charts to download as PNG or SVG (Plotly built-in feature)
+- **Module Navigation:** Use the sidebar dropdown to select different modules
 
 ---
 
