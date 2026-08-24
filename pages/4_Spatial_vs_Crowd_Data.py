@@ -47,16 +47,48 @@ uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 def load_and_parse_json(file):
     """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present."""
     data = json.load(file)
-    if isinstance(data, dict) and "grid_nodes_correlation_data" in data:
-        raw_nodes = data["grid_nodes_correlation_data"]
-    elif isinstance(data, dict) and "crowd_metrics_by_grid" in data:
-        raw_nodes = data["crowd_metrics_by_grid"]
-    elif isinstance(data, dict) and "vga_floorplan_nodes" in data:
-        raw_nodes = data["vga_floorplan_nodes"]
-    elif isinstance(data, dict) and "nodes" in data:
-        raw_nodes = data["nodes"]
-    else:
-        raw_nodes = data
+    if isinstance(data, dict):
+        raw_nodes = next(
+            (
+                data[key]
+                for key in (
+                    "grid_nodes_correlation_data",
+                    "crowd_metrics_by_grid",
+                    "vga_floorplan_nodes",
+                    "nodes",
+                )
+                if isinstance(data.get(key), list) and data[key]
+            ),
+            data,
+        )
+
+        has_crowd_metrics = any(
+            any(
+                metric in str(column).lower()
+                for metric in ("volume", "density", "crowd", "pedestrian")
+            )
+            for column in pd.json_normalize(raw_nodes).columns
+        )
+        trajectories = data.get("trajectories")
+        if not has_crowd_metrics and isinstance(raw_nodes, list) and isinstance(trajectories, list):
+            node_df = pd.json_normalize(raw_nodes)
+            trajectory_df = pd.json_normalize(trajectories)
+            grid_column = "grid_node_idx"
+            if grid_column in node_df.columns and grid_column in trajectory_df.columns:
+                id_column = next(
+                    (column for column in ("track_id", "id") if column in trajectory_df.columns),
+                    None,
+                )
+                if id_column:
+                    crowd_df = trajectory_df.groupby(grid_column).agg(
+                        volume=(id_column, "count"),
+                        density=(id_column, "count"),
+                        pedestrian_count=(id_column, "count"),
+                        unique_pedestrians=(id_column, "nunique"),
+                    ).reset_index()
+                    raw_nodes = node_df.merge(crowd_df, on=grid_column, how="left").fillna(0).to_dict(
+                        orient="records"
+                    )
 
     # pd.json_normalize flattens nested dicts into dot-notation columns
     df = pd.json_normalize(raw_nodes)
@@ -185,13 +217,21 @@ if uploaded_file is not None:
             if col.lower() not in coord_or_id_cols
         ]
 
+        metric_options_signature = tuple(all_numeric_cols)
+        if st.session_state.get("metric_options_signature") != metric_options_signature:
+            st.session_state["selected_metrics"] = all_numeric_cols
+            st.session_state["metric_selector"] = all_numeric_cols
+            st.session_state["metric_options_signature"] = metric_options_signature
+
         st.sidebar.header("Data Filter Settings")
 
         col_btn1, col_btn2 = st.sidebar.columns(2)
         if col_btn1.button("Select All"):
             st.session_state["selected_metrics"] = all_numeric_cols
+            st.session_state["metric_selector"] = all_numeric_cols
         if col_btn2.button("Clear All"):
             st.session_state["selected_metrics"] = []
+            st.session_state["metric_selector"] = []
 
         if "selected_metrics" not in st.session_state:
             st.session_state["selected_metrics"] = all_numeric_cols
