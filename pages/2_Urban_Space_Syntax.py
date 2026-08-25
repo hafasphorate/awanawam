@@ -11,6 +11,7 @@ import numpy as np
 import io
 import json
 from shapely.geometry import LineString, mapping, shape
+from shapely.ops import linemerge, substring
 from folium.plugins import Draw
 
 st.set_page_config(page_title="Urban Space Syntax Analysis", layout="wide")
@@ -55,6 +56,12 @@ if "plan_data" not in st.session_state:
 if "desire_paths" not in st.session_state:
     st.session_state.desire_paths = []
 
+if "desire_path_analysis" not in st.session_state:
+    st.session_state.desire_path_analysis = []
+
+if "path_map_revision" not in st.session_state:
+    st.session_state.path_map_revision = 0
+
 if "selected_node" not in st.session_state:
     st.session_state.selected_node = None
 
@@ -89,6 +96,102 @@ def desire_path_features():
     } for index, path in enumerate(st.session_state.desire_paths)]
 
 
+def update_desire_paths_from_map(drawings):
+    """Merge newly drawn lines without clearing paths when Folium has no event."""
+    if not drawings:
+        return False
+    incoming_paths = []
+    for feature in drawings:
+        if feature.get("geometry", {}).get("type") != "LineString":
+            continue
+        coordinates = feature["geometry"].get("coordinates", [])
+        if len(coordinates) >= 2:
+            incoming_paths.append(LineString([(point[0], point[1]) for point in coordinates]))
+    paths = list(st.session_state.desire_paths)
+    for path in incoming_paths:
+        if not any(path.equals(existing) for existing in paths):
+            paths.append(path)
+    if incoming_paths:
+        st.session_state.desire_paths = paths
+        return True
+    return False
+
+
+def render_path_editor(key_prefix):
+    """Provide deterministic remove and cut operations outside the map widget."""
+    if not st.session_state.desire_paths:
+        return
+
+    st.markdown("#### Desire Path Editor")
+    selected_index = st.selectbox(
+        "Path to edit", range(len(st.session_state.desire_paths)),
+        format_func=lambda index: f"Path {index + 1}", key=f"{key_prefix}_path_select"
+    )
+    edit_col, remove_col = st.columns(2)
+    with edit_col:
+        cut_position = st.slider(
+            "Cut position (%)", 1, 99, 50, key=f"{key_prefix}_cut_position"
+        )
+        if st.button("Cut selected path", key=f"{key_prefix}_cut_button"):
+            path = st.session_state.desire_paths[selected_index]
+            split_at = cut_position / 100.0
+            first_path = substring(path, 0.0, split_at, normalized=True)
+            second_path = substring(path, split_at, 1.0, normalized=True)
+            st.session_state.desire_paths[selected_index:selected_index + 1] = [first_path, second_path]
+            st.session_state.desire_path_analysis = []
+            st.session_state.path_map_revision += 1
+            st.rerun()
+    with remove_col:
+        if st.button("Remove selected path", key=f"{key_prefix}_remove_button"):
+            st.session_state.desire_paths.pop(selected_index)
+            st.session_state.desire_path_analysis = []
+            st.session_state.path_map_revision += 1
+            st.rerun()
+
+
+def analyze_desire_paths(graph, paths, edge_centrality):
+    """Snap each drawn path to the network and summarize its shortest route."""
+    results = []
+    for index, drawn_path in enumerate(paths):
+        try:
+            start = ox.distance.nearest_nodes(graph, X=drawn_path.coords[0][0], Y=drawn_path.coords[0][1])
+            end = ox.distance.nearest_nodes(graph, X=drawn_path.coords[-1][0], Y=drawn_path.coords[-1][1])
+            route = nx.shortest_path(graph, start, end, weight="length")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            results.append({
+                "path_id": index + 1, "drawn_geometry": mapping(drawn_path),
+                "route_geometry": None, "error": "No connected street route found",
+            })
+            continue
+        route_edges = list(zip(route[:-1], route[1:]))
+        scores = []
+        route_lines = []
+        route_length = 0.0
+        for u, v in route_edges:
+            edge_data = graph.get_edge_data(u, v)
+            edge_key, attributes = min(edge_data.items(), key=lambda item: item[1].get("length", float("inf")))
+            scores.append(edge_centrality.get((u, v, edge_key), edge_centrality.get((v, u, edge_key), 0.0)))
+            route_length += float(attributes.get("length", 0.0))
+            geometry = attributes.get("geometry")
+            route_lines.append(geometry if geometry is not None else LineString([
+                (graph.nodes[u]["x"], graph.nodes[u]["y"]),
+                (graph.nodes[v]["x"], graph.nodes[v]["y"]),
+            ]))
+        merged_route = linemerge(route_lines)
+        results.append({
+            "path_id": index + 1,
+            "drawn_geometry": mapping(drawn_path),
+            "route_geometry": mapping(merged_route),
+            "start_node": start,
+            "end_node": end,
+            "route_length_m": round(route_length, 2),
+            "mean_betweenness": round(float(np.mean(scores)), 6) if scores else 0.0,
+            "max_betweenness": round(float(np.max(scores)), 6) if scores else 0.0,
+            "network_edge_count": len(route_edges),
+        })
+    return results
+
+
 uploaded_json = st.file_uploader("Import Urban Space Syntax JSON", type=["json"])
 if uploaded_json is not None:
     try:
@@ -104,6 +207,7 @@ if uploaded_json is not None:
         }
         st.session_state.graph_data = None
         st.session_state.desire_paths = [shape(feature["geometry"]) for feature in imported.get("desire_paths", [])]
+        st.session_state.desire_path_analysis = imported.get("desire_path_analysis", [])
         st.success("Urban plan imported. The map and desire paths are ready to view.")
     except (KeyError, ValueError, TypeError) as error:
         st.error(f"Could not import this JSON package: {error}")
@@ -161,6 +265,9 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
                 "high_contrast_nodes": high_contrast_nodes,
                 "search_query": plan["search_query"]
             }
+            st.session_state.desire_path_analysis = analyze_desire_paths(
+                G_undirected, st.session_state.desire_paths, edge_centrality
+            )
             st.session_state.selected_node = None
 
         except Exception as e:
@@ -172,7 +279,7 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
 if st.session_state.plan_data is not None and st.session_state.graph_data is None:
     plan = st.session_state.plan_data
     st.subheader("Street Plan Preview")
-    st.caption("Draw desire paths on the plan, then run the axial analysis. Double-click a path to remove it.")
+    st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
     preview_map = folium.Map(
         location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
     )
@@ -194,16 +301,13 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
         draw_options={"polyline": {"shapeOptions": {"color": "#FFD166", "weight": 5}}, "polygon": False, "rectangle": False, "circle": False, "marker": False, "circlemarker": False},
         edit_options={"edit": True, "remove": True},
     ).add_to(preview_map)
-    preview_result = st_folium(preview_map, width=1000, height=520, key="plan_preview", returned_objects=["all_drawings"])
+    preview_result = st_folium(
+        preview_map, width=1000, height=520,
+        key=f"plan_preview_{st.session_state.path_map_revision}", returned_objects=["all_drawings"]
+    )
     drawings = (preview_result or {}).get("all_drawings") or []
-    drawn_paths = []
-    for feature in drawings:
-        if feature.get("geometry", {}).get("type") == "LineString":
-            coords = feature["geometry"]["coordinates"]
-            if len(coords) >= 2:
-                drawn_paths.append(LineString([(point[0], point[1]) for point in coords]))
-    if drawings:
-        st.session_state.desire_paths = drawn_paths
+    update_desire_paths_from_map(drawings)
+    render_path_editor("preview")
     st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
 
 
@@ -226,6 +330,15 @@ if st.session_state.graph_data is not None:
             locations=[[point[1], point[0]] for point in path.coords],
             color="#FFD166", weight=5, opacity=0.95,
             tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
+        ).add_to(m)
+    for result in st.session_state.desire_path_analysis:
+        if result.get("route_geometry") is None:
+            continue
+        folium.GeoJson(
+            result["route_geometry"],
+            name=f"Analyzed route {result['path_id']}",
+            style_function=lambda feature: {"color": "#FFFFFF", "weight": 3, "opacity": 0.9},
+            tooltip=f"Analyzed route {result['path_id']} | Mean centrality: {result['mean_betweenness']:.6f}",
         ).add_to(m)
     
     # Draw Edges
@@ -297,6 +410,10 @@ if st.session_state.graph_data is not None:
 
     st.subheader("1. Interactive Space Syntax Map")
     st_folium(m, width=1000, height=520, key="main_map", returned_objects=[])
+    render_path_editor("analysis")
+    if st.session_state.desire_path_analysis:
+        st.subheader("Desire Path Axial Results")
+        st.dataframe(st.session_state.desire_path_analysis, use_container_width=True)
 
     # Feature Explanations for Map
     st.markdown("### Feature Explanations & Urban Implications")
@@ -485,6 +602,7 @@ if st.session_state.graph_data is not None:
             "nodes": json.loads(export_nodes.to_json()),
         },
         "desire_paths": desire_path_features(),
+        "desire_path_analysis": st.session_state.desire_path_analysis,
         "analysis": {
             "metric": "edge_betweenness_centrality",
             "edge_count": len(gdf_edges),
