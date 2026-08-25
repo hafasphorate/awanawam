@@ -53,14 +53,10 @@ if "current_y_range" not in st.session_state:
     st.session_state.current_y_range = None
 
 # Exclusion Masking State
-if "exclusion_masks" not in st.session_state:
-    st.session_state.exclusion_masks = []
-if "active_mask_pts" not in st.session_state:
-    st.session_state.active_mask_pts = []
-if "mask_click_sig" not in st.session_state:
-    st.session_state.mask_click_sig = None
-if "mask_canvas_key_ver" not in st.session_state:
-    st.session_state.mask_canvas_key_ver = 0
+if "frame_sketches" not in st.session_state:
+    st.session_state.frame_sketches = []
+if "sketch_canvas_key_ver" not in st.session_state:
+    st.session_state.sketch_canvas_key_ver = 0
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
@@ -354,11 +350,11 @@ with tab_import:
 with tab_region:
     st.subheader("Step 3.2: Video Masking & ROI Corner Calibration")
 
-    # --- SECTION A: VIDEO PREVIEW & POLYGON MASKING ---
-    st.markdown("### 🚫 1. Video Polygon Masking (Exclusion Zones)")
+    # --- SECTION A: VIDEO PREVIEW & TEMPORARY SKETCHING ---
+    st.markdown("### ✏️ 1. Temporary Frame Sketching")
     st.info(
-        "💡 **Instructions:** Use the draw tool in the Plotly toolbar (top right) "
-        "to sketch exclusion zones directly on the video frame. Double-click to close a polygon."
+        "Sketch reference lines on the frame to help place the floorplan nodes. "
+        "These sketches are temporary and are not used by or saved with tracking."
     )
 
     import json
@@ -404,10 +400,10 @@ with tab_region:
     # ==========================================
     for key, default in [
         ("four_corners", []),
-        ("exclusion_masks", []),
+        ("frame_sketches", []),
         ("editing_point_idx", None),
         ("last_click_hash", None),
-        ("mask_canvas_key_ver", 0),
+        ("sketch_canvas_key_ver", 0),
         ("selected_frame_idx", 0),
         ("camera_view_range", None),
         ("selected_polygon_pts", []),
@@ -437,10 +433,17 @@ with tab_region:
             st.markdown(
                 "<div style='margin-top: 15px;'></div>", unsafe_allow_html=True
             )
-            if st.button("🔥 Reset All Masks", use_container_width=True):
-                st.session_state.exclusion_masks = []
-                st.session_state.mask_canvas_key_ver += 1
+            if st.button("🧹 Clear Sketches", use_container_width=True):
+                st.session_state.frame_sketches = []
+                st.session_state.sketch_canvas_key_ver += 1
                 st.rerun()
+
+        sketch_mode = st.radio(
+            "Sketch mode",
+            ["Straight lines", "Standard drawing"],
+            horizontal=True,
+            key="frame_sketch_mode",
+        )
 
         # Extract Video Frame
         raw_frame_rgb = extract_frame_from_video(
@@ -470,24 +473,20 @@ with tab_region:
                 )
             )
 
-            # Draw Saved Exclusion Masks
-            for idx, mask in enumerate(
-                st.session_state.get("exclusion_masks", [])
-            ):
-                if len(mask) >= 3:
-                    mx = [p[0] for p in mask] + [mask[0][0]]
-                    my = [p[1] for p in mask] + [mask[0][1]]
-                    fig_img.add_trace(
-                        go.Scatter(
-                            x=mx,
-                            y=my,
-                            mode="lines+markers",
-                            fill="toself",
-                            fillcolor="rgba(255, 0, 0, 0.45)",
-                            line=dict(color="#FF0000", width=3),
-                            marker=dict(size=6, color="#FF0000"),
-                            name=f"Mask Zone #{idx+1}",
-                        )
+            # Render temporary sketches from the last chart event.
+            for sketch in st.session_state.get("frame_sketches", []):
+                if sketch.get("type") == "line":
+                    fig_img.add_shape(
+                        type="line",
+                        x0=sketch["x0"], y0=sketch["y0"],
+                        x1=sketch["x1"], y1=sketch["y1"],
+                        line=dict(color="#FFD166", width=3),
+                    )
+                elif sketch.get("type") == "path":
+                    fig_img.add_shape(
+                        type="path",
+                        path=sketch["path"],
+                        line=dict(color="#FFD166", width=3),
                     )
 
             fig_img.update_layout(
@@ -507,7 +506,7 @@ with tab_region:
                     scaleanchor="x",
                     scaleratio=1,
                 ),
-                dragmode="drawclosedpath",
+                dragmode="drawline" if sketch_mode == "Straight lines" else "drawopenpath",
                 newshape=dict(
                     fillcolor="rgba(255, 0, 0, 0.4)",
                     line=dict(color="#FF0000", width=2),
@@ -518,8 +517,8 @@ with tab_region:
 
             plotly_config = {
                 "modeBarButtonsToAdd": [
-                    "drawclosedpath",
-                    "drawrect",
+                    "drawline",
+                    "drawopenpath",
                     "eraseshape",
                 ],
                 "displayModeBar": True,
@@ -530,48 +529,23 @@ with tab_region:
                 use_container_width=True,
                 on_select="rerun",
                 config=plotly_config,
-                key=f"video_mask_canvas_{st.session_state.get('mask_canvas_key_ver', 0)}",
+                key=f"video_sketch_canvas_{st.session_state.get('sketch_canvas_key_ver', 0)}",
             )
 
-            # Parse Drawn Shapes from Selection
+            # Capture annotations without triggering a second rerun. They are never masks.
             if v_events and "selection" in v_events:
                 shapes = v_events["selection"].get("shapes", [])
-                if shapes:
-                    parsed_masks = []
-                    for shape in shapes:
-                        shape_type = shape.get("type")
-                        if shape_type == "path":
-                            path_str = shape.get("path", "")
-                            tokens = re.findall(
-                                r"([MLZz])\s*([-\d\.\,\s]*)", path_str
-                            )
-                            pts = []
-                            for cmd, coords_str in tokens:
-                                if cmd in ["M", "L", "m", "l"]:
-                                    nums = re.findall(r"[-\d\.]+", coords_str)
-                                    if len(nums) >= 2:
-                                        pts.append([float(nums[0]), float(nums[1])])
-
-                            if len(pts) >= 3:
-                                step = max(1, len(pts) // 15)
-                                parsed_masks.append(pts[::step])
-
-                        elif shape_type == "rect":
-                            x0, x1 = float(shape["x0"]), float(shape["x1"])
-                            y0, y1 = float(shape["y0"]), float(shape["y1"])
-                            parsed_masks.append(
-                                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-                            )
-
-                    if parsed_masks and parsed_masks != st.session_state.get(
-                        "exclusion_masks", []
-                    ):
-                        st.session_state.exclusion_masks = parsed_masks
-                        st.rerun()
-
-            num_masks = len(st.session_state.get("exclusion_masks", []))
-            if num_masks > 0:
-                st.success(f"✅ **{num_masks}** Exclusion Zone(s) Active!")
+                st.session_state.frame_sketches = [
+                    {
+                        key: shape[key]
+                        for key in ("type", "x0", "y0", "x1", "y1", "path")
+                        if key in shape
+                    }
+                    for shape in shapes
+                    if shape.get("type") in ("line", "path")
+                ]
+            if st.session_state.get("frame_sketches"):
+                st.caption(f"{len(st.session_state.frame_sketches)} temporary sketch(es) on frame")
         else:
             st.error("Failed to decode video frame at the selected frame index.")
 

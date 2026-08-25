@@ -1,5 +1,6 @@
 # views/tracking_view.py
 import json
+import hashlib
 import os
 import tempfile
 import cv2
@@ -10,6 +11,17 @@ import streamlit as st
 
 from utils.homography_engine import compute_homography_matrix
 from utils.tracking_engine import extract_frame_from_video, process_video_frame
+
+
+def get_batch_result_path(video_bytes, homography, model_name, detect_target,
+                          inference_size, conf_threshold, iou_threshold, frame_skip):
+    """Return a stable local cache path for one batch configuration."""
+    digest = hashlib.sha256()
+    digest.update(video_bytes)
+    digest.update(np.asarray(homography, dtype=np.float64).tobytes())
+    digest.update(repr((model_name, detect_target, inference_size, conf_threshold,
+                        iou_threshold, frame_skip)).encode("utf-8"))
+    return os.path.join(tempfile.gettempdir(), f"awanawam_batch_{digest.hexdigest()}.pkl")
 
 
 @st.cache_data(show_spinner=False)
@@ -146,6 +158,21 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Calculate Homography Matrix H
     H = compute_homography_matrix(video_src_pts, four_corners[:4])
     st.session_state.homography_matrix = H
+    batch_result_path = get_batch_result_path(
+        video_bytes, H, model_name, detect_target, inference_size,
+        conf_threshold, iou_threshold, frame_skip
+    )
+
+    if st.session_state.get("batch_result_path") != batch_result_path:
+        st.session_state.pop("full_tracking_df", None)
+        st.session_state.pop("batch_completed", None)
+        if os.path.exists(batch_result_path):
+            try:
+                st.session_state.full_tracking_df = pd.read_pickle(batch_result_path)
+                st.session_state.batch_completed = True
+            except (OSError, ValueError, EOFError):
+                pass
+        st.session_state.batch_result_path = batch_result_path
 
     # Manual button trigger to protect CPU from continuous slider inference
     col_btn, col_info = st.columns([1, 2])
@@ -341,16 +368,20 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-        st.success("✅ Full Video Batch Tracking Completed!")
-
-        if all_tracking_results:
-            full_df = pd.concat(all_tracking_results, ignore_index=True)
-            st.session_state["full_tracking_df"] = full_df
+        full_df = (
+            pd.concat(all_tracking_results, ignore_index=True)
+            if all_tracking_results
+            else pd.DataFrame(columns=["frame_idx", "track_id", "img_x", "img_y", "world_x", "world_y"])
+        )
+        full_df.to_pickle(batch_result_path)
+        st.session_state["full_tracking_df"] = full_df
+        st.session_state["batch_completed"] = True
+        st.success(f"✅ Full Video Batch Tracking Completed! {len(full_df)} detections recorded.")
 
     # 📥 Dual Export Options (CSV & JSON with VGA Metadata)
     full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
 
-    if not full_df.empty:
+    if st.session_state.get("batch_completed"):
         st.markdown("#### 📥 Export Tracking & VGA Analytics")
         col_dl1, col_dl2 = st.columns(2)
 
