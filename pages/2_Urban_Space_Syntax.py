@@ -9,6 +9,9 @@ import matplotlib.colors as mcolors
 import plotly.graph_objects as go
 import numpy as np
 import io
+import json
+from shapely.geometry import LineString, mapping, shape
+from folium.plugins import Draw
 
 st.set_page_config(page_title="Urban Space Syntax Analysis", layout="wide")
 
@@ -46,32 +49,86 @@ show_contrast_nodes = st.sidebar.checkbox("Show High-Contrast Intersections (Red
 if "graph_data" not in st.session_state:
     st.session_state.graph_data = None
 
+if "plan_data" not in st.session_state:
+    st.session_state.plan_data = None
+
+if "desire_paths" not in st.session_state:
+    st.session_state.desire_paths = []
+
 if "selected_node" not in st.session_state:
     st.session_state.selected_node = None
 
 # -----------------------------------------------------------------------------
-# 3. Main Data Processing Workflow
+# 3. Plan Preview and Analysis Workflow
 # -----------------------------------------------------------------------------
-if st.button("Run Axial Analysis"):
-    with st.spinner("Processing urban network and calculating spatial depth..."):
+def clean_name(val):
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val if v)
+    return str(val) if val and str(val) != 'nan' else 'Unnamed Segment'
+
+
+def load_plan(location, distance, kind):
+    gdf_place = ox.geocode_to_gdf(location)
+    center_lat = gdf_place.geometry.iloc[0].centroid.y
+    center_lon = gdf_place.geometry.iloc[0].centroid.x
+    graph = ox.convert.to_undirected(
+        ox.graph_from_point((center_lat, center_lon), dist=distance, network_type=kind)
+    )
+    nodes, edges = ox.convert.graph_to_gdfs(graph)
+    edges['street_name'] = edges['name'].apply(clean_name)
+    return {
+        "G_undirected": graph, "gdf_nodes": nodes, "gdf_edges": edges,
+        "center_lat": center_lat, "center_lon": center_lon, "search_query": location,
+    }
+
+
+def desire_path_features():
+    return [{
+        "type": "Feature", "properties": {"path_id": index + 1, "length": round(path.length, 2)},
+        "geometry": mapping(path),
+    } for index, path in enumerate(st.session_state.desire_paths)]
+
+
+uploaded_json = st.file_uploader("Import Urban Space Syntax JSON", type=["json"])
+if uploaded_json is not None:
+    try:
+        imported = json.load(uploaded_json)
+        imported_edges = gpd.GeoDataFrame.from_features(imported["plan"]["edges"]["features"])
+        imported_nodes = gpd.GeoDataFrame.from_features(imported["plan"]["nodes"]["features"])
+        imported_edges.set_index(["u", "v", "key"], inplace=True)
+        imported_nodes.set_index("node_id", inplace=True)
+        st.session_state.plan_data = {
+            "gdf_edges": imported_edges, "gdf_nodes": imported_nodes,
+            "center_lat": imported["plan"]["center_lat"], "center_lon": imported["plan"]["center_lon"],
+            "search_query": imported["plan"].get("search_query", "Imported plan"), "G_undirected": None,
+        }
+        st.session_state.graph_data = None
+        st.session_state.desire_paths = [shape(feature["geometry"]) for feature in imported.get("desire_paths", [])]
+        st.success("Urban plan imported. The map and desire paths are ready to view.")
+    except (KeyError, ValueError, TypeError) as error:
+        st.error(f"Could not import this JSON package: {error}")
+
+
+if st.button("Load Street Plan"):
+    with st.spinner("Loading street network for preview..."):
         try:
-            gdf_place = ox.geocode_to_gdf(search_query)
-            center_lat = gdf_place.geometry.iloc[0].centroid.y
-            center_lon = gdf_place.geometry.iloc[0].centroid.x
-            
-            G = ox.graph_from_point((center_lat, center_lon), dist=radius, network_type=network_type)
-            G_undirected = ox.convert.to_undirected(G)
-            
+            st.session_state.plan_data = load_plan(search_query, radius, network_type)
+            st.session_state.graph_data = None
+        except Exception as e:
+            st.error(f"Error loading street plan: {e}")
+
+if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
+    with st.spinner("Calculating spatial depth and centrality..."):
+        try:
+            plan = st.session_state.plan_data
+            G_undirected = plan["G_undirected"]
+            if G_undirected is None:
+                raise ValueError("Imported display data cannot be rerun; load the street plan to calculate new metrics.")
             edge_centrality = nx.edge_betweenness_centrality(G_undirected)
             nx.set_edge_attributes(G_undirected, edge_centrality, "betweenness")
             
             gdf_nodes, gdf_edges = ox.convert.graph_to_gdfs(G_undirected)
             
-            def clean_name(val):
-                if isinstance(val, list):
-                    return ", ".join(str(v) for v in val if v)
-                return str(val) if val and str(val) != 'nan' else 'Unnamed Segment'
-
             gdf_edges['street_name'] = gdf_edges['name'].apply(clean_name)
             
             min_val = gdf_edges['betweenness'].min()
@@ -99,10 +156,10 @@ if st.button("Run Axial Analysis"):
                 "G_undirected": G_undirected,
                 "gdf_nodes": gdf_nodes,
                 "gdf_edges": gdf_edges,
-                "center_lat": center_lat,
-                "center_lon": center_lon,
+                "center_lat": plan["center_lat"],
+                "center_lon": plan["center_lon"],
                 "high_contrast_nodes": high_contrast_nodes,
-                "search_query": search_query
+                "search_query": plan["search_query"]
             }
             st.session_state.selected_node = None
 
@@ -110,7 +167,47 @@ if st.button("Run Axial Analysis"):
             st.error(f"Error generating analysis: {e}")
 
 # -----------------------------------------------------------------------------
-# 4. Map & Interactive Rendering
+# 4. Plan Preview and Interactive Rendering
+# -----------------------------------------------------------------------------
+if st.session_state.plan_data is not None and st.session_state.graph_data is None:
+    plan = st.session_state.plan_data
+    st.subheader("Street Plan Preview")
+    st.caption("Draw desire paths on the plan, then run the axial analysis. Double-click a path to remove it.")
+    preview_map = folium.Map(
+        location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
+    )
+    for _, row in plan["gdf_edges"].iterrows():
+        if row.geometry.geom_type == "LineString":
+            folium.PolyLine(
+                locations=[[point[1], point[0]] for point in row.geometry.coords],
+                color="#35B7FF", weight=3, opacity=0.8,
+                tooltip=f"Street: {row['street_name']}"
+            ).add_to(preview_map)
+    for index, path in enumerate(st.session_state.desire_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#FFD166", weight=5, opacity=0.95,
+            tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
+        ).add_to(preview_map)
+    Draw(
+        export=False,
+        draw_options={"polyline": {"shapeOptions": {"color": "#FFD166", "weight": 5}}, "polygon": False, "rectangle": False, "circle": False, "marker": False, "circlemarker": False},
+        edit_options={"edit": True, "remove": True},
+    ).add_to(preview_map)
+    preview_result = st_folium(preview_map, width=1000, height=520, key="plan_preview", returned_objects=["all_drawings"])
+    drawings = (preview_result or {}).get("all_drawings") or []
+    drawn_paths = []
+    for feature in drawings:
+        if feature.get("geometry", {}).get("type") == "LineString":
+            coords = feature["geometry"]["coordinates"]
+            if len(coords) >= 2:
+                drawn_paths.append(LineString([(point[0], point[1]) for point in coords]))
+    if drawings:
+        st.session_state.desire_paths = drawn_paths
+    st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
+
+
+# 5. Map & Interactive Rendering
 # -----------------------------------------------------------------------------
 if st.session_state.graph_data is not None:
     data = st.session_state.graph_data
@@ -123,6 +220,13 @@ if st.session_state.graph_data is not None:
 
     # Map Rendering
     m = folium.Map(location=[data["center_lat"], data["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter")
+
+    for index, path in enumerate(st.session_state.desire_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#FFD166", weight=5, opacity=0.95,
+            tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
+        ).add_to(m)
     
     # Draw Edges
     for _, row in gdf_edges.iterrows():
@@ -366,6 +470,33 @@ if st.session_state.graph_data is not None:
     # -------------------------------------------------------------------------
     st.sidebar.markdown("---")
     st.sidebar.subheader("Export Results for QGIS / CAD")
+
+    export_edges = gdf_edges.reset_index()
+    export_nodes = gdf_nodes.reset_index().rename(columns={"osmid": "node_id"})
+    export_edges = export_edges.drop(columns=["geometry"], errors="ignore").join(gdf_edges.geometry.rename("geometry"))
+    export_nodes = export_nodes.drop(columns=["geometry"], errors="ignore").join(gdf_nodes.geometry.rename("geometry"))
+    json_package = {
+        "format": "awanawam.urban_space_syntax.v1",
+        "plan": {
+            "search_query": data["search_query"],
+            "center_lat": data["center_lat"],
+            "center_lon": data["center_lon"],
+            "edges": json.loads(export_edges.to_json()),
+            "nodes": json.loads(export_nodes.to_json()),
+        },
+        "desire_paths": desire_path_features(),
+        "analysis": {
+            "metric": "edge_betweenness_centrality",
+            "edge_count": len(gdf_edges),
+            "desire_path_count": len(st.session_state.desire_paths),
+        },
+    }
+    st.sidebar.download_button(
+        label="Download Complete Analysis (.json)",
+        data=json.dumps(json_package, indent=2),
+        file_name="urban_space_syntax_analysis.json",
+        mime="application/json",
+    )
     
     gdf_export = gdf_edges[['street_name', 'betweenness', 'length', 'geometry']]
     geojson_str = gdf_export.to_json()
