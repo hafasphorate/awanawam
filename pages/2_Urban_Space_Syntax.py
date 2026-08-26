@@ -56,6 +56,9 @@ if "plan_data" not in st.session_state:
 if "desire_paths" not in st.session_state:
     st.session_state.desire_paths = []
 
+if "street_plan_paths" not in st.session_state:
+    st.session_state.street_plan_paths = []
+
 if "desire_path_analysis" not in st.session_state:
     st.session_state.desire_path_analysis = []
 
@@ -89,6 +92,17 @@ def load_plan(location, distance, kind):
     }
 
 
+def street_paths_from_edges(edges):
+    return [row.geometry for _, row in edges.iterrows()
+            if row.geometry.geom_type == "LineString"]
+
+
+if st.session_state.plan_data is not None and not st.session_state.street_plan_paths:
+    st.session_state.street_plan_paths = street_paths_from_edges(
+        st.session_state.plan_data["gdf_edges"]
+    )
+
+
 def desire_path_features():
     return [{
         "type": "Feature", "properties": {"path_id": index + 1, "length": round(path.length, 2)},
@@ -118,14 +132,25 @@ def update_desire_paths_from_map(drawings):
 
 
 def render_path_editor(key_prefix):
-    """Provide deterministic remove and cut operations outside the map widget."""
-    if not st.session_state.desire_paths:
+    """Provide deterministic remove and cut operations for plan and desire paths."""
+    path_options = [
+        ("street", index, path)
+        for index, path in enumerate(st.session_state.street_plan_paths)
+    ] + [
+        ("desire", index, path)
+        for index, path in enumerate(st.session_state.desire_paths)
+    ]
+    if not path_options:
         return
 
-    st.markdown("#### Desire Path Editor")
+    st.markdown("#### Path Editor")
     selected_index = st.selectbox(
-        "Path to edit", range(len(st.session_state.desire_paths)),
-        format_func=lambda index: f"Path {index + 1}", key=f"{key_prefix}_path_select"
+        "Path to edit", range(len(path_options)),
+        format_func=lambda index: (
+            f"Street path {path_options[index][1] + 1}"
+            if path_options[index][0] == "street"
+            else f"Desire path {path_options[index][1] + 1}"
+        ), key=f"{key_prefix}_path_select"
     )
     edit_col, remove_col = st.columns(2)
     with edit_col:
@@ -133,17 +158,22 @@ def render_path_editor(key_prefix):
             "Cut position (%)", 1, 99, 50, key=f"{key_prefix}_cut_position"
         )
         if st.button("Cut selected path", key=f"{key_prefix}_cut_button"):
-            path = st.session_state.desire_paths[selected_index]
+            path_type, path_index, path = path_options[selected_index]
             split_at = cut_position / 100.0
             first_path = substring(path, 0.0, split_at, normalized=True)
             second_path = substring(path, split_at, 1.0, normalized=True)
-            st.session_state.desire_paths[selected_index:selected_index + 1] = [first_path, second_path]
+            target_paths = (st.session_state.street_plan_paths
+                            if path_type == "street" else st.session_state.desire_paths)
+            target_paths[path_index:path_index + 1] = [first_path, second_path]
             st.session_state.desire_path_analysis = []
             st.session_state.path_map_revision += 1
             st.rerun()
     with remove_col:
         if st.button("Remove selected path", key=f"{key_prefix}_remove_button"):
-            st.session_state.desire_paths.pop(selected_index)
+            path_type, path_index, _ = path_options[selected_index]
+            target_paths = (st.session_state.street_plan_paths
+                            if path_type == "street" else st.session_state.desire_paths)
+            target_paths.pop(path_index)
             st.session_state.desire_path_analysis = []
             st.session_state.path_map_revision += 1
             st.rerun()
@@ -206,6 +236,12 @@ if uploaded_json is not None:
             "search_query": imported["plan"].get("search_query", "Imported plan"), "G_undirected": None,
         }
         st.session_state.graph_data = None
+        imported_street_paths = imported.get("street_plan_paths")
+        st.session_state.street_plan_paths = (
+            [shape(feature["geometry"]) for feature in imported_street_paths]
+            if imported_street_paths is not None
+            else street_paths_from_edges(imported_edges)
+        )
         st.session_state.desire_paths = [shape(feature["geometry"]) for feature in imported.get("desire_paths", [])]
         st.session_state.desire_path_analysis = imported.get("desire_path_analysis", [])
         st.success("Urban plan imported. The map and desire paths are ready to view.")
@@ -218,6 +254,9 @@ if st.button("Load Street Plan"):
         try:
             st.session_state.plan_data = load_plan(search_query, radius, network_type)
             st.session_state.graph_data = None
+            st.session_state.street_plan_paths = street_paths_from_edges(
+                st.session_state.plan_data["gdf_edges"]
+            )
         except Exception as e:
             st.error(f"Error loading street plan: {e}")
 
@@ -283,13 +322,12 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
     preview_map = folium.Map(
         location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
     )
-    for _, row in plan["gdf_edges"].iterrows():
-        if row.geometry.geom_type == "LineString":
-            folium.PolyLine(
-                locations=[[point[1], point[0]] for point in row.geometry.coords],
-                color="#35B7FF", weight=3, opacity=0.8,
-                tooltip=f"Street: {row['street_name']}"
-            ).add_to(preview_map)
+    for index, path in enumerate(st.session_state.street_plan_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#35B7FF", weight=3, opacity=0.8,
+            tooltip=f"Street path {index + 1}"
+        ).add_to(preview_map)
     for index, path in enumerate(st.session_state.desire_paths):
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in path.coords],
@@ -341,17 +379,18 @@ if st.session_state.graph_data is not None:
             tooltip=f"Analyzed route {result['path_id']} | Mean centrality: {result['mean_betweenness']:.6f}",
         ).add_to(m)
     
-    # Draw Edges
-    for _, row in gdf_edges.iterrows():
-        if row.geometry.geom_type == 'LineString':
-            coords = [[p[1], p[0]] for p in row.geometry.coords]
-            folium.PolyLine(
-                locations=coords,
-                color=row['hex_color'],
-                weight=3.5,
-                opacity=0.85,
-                tooltip=f"Street: {row['street_name']} | Centrality: {row['betweenness']:.4f}"
-            ).add_to(m)
+    # Draw the analyzed network using the edited street geometry.
+    street_rows = [row for _, row in gdf_edges.iterrows()
+                   if row.geometry.geom_type == "LineString"]
+    for index, path in enumerate(st.session_state.street_plan_paths):
+        row = street_rows[min(index, len(street_rows) - 1)]
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color=row["hex_color"],
+            weight=3.5,
+            opacity=0.85,
+            tooltip=f"Street: {row['street_name']} | Centrality: {row['betweenness']:.4f}"
+        ).add_to(m)
     
     # Draw Nodes with standard / highlight styling
     for node_id, row in gdf_nodes.iterrows():
@@ -602,6 +641,10 @@ if st.session_state.graph_data is not None:
             "nodes": json.loads(export_nodes.to_json()),
         },
         "desire_paths": desire_path_features(),
+        "street_plan_paths": [{
+            "type": "Feature", "properties": {"path_id": index + 1},
+            "geometry": mapping(path),
+        } for index, path in enumerate(st.session_state.street_plan_paths)],
         "desire_path_analysis": st.session_state.desire_path_analysis,
         "analysis": {
             "metric": "edge_betweenness_centrality",
