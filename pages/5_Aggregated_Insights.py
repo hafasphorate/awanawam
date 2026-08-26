@@ -538,26 +538,53 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
         hide_index=True,
     )
     if lower_ci <= 0 <= upper_ci:
-        st.info("The bootstrap interval for the indirect effect includes zero.")
+        st.info(
+            "The bootstrap interval for the indirect effect includes zero; "
+            "the mediated effect is not statistically significant at the 95% level."
+        )
     else:
-        st.success("The bootstrap interval for the indirect effect excludes zero.")
+        direction = "positive" if indirect_effect > 0 else "negative"
+        st.success(
+            "The bootstrap interval for the indirect effect excludes zero; "
+            f"the {direction} mediated effect is statistically significant at the 95% level."
+        )
 
+    # Draw one triangle with X, M, and Y as distinct nodes.
+    node_x = [0, 1, 2]
+    node_y = [0, 1.2, 0]
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=[0, 1, 2], y=[0, a, 0], mode="lines+markers+text",
-        text=[predictor_lbl, f"a = {a:.3f}", mediator_lbl],
-        textposition="top center", line=dict(color="#2b5c8f", width=3),
-        marker=dict(size=10), name="X to M",
+        x=[node_x[0], node_x[1]], y=[node_y[0], node_y[1]],
+        mode="lines", line=dict(color="#2b5c8f", width=3), name="Path a",
     ))
     fig.add_trace(go.Scatter(
-        x=[1, 2, 3], y=[0, b, 0], mode="lines+markers+text",
-        text=[mediator_lbl, f"b = {b:.3f}", outcome_lbl],
-        textposition="bottom center", line=dict(color="#d73027", width=3),
-        marker=dict(size=10), name="M to Y",
+        x=[node_x[1], node_x[2]], y=[node_y[1], node_y[2]],
+        mode="lines", line=dict(color="#d73027", width=3), name="Path b",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[node_x[0], node_x[2]], y=[node_y[0] - 0.08, node_y[2] - 0.08],
+        mode="lines", line=dict(color="#27ae60", width=3), name="Total effect c",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[node_x[0], node_x[2]], y=[node_y[0] + 0.08, node_y[2] + 0.08],
+        mode="lines", line=dict(color="#8e44ad", width=2, dash="dash"), name="Direct effect c'",
+    ))
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        text=[predictor_lbl, mediator_lbl, outcome_lbl],
+        textposition=["middle left", "top center", "middle right"],
+        marker=dict(size=18, color=["#2b5c8f", "#f39c12", "#d73027"], line=dict(width=2, color="white")),
+        name="Variables",
     ))
     fig.update_layout(
-        height=300, showlegend=False, xaxis=dict(visible=False), yaxis=dict(visible=False),
-        margin=dict(l=20, r=20, t=20, b=20),
+        height=360, showlegend=False, xaxis=dict(visible=False, range=[-0.35, 2.35]),
+        yaxis=dict(visible=False, range=[-0.3, 1.55]), margin=dict(l=20, r=20, t=20, b=20),
+        annotations=[
+            dict(x=0.5, y=0.68, text=f"a = {a:.3f}", showarrow=False, font=dict(color="#2b5c8f")),
+            dict(x=1.5, y=0.68, text=f"b = {b:.3f}", showarrow=False, font=dict(color="#d73027")),
+            dict(x=1.0, y=-0.16, text=f"c = {total_effect:.3f}", showarrow=False, font=dict(color="#27ae60")),
+            dict(x=1.0, y=0.16, text=f"c' = {direct_effect:.3f}", showarrow=False, font=dict(color="#8e44ad")),
+        ],
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -574,9 +601,15 @@ if raw_db_df.empty:
 else:
     metrics_list = raw_db_df["metrics_data"].tolist()
     df_global = pd.DataFrame(metrics_list)
+    dataset_count = (
+        raw_db_df["upload_batch_id"].nunique()
+        if "upload_batch_id" in raw_db_df.columns
+        else 0
+    )
 
     st.success(
-        f"**Repository Active:** Loaded **{len(df_global)}** global node records."
+        f"**Repository Active:** Loaded **{len(df_global)}** global node records "
+        f"from **{dataset_count}** data sets."
     )
 
     coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
