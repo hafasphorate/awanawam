@@ -13,6 +13,7 @@ import json
 from shapely.geometry import LineString, mapping, shape
 from shapely.ops import linemerge, substring
 from folium.plugins import Draw
+from geopy.distance import geodesic
 
 st.set_page_config(page_title="Urban Space Syntax Analysis", layout="wide")
 
@@ -105,7 +106,7 @@ if st.session_state.plan_data is not None and not st.session_state.street_plan_p
 
 def desire_path_features():
     return [{
-        "type": "Feature", "properties": {"path_id": index + 1, "length": round(path.length, 2)},
+        "type": "Feature", "properties": {"path_id": index + 1, "length_m": round(path_length_m(path), 2)},
         "geometry": mapping(path),
     } for index, path in enumerate(st.session_state.desire_paths)]
 
@@ -118,18 +119,36 @@ def split_path(path, percentage):
     )
 
 
+def path_length_m(path):
+    return sum(
+        geodesic((start[1], start[0]), (end[1], end[0])).meters
+        for start, end in zip(path.coords, path.coords[1:])
+    )
+
+
 def add_cut_preview(map_object, path, percentage):
     if path is None or path.length == 0:
         return
     cut_distance = path.length * percentage / 100.0
     cut_point = path.interpolate(cut_distance)
-    preview_radius = min(path.length * 0.04, cut_distance, path.length - cut_distance)
-    if preview_radius > 0:
-        preview_line = substring(path, cut_distance - preview_radius, cut_distance + preview_radius)
+    tangent_distance = min(path.length * 0.01, path.length / 2.0)
+    before = path.interpolate(max(0.0, cut_distance - tangent_distance))
+    after = path.interpolate(min(path.length, cut_distance + tangent_distance))
+    tangent_x = after.x - before.x
+    tangent_y = after.y - before.y
+    tangent_length = (tangent_x ** 2 + tangent_y ** 2) ** 0.5
+    if tangent_length > 0:
+        half_length = min(path.length * 0.04, path.length / 2.0)
+        normal_x = -tangent_y / tangent_length * half_length
+        normal_y = tangent_x / tangent_length * half_length
+        preview_line = LineString([
+            (cut_point.x - normal_x, cut_point.y - normal_y),
+            (cut_point.x + normal_x, cut_point.y + normal_y),
+        ])
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in preview_line.coords],
             color="#FF3366", weight=8, opacity=1.0,
-            tooltip=f"Cut preview at {percentage}%"
+            tooltip=f"Perpendicular cut preview at {percentage}%"
         ).add_to(map_object)
     folium.CircleMarker(
         location=[cut_point.y, cut_point.x], radius=6,
@@ -220,12 +239,19 @@ def analyze_desire_paths(graph, paths, edge_centrality):
     results = []
     for index, drawn_path in enumerate(paths):
         try:
-            start = ox.distance.nearest_nodes(graph, X=drawn_path.coords[0][0], Y=drawn_path.coords[0][1])
-            end = ox.distance.nearest_nodes(graph, X=drawn_path.coords[-1][0], Y=drawn_path.coords[-1][1])
+            start = min(graph.nodes, key=lambda node: (
+                (graph.nodes[node]["x"] - drawn_path.coords[0][0]) ** 2
+                + (graph.nodes[node]["y"] - drawn_path.coords[0][1]) ** 2
+            ))
+            end = min(graph.nodes, key=lambda node: (
+                (graph.nodes[node]["x"] - drawn_path.coords[-1][0]) ** 2
+                + (graph.nodes[node]["y"] - drawn_path.coords[-1][1]) ** 2
+            ))
             route = nx.shortest_path(graph, start, end, weight="length")
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             results.append({
                 "path_id": index + 1, "drawn_geometry": mapping(drawn_path),
+                "drawn_length_m": round(path_length_m(drawn_path), 2),
                 "route_geometry": None, "error": "No connected street route found",
             })
             continue
@@ -247,6 +273,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
         results.append({
             "path_id": index + 1,
             "drawn_geometry": mapping(drawn_path),
+            "drawn_length_m": round(path_length_m(drawn_path), 2),
             "route_geometry": mapping(merged_route),
             "start_node": start,
             "end_node": end,
@@ -296,6 +323,43 @@ if st.button("Load Street Plan"):
         except Exception as e:
             st.error(f"Error loading street plan: {e}")
 
+# -----------------------------------------------------------------------------
+# 4. Plan Preview and Interactive Rendering
+# -----------------------------------------------------------------------------
+if st.session_state.plan_data is not None and st.session_state.graph_data is None:
+    plan = st.session_state.plan_data
+    st.subheader("Street Plan Preview")
+    st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
+    selected_preview_path, preview_cut_position = render_path_editor("preview")
+    preview_map = folium.Map(
+        location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
+    )
+    for index, path in enumerate(st.session_state.street_plan_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#35B7FF", weight=3, opacity=0.8,
+            tooltip=f"Street path {index + 1}"
+        ).add_to(preview_map)
+    for index, path in enumerate(st.session_state.desire_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#FFD166", weight=5, opacity=0.95,
+            tooltip=f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
+        ).add_to(preview_map)
+    add_cut_preview(preview_map, selected_preview_path, preview_cut_position)
+    Draw(
+        export=False,
+        draw_options={"polyline": {"shapeOptions": {"color": "#FFD166", "weight": 5}}, "polygon": False, "rectangle": False, "circle": False, "marker": False, "circlemarker": False},
+        edit_options={"edit": True, "remove": True},
+    ).add_to(preview_map)
+    preview_result = st_folium(
+        preview_map, width=1000, height=520,
+        key=f"plan_preview_{st.session_state.path_map_revision}", returned_objects=["all_drawings"]
+    )
+    drawings = (preview_result or {}).get("all_drawings") or []
+    update_desire_paths_from_map(drawings)
+    st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
+
 if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
     with st.spinner("Calculating spatial depth and centrality..."):
         try:
@@ -305,24 +369,23 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
                 raise ValueError("Imported display data cannot be rerun; load the street plan to calculate new metrics.")
             edge_centrality = nx.edge_betweenness_centrality(G_undirected)
             nx.set_edge_attributes(G_undirected, edge_centrality, "betweenness")
-            
+
             gdf_nodes, gdf_edges = ox.convert.graph_to_gdfs(G_undirected)
-            
             gdf_edges['street_name'] = gdf_edges['name'].apply(clean_name)
-            
+
             min_val = gdf_edges['betweenness'].min()
             max_val = gdf_edges['betweenness'].max()
             cmap = plt.get_cmap('turbo')
-            
+
             def get_color_hex(val):
                 norm = (val - min_val) / (max_val - min_val + 1e-6)
                 return mcolors.to_hex(cmap(norm))
-            
+
             gdf_edges['hex_color'] = gdf_edges['betweenness'].apply(get_color_hex)
-            
+
             q_high = gdf_edges['betweenness'].quantile(0.75)
             q_low = gdf_edges['betweenness'].quantile(0.25)
-            
+
             high_contrast_nodes = set()
             for node in G_undirected.nodes():
                 incident_edges = G_undirected.edges(node, data=True)
@@ -348,43 +411,6 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
         except Exception as e:
             st.error(f"Error generating analysis: {e}")
 
-# -----------------------------------------------------------------------------
-# 4. Plan Preview and Interactive Rendering
-# -----------------------------------------------------------------------------
-if st.session_state.plan_data is not None and st.session_state.graph_data is None:
-    plan = st.session_state.plan_data
-    st.subheader("Street Plan Preview")
-    st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
-    selected_preview_path, preview_cut_position = render_path_editor("preview")
-    preview_map = folium.Map(
-        location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
-    )
-    for index, path in enumerate(st.session_state.street_plan_paths):
-        folium.PolyLine(
-            locations=[[point[1], point[0]] for point in path.coords],
-            color="#35B7FF", weight=3, opacity=0.8,
-            tooltip=f"Street path {index + 1}"
-        ).add_to(preview_map)
-    for index, path in enumerate(st.session_state.desire_paths):
-        folium.PolyLine(
-            locations=[[point[1], point[0]] for point in path.coords],
-            color="#FFD166", weight=5, opacity=0.95,
-            tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
-        ).add_to(preview_map)
-    add_cut_preview(preview_map, selected_preview_path, preview_cut_position)
-    Draw(
-        export=False,
-        draw_options={"polyline": {"shapeOptions": {"color": "#FFD166", "weight": 5}}, "polygon": False, "rectangle": False, "circle": False, "marker": False, "circlemarker": False},
-        edit_options={"edit": True, "remove": True},
-    ).add_to(preview_map)
-    preview_result = st_folium(
-        preview_map, width=1000, height=520,
-        key=f"plan_preview_{st.session_state.path_map_revision}", returned_objects=["all_drawings"]
-    )
-    drawings = (preview_result or {}).get("all_drawings") or []
-    update_desire_paths_from_map(drawings)
-    st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
-
 
 # 5. Map & Interactive Rendering
 # -----------------------------------------------------------------------------
@@ -405,7 +431,7 @@ if st.session_state.graph_data is not None:
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in path.coords],
             color="#FFD166", weight=5, opacity=0.95,
-            tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
+            tooltip=f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
         ).add_to(m)
     for result in st.session_state.desire_path_analysis:
         if result.get("route_geometry") is None:
