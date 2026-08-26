@@ -555,7 +555,7 @@ if st.session_state.graph_data is not None:
             tooltip += f" | Centrality: {result.get('centrality', 0.0):.6f}"
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in path.coords],
-            color="#FFD166", weight=2, opacity=0.65,
+            color="#FFD166", weight=1, opacity=0.25,
             tooltip=tooltip
         ).add_to(m)
     for result in st.session_state.desire_path_analysis:
@@ -563,21 +563,22 @@ if st.session_state.graph_data is not None:
             continue
         centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
         route_color = centrality_color(centrality, centrality_min, centrality_max)
-        folium.GeoJson(
-            result["route_geometry"],
-            name=f"Analyzed route {result['path_id']}",
-            style_function=lambda feature, color=route_color: {
-                "color": color, "weight": 6, "opacity": 0.95
-            },
-            tooltip=(
-                f"Desire path {result['path_id']}"
-                f" | Centrality: {centrality:.6f}"
-                f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
-                f" | Max: {result.get('max_betweenness', centrality):.6f}"
-                f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
-                f" | Route: {result.get('route_length_m', 0.0):.1f} m"
-            ),
-        ).add_to(m)
+        route_tooltip = (
+            f"Desire path {result['path_id']}"
+            f" | Centrality: {centrality:.6f}"
+            f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
+            f" | Max: {result.get('max_betweenness', centrality):.6f}"
+            f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
+            f" | Route: {result.get('route_length_m', 0.0):.1f} m"
+        )
+        route_shape = shape(result["route_geometry"])
+        route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
+        for route_part in route_parts:
+            folium.PolyLine(
+                locations=[[point[1], point[0]] for point in route_part.coords],
+                color=route_color, weight=6, opacity=0.95,
+                tooltip=route_tooltip,
+            ).add_to(m)
         for node_label in ("start_node", "end_node"):
             node_id = result.get(node_label)
             if node_id in gdf_nodes.index:
