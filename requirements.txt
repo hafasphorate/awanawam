@@ -28,3 +28,5 @@ pydeck
 geopy
 streamlit-folium
 folium
+
+scikit-learn
