@@ -326,6 +326,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
                 "drawn_length_m": round(path_length_m(drawn_path), 2),
                 "route_geometry": None,
                 "route_length_m": 0.0,
+                "centrality": 0.0,
                 "mean_betweenness": 0.0,
                 "max_betweenness": 0.0,
                 "network_edge_count": 0,
@@ -346,6 +347,30 @@ def analyze_desire_paths(graph, paths, edge_centrality):
                 (graph.nodes[u]["x"], graph.nodes[u]["y"]),
                 (graph.nodes[v]["x"], graph.nodes[v]["y"]),
             ]))
+        if not route_edges:
+            edge_records = (
+                graph.edges(keys=True, data=True)
+                if graph.is_multigraph() else
+                ((u, v, None, attributes) for u, v, attributes in graph.edges(data=True))
+            )
+            nearest_edge = min(
+                edge_records,
+                key=lambda record: (
+                    (record[3].get("geometry") or LineString([
+                        (graph.nodes[record[0]]["x"], graph.nodes[record[0]]["y"]),
+                        (graph.nodes[record[1]]["x"], graph.nodes[record[1]]["y"]),
+                    ])).distance(drawn_path)
+                ),
+            )
+            u, v, edge_key, attributes = nearest_edge
+            geometry = attributes.get("geometry") or LineString([
+                (graph.nodes[u]["x"], graph.nodes[u]["y"]),
+                (graph.nodes[v]["x"], graph.nodes[v]["y"]),
+            ])
+            route_lines.append(geometry)
+            route_length = float(attributes.get("length", path_length_m(geometry)))
+            scores.append(edge_score(u, v, edge_key))
+            route_edges = [(u, v)]
         merged_route = linemerge(route_lines)
         results.append({
             "path_id": index + 1,
@@ -355,6 +380,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             "start_node": start,
             "end_node": end,
             "route_length_m": round(route_length, 2),
+            "centrality": round(float(np.mean(scores)), 6) if scores else 0.0,
             "mean_betweenness": round(float(np.mean(scores)), 6) if scores else 0.0,
             "max_betweenness": round(float(np.max(scores)), 6) if scores else 0.0,
             "network_edge_count": len(route_edges),
@@ -387,6 +413,7 @@ if uploaded_json is not None:
         for result in st.session_state.desire_path_analysis:
             result.setdefault("drawn_length_m", 0.0)
             result.setdefault("route_length_m", 0.0)
+            result.setdefault("centrality", result.get("mean_betweenness", 0.0))
             result.setdefault("mean_betweenness", 0.0)
             result.setdefault("max_betweenness", 0.0)
             result.setdefault("network_edge_count", 0)
@@ -523,8 +550,17 @@ if st.session_state.graph_data is not None:
             result["route_geometry"],
             name=f"Analyzed route {result['path_id']}",
             style_function=lambda feature: {"color": "#FFFFFF", "weight": 3, "opacity": 0.9},
-            tooltip=f"Analyzed route {result['path_id']} | Mean centrality: {result['mean_betweenness']:.6f}",
+            tooltip=f"Desire path {result['path_id']} | Centrality: {result['centrality']:.6f}",
         ).add_to(m)
+        for node_label in ("start_node", "end_node"):
+            node_id = result.get(node_label)
+            if node_id in gdf_nodes.index:
+                node = gdf_nodes.loc[node_id].geometry
+                folium.CircleMarker(
+                    location=[node.y, node.x], radius=5,
+                    color="#FF3366", fill=True, fill_color="#FF3366", fill_opacity=0.95,
+                    tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
+                ).add_to(m)
     
     # Draw the analyzed network using the edited street geometry.
     street_rows = [row for _, row in gdf_edges.iterrows()
