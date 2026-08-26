@@ -173,6 +173,11 @@ def json_safe(value):
         return str(value)
 
 
+def centrality_color(value, minimum, maximum):
+    normalized = (value - minimum) / (maximum - minimum + 1e-6)
+    return mcolors.to_hex(plt.get_cmap("turbo")(normalized))
+
+
 def geojson_feature_collection(gdf):
     features = []
     for _, row in gdf.iterrows():
@@ -536,21 +541,42 @@ if st.session_state.graph_data is not None:
 
     # Map Rendering
     m = folium.Map(location=[data["center_lat"], data["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter")
+    centrality_min = float(gdf_edges["betweenness"].min())
+    centrality_max = float(gdf_edges["betweenness"].max())
+    desire_results = {
+        result["path_id"]: result
+        for result in st.session_state.desire_path_analysis
+    }
 
     for index, path in enumerate(st.session_state.desire_paths):
+        result = desire_results.get(index + 1)
+        tooltip = f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
+        if result is not None:
+            tooltip += f" | Centrality: {result.get('centrality', 0.0):.6f}"
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in path.coords],
-            color="#FFD166", weight=5, opacity=0.95,
-            tooltip=f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
+            color="#FFD166", weight=2, opacity=0.65,
+            tooltip=tooltip
         ).add_to(m)
     for result in st.session_state.desire_path_analysis:
         if result.get("route_geometry") is None:
             continue
+        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
+        route_color = centrality_color(centrality, centrality_min, centrality_max)
         folium.GeoJson(
             result["route_geometry"],
             name=f"Analyzed route {result['path_id']}",
-            style_function=lambda feature: {"color": "#FFFFFF", "weight": 3, "opacity": 0.9},
-            tooltip=f"Desire path {result['path_id']} | Centrality: {result['centrality']:.6f}",
+            style_function=lambda feature, color=route_color: {
+                "color": color, "weight": 6, "opacity": 0.95
+            },
+            tooltip=(
+                f"Desire path {result['path_id']}"
+                f" | Centrality: {centrality:.6f}"
+                f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
+                f" | Max: {result.get('max_betweenness', centrality):.6f}"
+                f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
+                f" | Route: {result.get('route_length_m', 0.0):.1f} m"
+            ),
         ).add_to(m)
         for node_label in ("start_node", "end_node"):
             node_id = result.get(node_label)
