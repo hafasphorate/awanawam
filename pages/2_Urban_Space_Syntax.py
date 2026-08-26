@@ -174,14 +174,18 @@ def render_path_editor(key_prefix):
     st.markdown("#### Path Editor")
     option_ids = [option[0] for option in path_options]
     option_lookup = {option[0]: option for option in path_options}
-    selected_id = st.selectbox(
+    selection_key = f"{key_prefix}_path_select"
+    if st.session_state.get(selection_key) not in option_lookup:
+        st.session_state[selection_key] = option_ids[0]
+    st.selectbox(
         "Path to edit", option_ids,
         format_func=lambda option_id: (
             f"Street path {option_lookup[option_id][2] + 1}"
             if option_lookup[option_id][1] == "street"
             else f"Desire path {option_lookup[option_id][2] + 1}"
-        ), key=f"{key_prefix}_path_select"
+        ), key=selection_key
     )
+    selected_id = st.session_state[selection_key]
     selected_path = option_lookup[selected_id][3]
     edit_col, remove_col = st.columns(2)
     with edit_col:
@@ -189,6 +193,7 @@ def render_path_editor(key_prefix):
             "Cut position (%)", 1, 99, 50, key=f"{key_prefix}_cut_position"
         )
         if st.button("Cut selected path", key=f"{key_prefix}_cut_button"):
+            selected_id = st.session_state[selection_key]
             _, path_type, path_index, path = option_lookup[selected_id]
             first_path, second_path = split_path(path, cut_position)
             target_paths = (st.session_state.street_plan_paths
@@ -199,6 +204,7 @@ def render_path_editor(key_prefix):
             st.rerun()
     with remove_col:
         if st.button("Remove selected path", key=f"{key_prefix}_remove_button"):
+            selected_id = st.session_state[selection_key]
             _, path_type, path_index, _ = option_lookup[selected_id]
             target_paths = (st.session_state.street_plan_paths
                             if path_type == "street" else st.session_state.desire_paths)
