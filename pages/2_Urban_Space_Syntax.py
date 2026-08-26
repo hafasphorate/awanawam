@@ -747,13 +747,18 @@ if st.session_state.graph_data is not None:
             edge_x.extend([x0, x1, None])
             edge_y.extend([y0, y1, None])
             
-            street_name = d.get('street_name', d.get('name', 'Unnamed Street'))
-            edge_hover.extend([f"Street: {street_name}", f"Street: {street_name}", None])
-            
-            # Compute line midpoint for road label placement
-            mid_x.append((x0 + x1) / 2.0)
-            mid_y.append((y0 + y1) / 2.0)
-            mid_labels.append(street_name)
+            street_name = clean_name(d.get('street_name', d.get('name')))
+            edge_hover.extend([
+                f"Street: {street_name}" if not street_name.startswith("Unnamed") else "Street segment",
+                f"Street: {street_name}" if not street_name.startswith("Unnamed") else "Street segment",
+                None,
+            ])
+
+            # Only named streets receive visible midpoint labels.
+            if not street_name.startswith("Unnamed"):
+                mid_x.append((x0 + x1) / 2.0)
+                mid_y.append((y0 + y1) / 2.0)
+                mid_labels.append(street_name)
 
     edge_trace = go.Scatter(
         x=edge_x, y=edge_y,
@@ -783,7 +788,11 @@ if st.session_state.graph_data is not None:
         custom_data.append(n)
         
         incident = sub_G.edges(n, data=True)
-        streets = list(set([d.get('street_name', 'Unnamed') for _, _, d in incident if 'street_name' in d]))
+        streets = sorted({
+            clean_name(d.get('street_name', d.get('name')))
+            for _, _, d in incident
+            if not clean_name(d.get('street_name', d.get('name'))).startswith("Unnamed")
+        })
         streets_str = ", ".join(streets) if streets else "Local Segment"
         
         lat = gdf_nodes.loc[n].geometry.y if n in gdf_nodes.index else 0
