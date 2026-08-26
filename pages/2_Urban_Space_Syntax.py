@@ -110,6 +110,34 @@ def desire_path_features():
     } for index, path in enumerate(st.session_state.desire_paths)]
 
 
+def split_path(path, percentage):
+    cut_distance = path.length * percentage / 100.0
+    return (
+        substring(path, 0.0, cut_distance),
+        substring(path, cut_distance, path.length),
+    )
+
+
+def add_cut_preview(map_object, path, percentage):
+    if path is None or path.length == 0:
+        return
+    cut_distance = path.length * percentage / 100.0
+    cut_point = path.interpolate(cut_distance)
+    preview_radius = min(path.length * 0.04, cut_distance, path.length - cut_distance)
+    if preview_radius > 0:
+        preview_line = substring(path, cut_distance - preview_radius, cut_distance + preview_radius)
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in preview_line.coords],
+            color="#FF3366", weight=8, opacity=1.0,
+            tooltip=f"Cut preview at {percentage}%"
+        ).add_to(map_object)
+    folium.CircleMarker(
+        location=[cut_point.y, cut_point.x], radius=6,
+        color="#FFFFFF", weight=2, fill=True, fill_color="#FF3366", fill_opacity=1.0,
+        tooltip=f"Cut point: {percentage}%"
+    ).add_to(map_object)
+
+
 def update_desire_paths_from_map(drawings):
     """Merge newly drawn lines without clearing paths when Folium has no event."""
     if not drawings:
@@ -141,7 +169,7 @@ def render_path_editor(key_prefix):
         for index, path in enumerate(st.session_state.desire_paths)
     ]
     if not path_options:
-        return
+        return None, 50
 
     st.markdown("#### Path Editor")
     selected_index = st.selectbox(
@@ -152,6 +180,7 @@ def render_path_editor(key_prefix):
             else f"Desire path {path_options[index][1] + 1}"
         ), key=f"{key_prefix}_path_select"
     )
+    selected_path = path_options[selected_index][2]
     edit_col, remove_col = st.columns(2)
     with edit_col:
         cut_position = st.slider(
@@ -159,9 +188,7 @@ def render_path_editor(key_prefix):
         )
         if st.button("Cut selected path", key=f"{key_prefix}_cut_button"):
             path_type, path_index, path = path_options[selected_index]
-            split_at = cut_position / 100.0
-            first_path = substring(path, 0.0, split_at, normalized=True)
-            second_path = substring(path, split_at, 1.0, normalized=True)
+            first_path, second_path = split_path(path, cut_position)
             target_paths = (st.session_state.street_plan_paths
                             if path_type == "street" else st.session_state.desire_paths)
             target_paths[path_index:path_index + 1] = [first_path, second_path]
@@ -177,6 +204,7 @@ def render_path_editor(key_prefix):
             st.session_state.desire_path_analysis = []
             st.session_state.path_map_revision += 1
             st.rerun()
+    return selected_path, cut_position
 
 
 def analyze_desire_paths(graph, paths, edge_centrality):
@@ -319,6 +347,7 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
     plan = st.session_state.plan_data
     st.subheader("Street Plan Preview")
     st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
+    selected_preview_path, preview_cut_position = render_path_editor("preview")
     preview_map = folium.Map(
         location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
     )
@@ -334,6 +363,7 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
             color="#FFD166", weight=5, opacity=0.95,
             tooltip=f"Desire path {index + 1} ({path.length:.1f} map units)"
         ).add_to(preview_map)
+    add_cut_preview(preview_map, selected_preview_path, preview_cut_position)
     Draw(
         export=False,
         draw_options={"polyline": {"shapeOptions": {"color": "#FFD166", "weight": 5}}, "polygon": False, "rectangle": False, "circle": False, "marker": False, "circlemarker": False},
@@ -345,7 +375,6 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
     )
     drawings = (preview_result or {}).get("all_drawings") or []
     update_desire_paths_from_map(drawings)
-    render_path_editor("preview")
     st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
 
 
@@ -359,6 +388,7 @@ if st.session_state.graph_data is not None:
     G_undirected = data["G_undirected"]
     
     selected_node = st.session_state.selected_node
+    selected_preview_path, preview_cut_position = render_path_editor("analysis")
 
     # Map Rendering
     m = folium.Map(location=[data["center_lat"], data["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter")
@@ -391,6 +421,7 @@ if st.session_state.graph_data is not None:
             opacity=0.85,
             tooltip=f"Street: {row['street_name']} | Centrality: {row['betweenness']:.4f}"
         ).add_to(m)
+    add_cut_preview(m, selected_preview_path, preview_cut_position)
     
     # Draw Nodes with standard / highlight styling
     for node_id, row in gdf_nodes.iterrows():
@@ -449,7 +480,6 @@ if st.session_state.graph_data is not None:
 
     st.subheader("1. Interactive Space Syntax Map")
     st_folium(m, width=1000, height=520, key="main_map", returned_objects=[])
-    render_path_editor("analysis")
     if st.session_state.desire_path_analysis:
         st.subheader("Desire Path Axial Results")
         st.dataframe(st.session_state.desire_path_analysis, use_container_width=True)
