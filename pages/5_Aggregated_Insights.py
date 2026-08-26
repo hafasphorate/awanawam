@@ -458,6 +458,110 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
         )
 
 
+def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
+    """Estimate a simple mediation model with a percentile bootstrap interval."""
+    st.markdown("---")
+    st.subheader("🔗 Mediation Analysis")
+    st.write(
+        "Test whether a mediator helps explain the relationship between a predictor "
+        "and an outcome. The indirect effect is the product of paths $a$ and $b$."
+    )
+
+    clean_options = {
+        col.replace("isovist_", "").replace("_", " ").title(): col
+        for col in numeric_cols
+    }
+    labels = list(clean_options.keys())
+    x_col, mediator_col, y_col = st.columns(3)
+
+    with x_col:
+        predictor_lbl = st.selectbox("Predictor (X):", labels, key="mediation_predictor")
+    with mediator_col:
+        mediator_lbl = st.selectbox("Mediator (M):", labels, index=min(1, len(labels) - 1), key="mediation_mediator")
+    with y_col:
+        outcome_lbl = st.selectbox("Outcome (Y):", labels, index=min(2, len(labels) - 1), key="mediation_outcome")
+
+    predictor = clean_options[predictor_lbl]
+    mediator = clean_options[mediator_lbl]
+    outcome = clean_options[outcome_lbl]
+    if len({predictor, mediator, outcome}) < 3:
+        st.info("Select three different metrics for the predictor, mediator, and outcome.")
+        return
+
+    mediation_df = df[[predictor, mediator, outcome]].apply(
+        pd.to_numeric, errors="coerce"
+    ).dropna()
+    if len(mediation_df) < 10:
+        st.warning("At least 10 complete records are recommended for mediation analysis.")
+        return
+    if any(mediation_df[column].nunique() < 2 for column in [predictor, mediator, outcome]):
+        st.warning("Each selected metric needs more than one distinct value.")
+        return
+
+    x = mediation_df[predictor].to_numpy()
+    m = mediation_df[mediator].to_numpy()
+    y = mediation_df[outcome].to_numpy()
+
+    def ols(response, design):
+        return np.linalg.lstsq(
+            np.column_stack([np.ones(len(response)), design]), response, rcond=None
+        )[0]
+
+    a = ols(m, x[:, None])[1]
+    total_effect = ols(y, x[:, None])[1]
+    direct_effect = ols(y, np.column_stack([x, m]))[1]
+    b = ols(y, np.column_stack([x, m]))[2]
+    indirect_effect = a * b
+
+    rng = np.random.default_rng(42)
+    bootstrap_effects = np.empty(1000)
+    for index in range(len(bootstrap_effects)):
+        sample_indices = rng.integers(0, len(mediation_df), len(mediation_df))
+        sample_x = x[sample_indices]
+        sample_m = m[sample_indices]
+        sample_y = y[sample_indices]
+        bootstrap_a = ols(sample_m, sample_x[:, None])[1]
+        bootstrap_b = ols(sample_y, np.column_stack([sample_x, sample_m]))[2]
+        bootstrap_effects[index] = bootstrap_a * bootstrap_b
+    lower_ci, upper_ci = np.percentile(bootstrap_effects, [2.5, 97.5])
+
+    results = pd.DataFrame(
+        {
+            "Effect": ["Path a (X → M)", "Path b (M → Y | X)", "Total effect c", "Direct effect c'", "Indirect effect a × b"],
+            "Estimate": [a, b, total_effect, direct_effect, indirect_effect],
+            "95% Bootstrap CI": ["", "", "", "", f"[{lower_ci:.4f}, {upper_ci:.4f}]"],
+        }
+    )
+    st.dataframe(
+        results.style.format({"Estimate": "{:.4f}"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+    if lower_ci <= 0 <= upper_ci:
+        st.info("The bootstrap interval for the indirect effect includes zero.")
+    else:
+        st.success("The bootstrap interval for the indirect effect excludes zero.")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[0, 1, 2], y=[0, a, 0], mode="lines+markers+text",
+        text=[predictor_lbl, f"a = {a:.3f}", mediator_lbl],
+        textposition="top center", line=dict(color="#2b5c8f", width=3),
+        marker=dict(size=10), name="X to M",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[1, 2, 3], y=[0, b, 0], mode="lines+markers+text",
+        text=[mediator_lbl, f"b = {b:.3f}", outcome_lbl],
+        textposition="bottom center", line=dict(color="#d73027", width=3),
+        marker=dict(size=10), name="M to Y",
+    ))
+    fig.update_layout(
+        height=300, showlegend=False, xaxis=dict(visible=False), yaxis=dict(visible=False),
+        margin=dict(l=20, r=20, t=20, b=20),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 # -----------------------------------------------------------------------------
 # 5. Main Application Workflow
 # -----------------------------------------------------------------------------
@@ -553,6 +657,9 @@ else:
 
             # Multivariate Regression Feature Drivers Section
             render_multivariate_regression(df_global, selected_metrics)
+
+            # Mediation Analysis Section
+            render_mediation_analysis(df_global, selected_metrics)
 
             # Numerical Table Expander
             with st.expander("View Numerical Pearson Correlation Matrix Table"):
