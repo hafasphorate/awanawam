@@ -162,32 +162,34 @@ def update_desire_paths_from_map(drawings):
 def render_path_editor(key_prefix):
     """Provide deterministic remove and cut operations for plan and desire paths."""
     path_options = [
-        ("street", index, path)
+        (f"street:{index}:{path.wkb_hex}", "street", index, path)
         for index, path in enumerate(st.session_state.street_plan_paths)
     ] + [
-        ("desire", index, path)
+        (f"desire:{index}:{path.wkb_hex}", "desire", index, path)
         for index, path in enumerate(st.session_state.desire_paths)
     ]
     if not path_options:
         return None, 50
 
     st.markdown("#### Path Editor")
-    selected_index = st.selectbox(
-        "Path to edit", range(len(path_options)),
-        format_func=lambda index: (
-            f"Street path {path_options[index][1] + 1}"
-            if path_options[index][0] == "street"
-            else f"Desire path {path_options[index][1] + 1}"
+    option_ids = [option[0] for option in path_options]
+    option_lookup = {option[0]: option for option in path_options}
+    selected_id = st.selectbox(
+        "Path to edit", option_ids,
+        format_func=lambda option_id: (
+            f"Street path {option_lookup[option_id][2] + 1}"
+            if option_lookup[option_id][1] == "street"
+            else f"Desire path {option_lookup[option_id][2] + 1}"
         ), key=f"{key_prefix}_path_select"
     )
-    selected_path = path_options[selected_index][2]
+    selected_path = option_lookup[selected_id][3]
     edit_col, remove_col = st.columns(2)
     with edit_col:
         cut_position = st.slider(
             "Cut position (%)", 1, 99, 50, key=f"{key_prefix}_cut_position"
         )
         if st.button("Cut selected path", key=f"{key_prefix}_cut_button"):
-            path_type, path_index, path = path_options[selected_index]
+            _, path_type, path_index, path = option_lookup[selected_id]
             first_path, second_path = split_path(path, cut_position)
             target_paths = (st.session_state.street_plan_paths
                             if path_type == "street" else st.session_state.desire_paths)
@@ -197,7 +199,7 @@ def render_path_editor(key_prefix):
             st.rerun()
     with remove_col:
         if st.button("Remove selected path", key=f"{key_prefix}_remove_button"):
-            path_type, path_index, _ = path_options[selected_index]
+            _, path_type, path_index, _ = option_lookup[selected_id]
             target_paths = (st.session_state.street_plan_paths
                             if path_type == "street" else st.session_state.desire_paths)
             target_paths.pop(path_index)
