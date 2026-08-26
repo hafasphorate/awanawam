@@ -558,37 +558,6 @@ if st.session_state.graph_data is not None:
             color="#FFD166", weight=1, opacity=0.25,
             tooltip=tooltip
         ).add_to(m)
-    for result in st.session_state.desire_path_analysis:
-        if result.get("route_geometry") is None:
-            continue
-        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
-        route_color = centrality_color(centrality, centrality_min, centrality_max)
-        route_tooltip = (
-            f"Desire path {result['path_id']}"
-            f" | Centrality: {centrality:.6f}"
-            f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
-            f" | Max: {result.get('max_betweenness', centrality):.6f}"
-            f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
-            f" | Route: {result.get('route_length_m', 0.0):.1f} m"
-        )
-        route_shape = shape(result["route_geometry"])
-        route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
-        for route_part in route_parts:
-            folium.PolyLine(
-                locations=[[point[1], point[0]] for point in route_part.coords],
-                color=route_color, weight=6, opacity=0.95,
-                tooltip=route_tooltip,
-            ).add_to(m)
-        for node_label in ("start_node", "end_node"):
-            node_id = result.get(node_label)
-            if node_id in gdf_nodes.index:
-                node = gdf_nodes.loc[node_id].geometry
-                folium.CircleMarker(
-                    location=[node.y, node.x], radius=5,
-                    color="#FF3366", fill=True, fill_color="#FF3366", fill_opacity=0.95,
-                    tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
-                ).add_to(m)
-    
     # Draw the analyzed network using the edited street geometry.
     street_rows = [row for _, row in gdf_edges.iterrows()
                    if row.geometry.geom_type == "LineString"]
@@ -601,8 +570,6 @@ if st.session_state.graph_data is not None:
             opacity=0.85,
             tooltip=f"Street: {row['street_name']} | Centrality: {row['betweenness']:.4f}"
         ).add_to(m)
-    add_cut_preview(m, selected_preview_path, preview_cut_position)
-    
     # Draw Nodes with standard / highlight styling
     for node_id, row in gdf_nodes.iterrows():
         lat, lon = row.geometry.y, row.geometry.x
@@ -639,6 +606,40 @@ if st.session_state.graph_data is not None:
                 fill_opacity=0.4,
                 tooltip=f"Intersection"
             ).add_to(m)
+
+    # Keep desire routes and snapped intersections above the network layers.
+    for result in st.session_state.desire_path_analysis:
+        if result.get("route_geometry") is None:
+            continue
+        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
+        route_color = centrality_color(centrality, centrality_min, centrality_max)
+        route_tooltip = (
+            f"Desire path {result['path_id']}"
+            f" | Centrality: {centrality:.6f}"
+            f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
+            f" | Max: {result.get('max_betweenness', centrality):.6f}"
+            f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
+            f" | Route: {result.get('route_length_m', 0.0):.1f} m"
+        )
+        route_shape = shape(result["route_geometry"])
+        route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
+        for route_part in route_parts:
+            folium.PolyLine(
+                locations=[[point[1], point[0]] for point in route_part.coords],
+                color=route_color, weight=8, opacity=1.0,
+                tooltip=route_tooltip,
+            ).add_to(m)
+        for node_label in ("start_node", "end_node"):
+            node_id = result.get(node_label)
+            if node_id in gdf_nodes.index:
+                node = gdf_nodes.loc[node_id].geometry
+                folium.CircleMarker(
+                    location=[node.y, node.x], radius=7,
+                    color="#FFFFFF", weight=2, fill=True,
+                    fill_color="#FF3366", fill_opacity=1.0,
+                    tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
+                ).add_to(m)
+    add_cut_preview(m, selected_preview_path, preview_cut_position)
 
     # Legend Overlay for Map
     legend_html = '''
