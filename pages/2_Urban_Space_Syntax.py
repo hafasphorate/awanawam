@@ -252,7 +252,12 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             results.append({
                 "path_id": index + 1, "drawn_geometry": mapping(drawn_path),
                 "drawn_length_m": round(path_length_m(drawn_path), 2),
-                "route_geometry": None, "error": "No connected street route found",
+                "route_geometry": None,
+                "route_length_m": 0.0,
+                "mean_betweenness": 0.0,
+                "max_betweenness": 0.0,
+                "network_edge_count": 0,
+                "error": "No connected street route found",
             })
             continue
         route_edges = list(zip(route[:-1], route[1:]))
@@ -307,6 +312,12 @@ if uploaded_json is not None:
         )
         st.session_state.desire_paths = [shape(feature["geometry"]) for feature in imported.get("desire_paths", [])]
         st.session_state.desire_path_analysis = imported.get("desire_path_analysis", [])
+        for result in st.session_state.desire_path_analysis:
+            result.setdefault("drawn_length_m", 0.0)
+            result.setdefault("route_length_m", 0.0)
+            result.setdefault("mean_betweenness", 0.0)
+            result.setdefault("max_betweenness", 0.0)
+            result.setdefault("network_edge_count", 0)
         st.success("Urban plan imported. The map and desire paths are ready to view.")
     except (KeyError, ValueError, TypeError) as error:
         st.error(f"Could not import this JSON package: {error}")
@@ -691,10 +702,11 @@ if st.session_state.graph_data is not None:
     st.sidebar.markdown("---")
     st.sidebar.subheader("Export Results for QGIS / CAD")
 
-    export_edges = gdf_edges.reset_index()
+    export_edges = gdf_edges.reset_index().drop(columns=["geometry"], errors="ignore")
+    export_edges["geometry"] = gdf_edges.geometry.to_numpy()
     export_nodes = gdf_nodes.reset_index().rename(columns={"osmid": "node_id"})
-    export_edges = export_edges.drop(columns=["geometry"], errors="ignore").join(gdf_edges.geometry.rename("geometry"))
-    export_nodes = export_nodes.drop(columns=["geometry"], errors="ignore").join(gdf_nodes.geometry.rename("geometry"))
+    export_nodes = export_nodes.drop(columns=["geometry"], errors="ignore")
+    export_nodes["geometry"] = gdf_nodes.geometry.to_numpy()
     json_package = {
         "format": "awanawam.urban_space_syntax.v1",
         "plan": {
