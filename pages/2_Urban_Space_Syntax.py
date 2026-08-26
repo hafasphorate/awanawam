@@ -151,6 +151,44 @@ def path_length_m(path):
     )
 
 
+def json_safe(value):
+    if isinstance(value, np.ndarray):
+        return [json_safe(item) for item in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
+
+
+def geojson_feature_collection(gdf):
+    features = []
+    for _, row in gdf.iterrows():
+        properties = {
+            column: json_safe(value)
+            for column, value in row.items()
+            if column != "geometry"
+        }
+        features.append({
+            "type": "Feature",
+            "properties": properties,
+            "geometry": mapping(row.geometry) if row.geometry is not None else None,
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
 def add_cut_preview(map_object, path, percentage):
     if path is None or path.length == 0:
         return
@@ -261,6 +299,15 @@ def render_path_editor(key_prefix):
 
 def analyze_desire_paths(graph, paths, edge_centrality):
     """Snap each drawn path to the network and summarize its shortest route."""
+    def edge_score(u, v, edge_key):
+        return edge_centrality.get(
+            (u, v, edge_key),
+            edge_centrality.get(
+                (v, u, edge_key),
+                edge_centrality.get((u, v), edge_centrality.get((v, u), 0.0)),
+            ),
+        )
+
     results = []
     for index, drawn_path in enumerate(paths):
         try:
@@ -292,7 +339,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
         for u, v in route_edges:
             edge_data = graph.get_edge_data(u, v)
             edge_key, attributes = min(edge_data.items(), key=lambda item: item[1].get("length", float("inf")))
-            scores.append(edge_centrality.get((u, v, edge_key), edge_centrality.get((v, u, edge_key), 0.0)))
+            scores.append(edge_score(u, v, edge_key))
             route_length += float(attributes.get("length", 0.0))
             geometry = attributes.get("geometry")
             route_lines.append(geometry if geometry is not None else LineString([
@@ -738,8 +785,8 @@ if st.session_state.graph_data is not None:
             "search_query": data["search_query"],
             "center_lat": data["center_lat"],
             "center_lon": data["center_lon"],
-            "edges": json.loads(export_edges.to_json()),
-            "nodes": json.loads(export_nodes.to_json()),
+            "edges": geojson_feature_collection(export_edges),
+            "nodes": geojson_feature_collection(export_nodes),
         },
         "desire_paths": desire_path_features(),
         "street_plan_paths": [{
@@ -761,7 +808,7 @@ if st.session_state.graph_data is not None:
     )
     
     gdf_export = gdf_edges[['street_name', 'betweenness', 'length', 'geometry']]
-    geojson_str = gdf_export.to_json()
+    geojson_str = json.dumps(geojson_feature_collection(gdf_export))
     st.sidebar.download_button(
         label="Download GIS Vector (.geojson)",
         data=geojson_str,
