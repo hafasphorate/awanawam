@@ -82,9 +82,34 @@ def load_plan(location, distance, kind):
     gdf_place = ox.geocode_to_gdf(location)
     center_lat = gdf_place.geometry.iloc[0].centroid.y
     center_lon = gdf_place.geometry.iloc[0].centroid.x
-    graph = ox.convert.to_undirected(
-        ox.graph_from_point((center_lat, center_lon), dist=distance, network_type=kind)
-    )
+    overpass_endpoints = [
+        "https://overpass-api.de/api",
+        "https://overpass.kumi.systems/api",
+        "https://overpass.private.coffee/api",
+    ]
+    original_endpoint = ox.settings.overpass_url
+    graph = None
+    errors = []
+    try:
+        for endpoint in overpass_endpoints:
+            ox.settings.overpass_url = endpoint
+            try:
+                graph = ox.convert.to_undirected(
+                    ox.graph_from_point(
+                        (center_lat, center_lon), dist=distance, network_type=kind
+                    )
+                )
+                break
+            except Exception as error:
+                errors.append(f"{endpoint}: {error}")
+        if graph is None:
+            raise ConnectionError(
+                "All Overpass services were unavailable. "
+                "Please try again shortly or reduce the analysis radius.\n"
+                + "\n".join(errors)
+            )
+    finally:
+        ox.settings.overpass_url = original_endpoint
     nodes, edges = ox.convert.graph_to_gdfs(graph)
     edges['street_name'] = edges['name'].apply(clean_name)
     return {
