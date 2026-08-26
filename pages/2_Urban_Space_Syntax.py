@@ -174,8 +174,23 @@ def json_safe(value):
 
 
 def centrality_color(value, minimum, maximum):
-    normalized = (value - minimum) / (maximum - minimum + 1e-6)
+    normalized = max(0.0, min(1.0, (value - minimum) / (maximum - minimum + 1e-6)))
     return mcolors.to_hex(plt.get_cmap("turbo")(normalized))
+
+
+def geometry_intersection_points(first, second):
+    intersection = first.intersection(second)
+    if intersection.is_empty:
+        return []
+    if intersection.geom_type == "Point":
+        return [intersection]
+    if intersection.geom_type in ("MultiPoint", "GeometryCollection"):
+        return [geometry for geometry in intersection.geoms if geometry.geom_type == "Point"]
+    if intersection.geom_type == "MultiLineString":
+        return [line.interpolate(line.length / 2.0) for line in intersection.geoms if line.length]
+    if intersection.geom_type == "LineString":
+        return [intersection.interpolate(intersection.length / 2.0)]
+    return []
 
 
 def geojson_feature_collection(gdf):
@@ -309,7 +324,14 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             (u, v, edge_key),
             edge_centrality.get(
                 (v, u, edge_key),
-                edge_centrality.get((u, v), edge_centrality.get((v, u), 0.0)),
+                edge_centrality.get(
+                    (u, v),
+                    edge_centrality.get(
+                        (v, u),
+                        float(graph.get_edge_data(u, v)[edge_key].get("betweenness", 0.0))
+                        if edge_key in graph.get_edge_data(u, v, default={}) else 0.0,
+                    ),
+                ),
             ),
         )
 
@@ -329,6 +351,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             results.append({
                 "path_id": index + 1, "drawn_geometry": mapping(drawn_path),
                 "drawn_length_m": round(path_length_m(drawn_path), 2),
+                "start_node": start, "end_node": end,
                 "route_geometry": None,
                 "route_length_m": 0.0,
                 "centrality": 0.0,
@@ -548,16 +571,6 @@ if st.session_state.graph_data is not None:
         for result in st.session_state.desire_path_analysis
     }
 
-    for index, path in enumerate(st.session_state.desire_paths):
-        result = desire_results.get(index + 1)
-        tooltip = f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
-        if result is not None:
-            tooltip += f" | Centrality: {result.get('centrality', 0.0):.6f}"
-        folium.PolyLine(
-            locations=[[point[1], point[0]] for point in path.coords],
-            color="#FFD166", weight=1, opacity=0.25,
-            tooltip=tooltip
-        ).add_to(m)
     # Draw the analyzed network using the edited street geometry.
     street_rows = [row for _, row in gdf_edges.iterrows()
                    if row.geometry.geom_type == "LineString"]
@@ -608,9 +621,8 @@ if st.session_state.graph_data is not None:
             ).add_to(m)
 
     # Keep desire routes and snapped intersections above the network layers.
+    visible_intersections = set()
     for result in st.session_state.desire_path_analysis:
-        if result.get("route_geometry") is None:
-            continue
         centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
         route_color = centrality_color(centrality, centrality_min, centrality_max)
         route_tooltip = (
@@ -621,14 +633,21 @@ if st.session_state.graph_data is not None:
             f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
             f" | Route: {result.get('route_length_m', 0.0):.1f} m"
         )
-        route_shape = shape(result["route_geometry"])
-        route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
-        for route_part in route_parts:
-            folium.PolyLine(
-                locations=[[point[1], point[0]] for point in route_part.coords],
-                color=route_color, weight=8, opacity=1.0,
-                tooltip=route_tooltip,
-            ).add_to(m)
+        drawn_path = st.session_state.desire_paths[result["path_id"] - 1]
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in drawn_path.coords],
+            color=route_color, weight=6, opacity=0.95,
+            tooltip=route_tooltip,
+        ).add_to(m)
+        if result.get("route_geometry") is not None:
+            route_shape = shape(result["route_geometry"])
+            route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
+            for route_part in route_parts:
+                folium.PolyLine(
+                    locations=[[point[1], point[0]] for point in route_part.coords],
+                    color=route_color, weight=8, opacity=1.0,
+                    tooltip=route_tooltip,
+                ).add_to(m)
         for node_label in ("start_node", "end_node"):
             node_id = result.get(node_label)
             if node_id in gdf_nodes.index:
@@ -638,6 +657,18 @@ if st.session_state.graph_data is not None:
                     color="#FFFFFF", weight=2, fill=True,
                     fill_color="#FF3366", fill_opacity=1.0,
                     tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
+                ).add_to(m)
+        for street_path in st.session_state.street_plan_paths:
+            for point in geometry_intersection_points(drawn_path, street_path):
+                point_key = (round(point.x, 7), round(point.y, 7))
+                if point_key in visible_intersections:
+                    continue
+                visible_intersections.add(point_key)
+                folium.CircleMarker(
+                    location=[point.y, point.x], radius=5,
+                    color="#FFFFFF", weight=2, fill=True,
+                    fill_color=route_color, fill_opacity=1.0,
+                    tooltip=f"Desire path {result['path_id']} street intersection | Centrality: {centrality:.6f}",
                 ).add_to(m)
     add_cut_preview(m, selected_preview_path, preview_cut_position)
 
