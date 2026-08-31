@@ -206,8 +206,12 @@ def process_video_frame(
     if not YOLO_AVAILABLE:
         return frame_rgb.copy(), pd.DataFrame()
 
-    # 1. FETCH MASK DATA FROM SESSION STATE
-    video_masks = extract_raw_shapes_from_session()
+    # Frame annotations are reference-only in the homography workflow.
+    video_masks = (
+        extract_raw_shapes_from_session()
+        if st.session_state.get("use_exclusion_masks", False)
+        else []
+    )
 
     # 2. APPLY BLACKOUT MASKS BEFORE AI DETECTION
     inference_frame = apply_exclusion_masks_to_frame(

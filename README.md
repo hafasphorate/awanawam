@@ -90,12 +90,14 @@ Each module provides interactive visualizations, metrics calculations, and expor
 1. Enter a location (e.g., "Tiong Bahru, Singapore")
 2. Set analysis radius (300-2000 meters)
 3. Choose network type: walk, drive, or all
-4. Click "Run Axial Analysis"
-5. View interactive map showing street segments colored by betweenness centrality
-6. Red nodes highlight high-contrast intersections
-7. Download results as GeoJSON for GIS software
+4. Click "Load Street Plan" to preview the network before analysis
+5. Draw desire paths directly on the preview map, then click "Run Axial Analysis"
+6. View interactive map showing street segments colored by betweenness centrality
+7. Red nodes highlight high-contrast intersections
+8. Download the complete JSON package to restore the plan, spatial data, and desire paths later
 
 **Exports:**
+- JSON package containing spatial data, analysis values, and desire paths for reimport
 - GeoJSON format for QGIS, ArcGIS, or other GIS tools
 - High-resolution map images (300 DPI)
 

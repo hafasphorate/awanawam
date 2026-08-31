@@ -47,20 +47,28 @@ uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 def load_and_parse_json(file):
     """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present."""
     data = json.load(file)
+    raw_nodes = data
+
     if isinstance(data, dict):
-        raw_nodes = next(
-            (
-                data[key]
-                for key in (
-                    "grid_nodes_correlation_data",
-                    "crowd_metrics_by_grid",
-                    "vga_floorplan_nodes",
-                    "nodes",
-                )
-                if isinstance(data.get(key), list) and data[key]
-            ),
-            data,
-        )
+        for key in (
+            "grid_nodes_correlation_data",
+            "crowd_metrics_by_grid",
+            "vga_floorplan_nodes",
+            "vga_results",
+            "vga_grid",
+            "node_data",
+            "nodes",
+            "data",
+            "results",
+            "items",
+        ):
+            value = data.get(key)
+            if isinstance(value, list):
+                raw_nodes = value
+                break
+            if isinstance(value, dict) and isinstance(value.get("nodes"), list):
+                raw_nodes = value["nodes"]
+                break
 
         has_crowd_metrics = any(
             any(

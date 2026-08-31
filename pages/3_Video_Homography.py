@@ -19,6 +19,7 @@ import math
 from scipy.spatial import KDTree
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
+st.session_state.use_exclusion_masks = False
 
 st.title("📹 Module 3: Video Homography & Region Selection")
 
@@ -111,12 +112,59 @@ def serialize_vga_nodes(vga_nodes):
     if isinstance(vga_nodes, list):
         return vga_nodes
     if isinstance(vga_nodes, dict):
-        if "nodes" in vga_nodes and isinstance(vga_nodes["nodes"], list):
-            return vga_nodes["nodes"]
-        if "vga_floorplan_nodes" in vga_nodes and isinstance(vga_nodes["vga_floorplan_nodes"], list):
-            return vga_nodes["vga_floorplan_nodes"]
+        for key in [
+            "vga_floorplan_nodes",
+            "vga_results",
+            "vga_grid",
+            "vga_global_results",
+            "nodes",
+            "grid_nodes",
+        ]:
+            if key in vga_nodes and isinstance(vga_nodes[key], list):
+                return vga_nodes[key]
+        if "data" in vga_nodes and isinstance(vga_nodes["data"], list):
+            return vga_nodes["data"]
         return [value for value in vga_nodes.values() if isinstance(value, dict)]
     return []
+
+
+def infer_cell_area_m2(node):
+    """Return the effective cell area in m², defaulting to 1 m² for VGA grids."""
+    if not isinstance(node, dict):
+        return 1.0
+
+    for key in [
+        "cell_area_m2",
+        "area_m2",
+        "cell_area",
+        "area",
+        "cell_size_m2",
+    ]:
+        if key in node and node[key] is not None:
+            try:
+                area = float(node[key])
+                if area > 0:
+                    return area
+            except (TypeError, ValueError):
+                pass
+
+    for key in [
+        "cell_size_m",
+        "cell_size",
+        "grid_size_m",
+        "grid_size",
+        "node_size_m",
+        "spacing_m",
+    ]:
+        if key in node and node[key] is not None:
+            try:
+                size = float(node[key])
+                if size > 0:
+                    return size * size
+            except (TypeError, ValueError):
+                pass
+
+    return 1.0
 
 
 def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, x_col, y_col):
@@ -137,7 +185,6 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
                 avg_speed=("speed", "mean"),
                 mean_heading_deg=("dir_deg_north", "mean"),
                 crowd_volume=(id_col, "count"),
-                crowd_density=(id_col, "count"),
             )
             .to_dict("index")
         )
@@ -151,16 +198,21 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
             grid_key = int(grid_key)
 
         agg = crowd_by_grid.get(grid_key, {})
+        pedestrian_count = int(agg.get("pedestrian_count", row.get("pedestrian_count", 0)))
+        cell_area_m2 = infer_cell_area_m2(row)
+        crowd_volume = int(agg.get("crowd_volume", row.get("crowd_volume", pedestrian_count)))
+        crowd_density = (pedestrian_count / cell_area_m2) if cell_area_m2 > 0 else 0.0
+
         row.update(
             {
-                "pedestrian_count": int(agg.get("pedestrian_count", row.get("pedestrian_count", 0))),
+                "pedestrian_count": pedestrian_count,
                 "unique_pedestrians": int(agg.get("unique_pedestrians", row.get("unique_pedestrians", 0))),
                 "avg_speed": float(agg.get("avg_speed", row.get("avg_speed", 0.0))),
                 "mean_heading_deg": float(agg.get("mean_heading_deg", row.get("mean_heading_deg", 0.0))),
-                "crowd_volume": int(agg.get("crowd_volume", row.get("crowd_volume", row.get("pedestrian_count", 0)))),
-                "crowd_density": float(agg.get("crowd_density", row.get("crowd_density", row.get("pedestrian_count", 0.0)))),
-                "volume": float(agg.get("crowd_volume", row.get("crowd_volume", row.get("pedestrian_count", 0.0)))),
-                "density": float(agg.get("crowd_density", row.get("crowd_density", row.get("pedestrian_count", 0.0)))),
+                "crowd_volume": crowd_volume,
+                "crowd_density": float(crowd_density),
+                "volume": float(crowd_volume),
+                "density": float(crowd_density),
                 "speed": float(agg.get("avg_speed", row.get("speed", row.get("avg_speed", 0.0)))),
                 "direction": float(agg.get("mean_heading_deg", row.get("direction", row.get("mean_heading_deg", 0.0)))),
             }
@@ -169,18 +221,21 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
 
     if not vga_rows and "grid_node_idx" in df_track.columns:
         for grid_idx, group in df_track.groupby("grid_node_idx"):
+            pedestrian_count = int(group[id_col].count())
+            cell_area_m2 = 1.0
+            crowd_density = pedestrian_count / cell_area_m2 if cell_area_m2 > 0 else 0.0
             vga_rows.append(
                 {
                     "node_id": int(grid_idx),
                     "grid_node_idx": int(grid_idx),
-                    "pedestrian_count": int(group[id_col].count()),
+                    "pedestrian_count": pedestrian_count,
                     "unique_pedestrians": int(group[id_col].nunique()),
                     "avg_speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
                     "mean_heading_deg": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
-                    "crowd_volume": int(group[id_col].count()),
-                    "crowd_density": float(group[id_col].count()),
-                    "volume": float(group[id_col].count()),
-                    "density": float(group[id_col].count()),
+                    "crowd_volume": pedestrian_count,
+                    "crowd_density": float(crowd_density),
+                    "volume": float(pedestrian_count),
+                    "density": float(crowd_density),
                     "speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
                     "direction": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
                 }
@@ -274,8 +329,16 @@ with tab_import:
                 else:
                     st.error("❌ JSON loaded, but zero valid wall segments could be extracted. Please check file formatting.")
 
-                # 2. Extract VGA Grid Data
-                vga_raw = data.get("vga_results") or data.get("vga_grid")
+                # 2. Extract VGA Grid Data (accept older and newer payload variants)
+                vga_raw = (
+                    data.get("vga_results")
+                    or data.get("vga_grid")
+                    or data.get("vga_floorplan_nodes")
+                    or data.get("grid_nodes_correlation_data")
+                    or data.get("crowd_metrics_by_grid")
+                )
+                if isinstance(vga_raw, dict) and "nodes" in vga_raw and isinstance(vga_raw["nodes"], list):
+                    vga_raw = vga_raw["nodes"]
                 if vga_raw:
                     st.session_state["vga_df"] = pd.DataFrame(vga_raw)
                     st.session_state.vga_grid_df = st.session_state["vga_df"]
@@ -299,9 +362,6 @@ with tab_import:
 
                 if "homography_matrix" in data and data["homography_matrix"]:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
-
-                if "exclusion_masks" in data and data["exclusion_masks"]:
-                    st.session_state.exclusion_masks = data["exclusion_masks"]
 
             except Exception as e:
                 st.error(f"Error parsing JSON session file: {e}")
@@ -512,7 +572,7 @@ with tab_region:
                     line=dict(color="#FF0000", width=2),
                 ),
                 showlegend=False,
-                uirevision=f"MASK_REV_{st.session_state.get('mask_canvas_key_ver', 0)}",
+                uirevision=f"SKETCH_REV_{st.session_state.get('sketch_canvas_key_ver', 0)}",
             )
 
             plotly_config = {
@@ -955,12 +1015,16 @@ with tab_playback:
     def parse_tracking_json(raw_json):
         # Extract VGA Grid Nodes if included in JSON upload
         if isinstance(raw_json, dict):
-            if "vga_floorplan_nodes" in raw_json:
-                st.session_state.vga_floorplan_nodes = raw_json[
-                    "vga_floorplan_nodes"
-                ]
-            if "vga_results" in raw_json:
-                st.session_state.vga_results = raw_json["vga_results"]
+            for key in [
+                "vga_floorplan_nodes",
+                "vga_results",
+                "vga_grid",
+                "grid_nodes_correlation_data",
+                "crowd_metrics_by_grid",
+            ]:
+                if key in raw_json:
+                    st.session_state["vga_floorplan_nodes"] = raw_json[key]
+                    st.session_state["vga_results"] = raw_json[key]
             if "wall_lines" in raw_json:
                 st.session_state.wall_lines = raw_json["wall_lines"]
 
@@ -974,6 +1038,8 @@ with tab_playback:
                 "pedestrian_trajectories",
                 "trajectories",
                 "tracking_data",
+                "grid_nodes_correlation_data",
+                "crowd_metrics_by_grid",
             ]:
                 if (
                     key in raw_json
@@ -1339,7 +1405,6 @@ with tab_playback:
                     "cad_walls": wall_lines_serialized,
                     "polygon_points": st.session_state.get("selected_polygon_pts", []),
                     "homography_matrix": export_homography,
-                    "exclusion_masks": st.session_state.get("exclusion_masks", []),
                 },
                 "wall_lines": wall_lines_serialized,
                 "cad_walls": wall_lines_serialized,

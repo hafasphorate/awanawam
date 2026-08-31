@@ -102,8 +102,31 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         st.error(f"❌ Missing required columns in data: `{', '.join(missing)}`")
         return
 
+    # Choose time basis without breaking older datasets.
+    fps = None
+    if "fps" in df.columns:
+        fps_series = pd.to_numeric(df["fps"], errors="coerce").dropna()
+        if not fps_series.empty:
+            fps = float(fps_series.iloc[0])
+    elif "frame_rate" in df.columns:
+        fps_series = pd.to_numeric(df["frame_rate"], errors="coerce").dropna()
+        if not fps_series.empty:
+            fps = float(fps_series.iloc[0])
+
+    time_mode = st.radio(
+        "Time basis for motion metrics",
+        options=[
+            "Legacy frame-count (matches old exports)",
+            "Seconds (time-normalized, recommended when fps is fixed)",
+        ],
+        index=0,
+        key="pb_time_mode",
+        help="Legacy keeps the original frame-based speed calculations. Seconds uses frame rate to convert to real elapsed time when available.",
+    )
+    normalize_time = time_mode.startswith("Seconds")
+
     # Compute metrics (Speed, Direction, Density, Volume)
-    df = _calculate_derived_metrics(df)
+    df = _calculate_derived_metrics(df, fps=fps, normalize_time=normalize_time)
 
     # --- 4. METRIC DISPLAY CONTROLS ---
     st.markdown("---")
@@ -203,22 +226,40 @@ def _map_column_aliases(df):
 
 
 @st.cache_data
-def _calculate_derived_metrics(df):
-    """Vectorized calculation of Speed, Angle (Direction), and Spatial Density."""
+def _calculate_derived_metrics(df, fps=None, normalize_time=False):
+    """Vectorized calculation of Speed, Angle (Direction), and Spatial Density.
+
+    Default behavior matches historical exports: speed uses frame counts. If
+    normalize_time is True and fps is provided, speed is computed in m/s using
+    elapsed seconds instead. This keeps legacy work intact while enabling a
+    time-normalized mode for videos captured with a fixed camera frame rate.
+    """
     df = df.sort_values(by=["track_id", "frame"]).reset_index(drop=True)
 
     # Spatial Deltas
     df["dx"] = df.groupby("track_id")["x"].diff().fillna(0)
     df["dy"] = df.groupby("track_id")["y"].diff().fillna(0)
-    df["dt"] = df.groupby("track_id")["frame"].diff().fillna(1)
+    df["frame_dt"] = df.groupby("track_id")["frame"].diff().fillna(0)
+
+    # Time basis: preserve legacy behavior unless explicit seconds-normalization is enabled.
+    if normalize_time:
+        if fps is None or fps <= 0:
+            fps = 30.0
+        df["dt"] = np.maximum(df["frame_dt"] / fps, 1.0 / fps)
+    else:
+        df["dt"] = np.maximum(df["frame_dt"], 1)
 
     # Speed & Direction Angle
-    df["speed"] = np.sqrt(df["dx"]**2 + df["dy"]**2) / np.maximum(df["dt"], 1)
+    distance = np.sqrt(df["dx"]**2 + df["dy"]**2)
+    df["speed"] = distance / np.maximum(df["dt"], 1e-9)
     df["direction"] = np.degrees(np.arctan2(df["dy"], df["dx"])) % 360
 
-    # Local Crowd Density (Count of nearby pedestrians per frame)
+    # Local Crowd Density (count of pedestrians in a frame / cell area)
+    # Legacy volume remains a count, while density is area-normalized when a cell area is known.
     df["density"] = df.groupby("frame")["track_id"].transform("count")
     df["volume"] = 1.0  # Base unit for volume aggregation
+    df["time_basis"] = "seconds" if normalize_time else "frames"
+    df["fps_used"] = fps if fps is not None else np.nan
 
     return df
 
@@ -499,8 +540,12 @@ def _parse_dxf_file(uploaded_dxf):
 def _export_to_json(df, wall_lines):
     """Packages trajectory data, computed metrics, and CAD walls into JSON format."""
     export_dict = {
+        "metadata": {
+            "time_basis": df["time_basis"].dropna().iloc[0] if "time_basis" in df.columns and not df.empty else "frames",
+            "fps_used": float(df["fps_used"].dropna().iloc[0]) if "fps_used" in df.columns and not df.empty and not pd.isna(df["fps_used"].dropna().iloc[0]) else None,
+        },
         "walls": wall_lines,
-        "trajectories": df[["frame", "track_id", "x", "y", "speed", "direction", "density"]].to_dict(orient="records")
+        "trajectories": df[["frame", "track_id", "x", "y", "speed", "direction", "density", "dt", "time_basis"]].to_dict(orient="records")
     }
     return json.dumps(export_dict, indent=2).encode("utf-8")
 
