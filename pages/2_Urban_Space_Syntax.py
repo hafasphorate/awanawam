@@ -501,8 +501,9 @@ if uploaded_json is not None:
         if imported_graph.number_of_edges() > 0:
             edge_centrality = nx.edge_betweenness_centrality(imported_graph)
             nx.set_edge_attributes(imported_graph, edge_centrality, "betweenness")
-            for u, v, key, attrs in imported_graph.edges(keys=True, data=True):
-                imported_edges.loc[(u, v, key), "betweenness"] = attrs.get("betweenness", 0.0)
+            for u, v, attrs in imported_graph.edges(data=True):
+                if "betweenness" in imported_edges.columns:
+                    imported_edges.loc[(imported_edges.index.get_level_values(0) == u) & (imported_edges.index.get_level_values(1) == v), "betweenness"] = attrs.get("betweenness", 0.0)
         imported_edges = assign_edge_colors(imported_edges)
         plan = {
             "gdf_edges": imported_edges, "gdf_nodes": imported_nodes,
