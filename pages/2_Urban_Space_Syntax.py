@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import plotly.graph_objects as go
 import numpy as np
+import pandas as pd
 import io
 import json
 from shapely.geometry import LineString, mapping, shape
@@ -178,6 +179,17 @@ def centrality_color(value, minimum, maximum):
     return mcolors.to_hex(plt.get_cmap("turbo")(normalized))
 
 
+def assign_edge_colors(gdf_edges):
+    if gdf_edges.empty or "betweenness" not in gdf_edges.columns:
+        return gdf_edges
+    minimum = float(gdf_edges["betweenness"].min())
+    maximum = float(gdf_edges["betweenness"].max())
+    gdf_edges["hex_color"] = gdf_edges["betweenness"].apply(
+        lambda value: centrality_color(float(value), minimum, maximum)
+    )
+    return gdf_edges
+
+
 def geometry_intersection_points(first, second):
     intersection = first.intersection(second)
     if intersection.is_empty:
@@ -207,6 +219,61 @@ def geojson_feature_collection(gdf):
             "geometry": mapping(row.geometry) if row.geometry is not None else None,
         })
     return {"type": "FeatureCollection", "features": features}
+
+
+def build_graph_from_gdfs(gdf_nodes, gdf_edges):
+    graph = nx.Graph()
+    for node_id, row in gdf_nodes.iterrows():
+        graph.add_node(
+            node_id,
+            x=float(row.geometry.x),
+            y=float(row.geometry.y),
+            osmid=row.get("osmid"),
+        )
+    edge_df = gdf_edges.reset_index()
+    for _, row in edge_df.iterrows():
+        u = row.get("u")
+        v = row.get("v")
+        if u is None or v is None:
+            continue
+        geometry = row.get("geometry")
+        if geometry is None:
+            geometry = LineString([
+                (graph.nodes[u]["x"], graph.nodes[u]["y"]),
+                (graph.nodes[v]["x"], graph.nodes[v]["y"]),
+            ])
+        attrs = {
+            column: row[column]
+            for column in edge_df.columns
+            if column not in {"u", "v", "key", "geometry"}
+        }
+        attrs["geometry"] = geometry
+        attrs["length"] = float(row.get("length", geometry.length))
+        attrs["betweenness"] = float(row.get("betweenness", 0.0))
+        graph.add_edge(u, v, **attrs)
+    return graph
+
+
+def high_contrast_nodes_for_edges(gdf_nodes, gdf_edges):
+    if gdf_edges.empty:
+        return set()
+    edge_df = gdf_edges.reset_index()
+    if "betweenness" not in edge_df.columns:
+        return set()
+    betweenness = pd.to_numeric(edge_df["betweenness"], errors="coerce").fillna(0.0)
+    q_high = betweenness.quantile(0.75)
+    q_low = betweenness.quantile(0.25)
+    high_contrast = set()
+    for node_id in gdf_nodes.index:
+        incident_edges = edge_df[
+            edge_df[["u", "v"]].apply(lambda row: node_id in (row["u"], row["v"]), axis=1)
+        ]
+        if len(incident_edges) <= 1:
+            continue
+        scores = pd.to_numeric(incident_edges["betweenness"], errors="coerce").fillna(0.0).tolist()
+        if any(score >= q_high for score in scores) and any(score <= q_low for score in scores):
+            high_contrast.add(node_id)
+    return high_contrast
 
 
 def add_cut_preview(map_object, path, percentage):
@@ -422,14 +489,36 @@ if uploaded_json is not None:
         imported = json.load(uploaded_json)
         imported_edges = gpd.GeoDataFrame.from_features(imported["plan"]["edges"]["features"])
         imported_nodes = gpd.GeoDataFrame.from_features(imported["plan"]["nodes"]["features"])
-        imported_edges.set_index(["u", "v", "key"], inplace=True)
-        imported_nodes.set_index("node_id", inplace=True)
-        st.session_state.plan_data = {
+        if "u" in imported_edges.columns and "v" in imported_edges.columns and "key" in imported_edges.columns:
+            imported_edges.set_index(["u", "v", "key"], inplace=True)
+        if "node_id" in imported_nodes.columns:
+            imported_nodes.set_index("node_id", inplace=True)
+        if "betweenness" in imported_edges.columns:
+            imported_edges["betweenness"] = pd.to_numeric(imported_edges["betweenness"], errors="coerce").fillna(0.0)
+        else:
+            imported_edges["betweenness"] = 0.0
+        imported_graph = build_graph_from_gdfs(imported_nodes, imported_edges)
+        if imported_graph.number_of_edges() > 0:
+            edge_centrality = nx.edge_betweenness_centrality(imported_graph)
+            nx.set_edge_attributes(imported_graph, edge_centrality, "betweenness")
+            for u, v, key, attrs in imported_graph.edges(keys=True, data=True):
+                imported_edges.loc[(u, v, key), "betweenness"] = attrs.get("betweenness", 0.0)
+        imported_edges = assign_edge_colors(imported_edges)
+        plan = {
             "gdf_edges": imported_edges, "gdf_nodes": imported_nodes,
             "center_lat": imported["plan"]["center_lat"], "center_lon": imported["plan"]["center_lon"],
-            "search_query": imported["plan"].get("search_query", "Imported plan"), "G_undirected": None,
+            "search_query": imported["plan"].get("search_query", "Imported plan"), "G_undirected": imported_graph,
         }
-        st.session_state.graph_data = None
+        st.session_state.plan_data = plan
+        st.session_state.graph_data = {
+            "G_undirected": imported_graph,
+            "gdf_nodes": imported_nodes,
+            "gdf_edges": imported_edges,
+            "center_lat": imported["plan"]["center_lat"],
+            "center_lon": imported["plan"]["center_lon"],
+            "high_contrast_nodes": high_contrast_nodes_for_edges(imported_nodes, imported_edges),
+            "search_query": imported["plan"].get("search_query", "Imported plan"),
+        }
         imported_street_paths = imported.get("street_plan_paths")
         st.session_state.street_plan_paths = (
             [shape(feature["geometry"]) for feature in imported_street_paths]
@@ -511,15 +600,7 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
             gdf_nodes, gdf_edges = ox.convert.graph_to_gdfs(G_undirected)
             gdf_edges['street_name'] = gdf_edges['name'].apply(clean_name)
 
-            min_val = gdf_edges['betweenness'].min()
-            max_val = gdf_edges['betweenness'].max()
-            cmap = plt.get_cmap('turbo')
-
-            def get_color_hex(val):
-                norm = (val - min_val) / (max_val - min_val + 1e-6)
-                return mcolors.to_hex(cmap(norm))
-
-            gdf_edges['hex_color'] = gdf_edges['betweenness'].apply(get_color_hex)
+            gdf_edges = assign_edge_colors(gdf_edges)
 
             q_high = gdf_edges['betweenness'].quantile(0.75)
             q_low = gdf_edges['betweenness'].quantile(0.25)
@@ -909,6 +990,7 @@ if st.session_state.graph_data is not None:
         data=json.dumps(json_package, indent=2),
         file_name="urban_space_syntax_analysis.json",
         mime="application/json",
+        key="urban_space_syntax_json_export",
     )
     
     gdf_export = gdf_edges[['street_name', 'betweenness', 'length', 'geometry']]
@@ -917,15 +999,16 @@ if st.session_state.graph_data is not None:
         label="Download GIS Vector (.geojson)",
         data=geojson_str,
         file_name="space_syntax_singapore.geojson",
-        mime="application/geo+json"
+        mime="application/geo+json",
+        key="urban_space_syntax_geojson_export",
     )
     
     fig_export, ax_export = plt.subplots(figsize=(8, 8), dpi=300)
-    gdf_edges.plot(ax=ax_export, column='betweenness', cmap='turbo', linewidth=2)
+    gdf_edges.plot(ax=ax_export, column='betweenness', cmap='turbo', linewidth=2, zorder=1)
     if show_standard_nodes:
-        gdf_nodes[~gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='white', markersize=3, alpha=0.4)
+        gdf_nodes[~gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='white', markersize=3, alpha=0.8, zorder=2)
     if show_contrast_nodes:
-        gdf_nodes[gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='#FF0055', markersize=25, alpha=0.4)
+        gdf_nodes[gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='#FF0055', markersize=25, alpha=0.8, zorder=3)
     
     ax_export.set_facecolor('#111111')
     fig_export.patch.set_facecolor('#111111')
@@ -938,5 +1021,6 @@ if st.session_state.graph_data is not None:
         label="Download High-Res Map (.png)",
         data=png_io.getvalue(),
         file_name="space_syntax_map.png",
-        mime="image/png"
+        mime="image/png",
+        key="urban_space_syntax_png_export",
     )
