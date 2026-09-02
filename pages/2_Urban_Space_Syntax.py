@@ -1011,7 +1011,7 @@ if st.session_state.graph_data is not None:
         route_color = centrality_color(centrality, centrality_min, centrality_max)
         drawn_geometry = st.session_state.desire_paths[result["path_id"] - 1]
         gpd.GeoSeries([drawn_geometry], crs=gdf_edges.crs).plot(
-            ax=ax_export, color=route_color, linewidth=3.5, linestyle="--", zorder=4
+            ax=ax_export, color=route_color, linewidth=3.5, zorder=4
         )
         route_geometry = result.get("route_geometry")
         if route_geometry is not None:
