@@ -1006,6 +1006,19 @@ if st.session_state.graph_data is not None:
     
     fig_export, ax_export = plt.subplots(figsize=(8, 8), dpi=300)
     gdf_edges.plot(ax=ax_export, column='betweenness', cmap='turbo', linewidth=2, zorder=1)
+    for result in st.session_state.desire_path_analysis:
+        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
+        route_color = centrality_color(centrality, centrality_min, centrality_max)
+        drawn_geometry = st.session_state.desire_paths[result["path_id"] - 1]
+        gpd.GeoSeries([drawn_geometry], crs=gdf_edges.crs).plot(
+            ax=ax_export, color=route_color, linewidth=3.5, linestyle="--", zorder=4
+        )
+        route_geometry = result.get("route_geometry")
+        if route_geometry is not None:
+            route_shape = shape(route_geometry)
+            gpd.GeoSeries([route_shape], crs=gdf_edges.crs).plot(
+                ax=ax_export, color=route_color, linewidth=5, alpha=0.9, zorder=3
+            )
     if show_standard_nodes:
         gdf_nodes[~gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='white', markersize=3, alpha=0.8, zorder=2)
     if show_contrast_nodes:
