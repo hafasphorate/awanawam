@@ -58,7 +58,7 @@ door_snap_dist = st.sidebar.slider(
     "Doorway/Corridor Auto-Close Gap (mm)", min_value=100, max_value=3000, value=1200, step=100
 )
 
-uploaded_file = st.file_uploader("Upload CAD Floorplan (DXF, DWG) or Saved Session (JSON)", type=["dxf", "dwg", "json"])
+uploaded_file = None
 
 
 @st.cache_data
@@ -455,12 +455,6 @@ def render_clustering_tab():
         value=0,
         step=1,
     )
-    st.info(
-        "The silhouette coefficient measures how well each point fits its own group versus other groups. "
-        "Values near 1 indicate clear separation, values near 0 indicate overlapping groups, and negative "
-        "values suggest points may be assigned to the wrong group."
-    )
-
     if st.button("Run K-Means Clustering", type="primary"):
         try:
             result = cluster_vga_metrics(clustering_df, requested_k or None)
@@ -474,6 +468,11 @@ def render_clustering_tab():
         return
 
     clustered_df, metric_columns, selected_k, silhouette, elbow_df = result
+    st.markdown(
+        "The silhouette coefficient measures how well each point fits its own group versus other groups. "
+        "Values near 1 indicate clear separation, values near 0 indicate overlapping groups, and negative "
+        "values suggest points may be assigned to the wrong group."
+    )
     st.caption(f"Metrics used: {', '.join(metric_columns)}")
     metric_col, score_col = st.columns(2)
     metric_col.metric("Groups", selected_k)
@@ -496,8 +495,8 @@ def render_clustering_tab():
             file_name="vga_metric_clusters.png",
             mime="image/png",
         )
-    except (ValueError, ImportError):
-        st.warning("PNG export requires the `kaleido` package. Install the project requirements and try again.")
+    except (ValueError, ImportError, RuntimeError):
+        st.warning("PNG export is unavailable because Plotly image export requires Kaleido and a compatible Chrome installation.")
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     group_averages.insert(0, "Group", group_averages.pop("cluster").map(lambda value: f"Group {value}"))
@@ -507,13 +506,16 @@ def render_clustering_tab():
 
 analysis_tab, clustering_tab = st.tabs(["VGA Analysis", "Metric Clustering"])
 
-with clustering_tab:
-    render_clustering_tab()
+def render_analysis_tab():
+    uploaded_file = st.file_uploader(
+        "Upload CAD Floorplan (DXF, DWG) or Saved Session (JSON)",
+        type=["dxf", "dwg", "json"],
+        key="vga_analysis_uploader",
+    )
 
-with analysis_tab:
-    st.empty()
+    if uploaded_file is None:
+        return
 
-if uploaded_file is not None:
     file_ext = "." + uploaded_file.name.split(".")[-1].lower()
 
     if file_ext == ".json":
@@ -521,11 +523,13 @@ if uploaded_file is not None:
         try:
             session_data = json.load(uploaded_file)
             st.session_state["vga_df"] = pd.DataFrame(session_data["vga_results"])
+            st.session_state["clustering_source_df"] = st.session_state["vga_df"]
             
             restored_walls = [
                 LineString(coords) for coords in session_data["floorplan"]["wall_lines"]
             ]
             st.session_state["wall_lines"] = restored_walls
+            st.session_state["clustering_walls"] = restored_walls
             
             if "selected_rooms" in session_data["floorplan"]:
                 st.session_state["selected_rooms"] = [
@@ -693,6 +697,8 @@ if uploaded_file is not None:
 
                     df_results = pd.DataFrame(final_vga_results)
                     st.session_state["vga_df"] = df_results
+                    st.session_state["clustering_source_df"] = df_results
+                    st.session_state["clustering_walls"] = wall_lines
                 else:
                     progress_bar.empty()
                     st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")
@@ -752,5 +758,12 @@ if uploaded_file is not None:
             file_name="vga_complete_session.json",
             mime="application/json",
         )
+
+
+with analysis_tab:
+    render_analysis_tab()
+
+with clustering_tab:
+    render_clustering_tab()
 
 
