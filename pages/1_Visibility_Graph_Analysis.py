@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 import tempfile
 import time
 
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 from shapely.geometry import Point, LineString, Polygon
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
@@ -360,6 +362,86 @@ def render_cluster_map(df, wall_lines, selected_group=None):
     return fig
 
 
+def render_cluster_radar(group_averages, metric_columns, selected_group=None):
+    """Render overlaid, per-metric normalized group averages on a shared 0-1 scale."""
+    normalized = group_averages.copy()
+    for metric in metric_columns:
+        minimum = normalized[metric].min()
+        maximum = normalized[metric].max()
+        if maximum == minimum:
+            normalized[metric] = 0.5
+        else:
+            normalized[metric] = (normalized[metric] - minimum) / (maximum - minimum)
+
+    angles = metric_columns + [metric_columns[0]]
+    fig = go.Figure()
+    palette = px.colors.qualitative.Safe
+    for index, row in normalized.iterrows():
+        group = int(row["cluster"])
+        is_selected = selected_group is None or group == selected_group
+        values = [float(row[metric]) for metric in metric_columns]
+        values.append(values[0])
+        fig.add_trace(
+            go.Scatterpolar(
+                r=values,
+                theta=angles,
+                mode="lines+markers",
+                fill="toself",
+                fillcolor=palette[(group - 1) % len(palette)] if is_selected else "#777777",
+                line=dict(
+                    color=palette[(group - 1) % len(palette)] if is_selected else "#777777",
+                    width=2,
+                ),
+                opacity=0.85 if is_selected else 0.18,
+                name=f"Group {group}",
+            )
+        )
+
+    fig.update_layout(
+        title="Average Metrics by Group (normalized)",
+        template="plotly_dark",
+        polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".1f")),
+        height=650,
+        margin=dict(l=40, r=40, t=70, b=40),
+    )
+    return fig
+
+
+def cluster_map_png(df, wall_lines, selected_group=None):
+    """Create a PNG directly with Matplotlib, avoiding Plotly's Chrome dependency."""
+    figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
+    axis.set_facecolor("#111111")
+    for line in wall_lines:
+        x, y = line.xy
+        axis.plot(x, y, color="#666666", linewidth=1.2)
+
+    palette = px.colors.qualitative.Safe
+    for group in sorted(df["cluster"].unique()):
+        group_df = df[df["cluster"] == group]
+        is_selected = selected_group is None or group == selected_group
+        color = palette[(group - 1) % len(palette)] if is_selected else "#777777"
+        axis.scatter(
+            group_df["x"], group_df["y"], s=48, color=color,
+            alpha=0.95 if is_selected else 0.22, label=f"Group {group}",
+            edgecolors="#111111", linewidths=0.5,
+        )
+    axis.set_aspect("equal", adjustable="datalim")
+    axis.set_title("VGA Metric Clusters", color="white")
+    axis.set_xlabel("X (mm)", color="white")
+    axis.set_ylabel("Y (mm)", color="white")
+    axis.tick_params(colors="white")
+    for spine in axis.spines.values():
+        spine.set_color("#555555")
+    axis.grid(color="#333333", alpha=0.5)
+    axis.legend(facecolor="#222222", labelcolor="white")
+    figure.tight_layout()
+    output = BytesIO()
+    figure.savefig(output, format="png", dpi=160, facecolor=figure.get_facecolor())
+    plt.close(figure)
+    output.seek(0)
+    return output.getvalue()
+
+
 def choose_elbow_k(inertias):
     """Select the elbow as the point furthest from the first-to-last line."""
     if len(inertias) <= 2:
@@ -488,17 +570,18 @@ def render_clustering_tab():
     selected_group = None if selected_group_label == "All groups" else int(selected_group_label.split()[-1])
     cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group)
     st.plotly_chart(cluster_fig, use_container_width=True)
-    try:
-        st.download_button(
-            "Download colour-coded plan as PNG",
-            data=cluster_fig.to_image(format="png"),
-            file_name="vga_metric_clusters.png",
-            mime="image/png",
-        )
-    except (ValueError, ImportError, RuntimeError):
-        st.warning("PNG export is unavailable because Plotly image export requires Kaleido and a compatible Chrome installation.")
+    st.download_button(
+        "Download colour-coded plan as PNG",
+        data=cluster_map_png(clustered_df, clustering_walls, selected_group),
+        file_name="vga_metric_clusters.png",
+        mime="image/png",
+    )
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
+    st.plotly_chart(
+        render_cluster_radar(group_averages, metric_columns, selected_group),
+        use_container_width=True,
+    )
     group_averages.insert(0, "Group", group_averages.pop("cluster").map(lambda value: f"Group {value}"))
     st.subheader("Average Metrics by Group")
     st.dataframe(group_averages, use_container_width=True, hide_index=True)
