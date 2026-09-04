@@ -30,3 +30,4 @@ streamlit-folium
 folium
 
 scikit-learn
+kaleido
