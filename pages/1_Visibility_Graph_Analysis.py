@@ -407,6 +407,14 @@ def render_cluster_radar(group_averages, metric_columns, selected_group=None):
     return fig
 
 
+def matplotlib_color(plotly_color):
+    """Convert Plotly's rgb(...) palette values to Matplotlib-compatible hex."""
+    if plotly_color.startswith("rgb(") and plotly_color.endswith(")"):
+        red, green, blue = (int(value.strip()) for value in plotly_color[4:-1].split(","))
+        return f"#{red:02x}{green:02x}{blue:02x}"
+    return plotly_color
+
+
 def cluster_map_png(df, wall_lines, selected_group=None):
     """Create a PNG directly with Matplotlib, avoiding Plotly's Chrome dependency."""
     figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
@@ -419,7 +427,11 @@ def cluster_map_png(df, wall_lines, selected_group=None):
     for group in sorted(df["cluster"].unique()):
         group_df = df[df["cluster"] == group]
         is_selected = selected_group is None or group == selected_group
-        color = palette[(group - 1) % len(palette)] if is_selected else "#777777"
+        color = (
+            matplotlib_color(palette[(group - 1) % len(palette)])
+            if is_selected
+            else "#777777"
+        )
         axis.scatter(
             group_df["x"], group_df["y"], s=48, color=color,
             alpha=0.95 if is_selected else 0.22, label=f"Group {group}",
