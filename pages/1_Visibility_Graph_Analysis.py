@@ -11,6 +11,10 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
+from sklearn.cluster import KMeans
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
 
 from utils.vga_engine import (
     compute_isovist_metrics,
@@ -301,6 +305,102 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
     return fig
 
 
+def render_cluster_map(df, wall_lines, selected_group=None):
+    """Render VGA points by cluster while retaining the CAD wall underlay."""
+    fig = go.Figure()
+
+    wall_x, wall_y = [], []
+    for line in wall_lines:
+        x, y = line.xy
+        wall_x.extend([x[0], x[1], None])
+        wall_y.extend([y[0], y[1], None])
+
+    fig.add_trace(
+        go.Scatter(
+            x=wall_x,
+            y=wall_y,
+            mode="lines",
+            line=dict(color="#666666", width=1.5),
+            hoverinfo="none",
+            showlegend=False,
+            name="CAD Walls",
+        )
+    )
+
+    groups = sorted(df["cluster"].unique())
+    palette = px.colors.qualitative.Safe
+    for index, group in enumerate(groups):
+        group_df = df[df["cluster"] == group]
+        is_selected = selected_group is None or group == selected_group
+        fig.add_trace(
+            go.Scatter(
+                x=group_df["x"],
+                y=group_df["y"],
+                mode="markers",
+                marker=dict(
+                    size=9,
+                    color=palette[index % len(palette)] if is_selected else "#777777",
+                    opacity=0.95 if is_selected else 0.22,
+                    line=dict(width=0.5, color="#111111"),
+                ),
+                text=[f"Group {group}<br>Metrics: {row}" for row in group_df["cluster"]],
+                hovertemplate="x=%{x}<br>y=%{y}<br>%{text}<extra></extra>",
+                name=f"Group {group}",
+            )
+        )
+
+    fig.update_layout(
+        title="VGA Metric Clusters",
+        template="plotly_dark",
+        xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
+        yaxis=dict(title="Y (mm)"),
+        height=650,
+        margin=dict(l=20, r=20, t=50, b=20),
+    )
+    return fig
+
+
+def choose_elbow_k(inertias):
+    """Select the elbow as the point furthest from the first-to-last line."""
+    if len(inertias) <= 2:
+        return 2
+
+    points = np.column_stack((np.arange(len(inertias)), inertias))
+    start, end = points[0], points[-1]
+    line = end - start
+    distances = np.abs(np.cross(line, points - start)) / np.linalg.norm(line)
+    return int(np.argmax(distances) + 2)
+
+
+def cluster_vga_metrics(source_df):
+    """Cluster all usable numeric VGA metrics and return results plus diagnostics."""
+    metric_columns = [
+        column for column in source_df.select_dtypes(include=np.number).columns
+        if column not in {"x", "y"}
+    ]
+    metric_columns = [column for column in metric_columns if source_df[column].notna().any()]
+    if not metric_columns:
+        raise ValueError("No numeric VGA metrics are available for clustering.")
+
+    values = SimpleImputer(strategy="median").fit_transform(source_df[metric_columns])
+    scaled_values = StandardScaler().fit_transform(values)
+    if len(source_df) < 3:
+        raise ValueError("At least three VGA points are required for clustering.")
+
+    max_k = min(10, len(source_df) - 1)
+    candidate_ks = list(range(2, max_k + 1))
+    inertias = [KMeans(n_clusters=k, random_state=42, n_init=10).fit(scaled_values).inertia_ for k in candidate_ks]
+    selected_k = choose_elbow_k(inertias)
+    model = KMeans(n_clusters=selected_k, random_state=42, n_init=10)
+    labels = model.fit_predict(scaled_values)
+
+    clustered_df = source_df.copy()
+    clustered_df["cluster"] = labels + 1
+    score = silhouette_score(scaled_values, labels) if len(set(labels)) > 1 else float("nan")
+    elbow_df = pd.DataFrame({"k": candidate_ks, "inertia": inertias})
+    return clustered_df, metric_columns, selected_k, score, elbow_df
+
+
 if uploaded_file is not None:
     file_ext = "." + uploaded_file.name.split(".")[-1].lower()
 
@@ -540,3 +640,92 @@ if uploaded_file is not None:
             file_name="vga_complete_session.json",
             mime="application/json",
         )
+
+
+tab_clustering = st.tabs(["Metric Clustering"])[0]
+
+with tab_clustering:
+    st.subheader("K-Means Clustering of VGA Metrics")
+    clustering_upload = st.file_uploader(
+        "Import previously analysed VGA JSON (optional)",
+        type=["json"],
+        key="clustering_json_uploader",
+    )
+
+    clustering_df = st.session_state.get("vga_df")
+    clustering_walls = st.session_state.get("wall_lines", [])
+
+    if clustering_upload is not None:
+        try:
+            imported_data = json.load(clustering_upload)
+            imported_rows = (
+                imported_data.get("vga_results")
+                or imported_data.get("vga_grid")
+                or imported_data.get("vga_floorplan_nodes")
+            )
+            if isinstance(imported_rows, dict):
+                imported_rows = imported_rows.get("nodes", imported_rows.get("data", []))
+            if not imported_rows:
+                raise ValueError("The JSON does not contain VGA result rows.")
+
+            clustering_df = pd.DataFrame(imported_rows)
+            st.session_state["vga_df"] = clustering_df
+            imported_walls = imported_data.get("floorplan", {}).get("wall_lines", [])
+            clustering_walls = [LineString(coords) for coords in imported_walls]
+            if clustering_walls:
+                st.session_state["wall_lines"] = clustering_walls
+            st.success(f"Loaded {len(clustering_df)} VGA points from `{clustering_upload.name}`.")
+        except Exception as error:
+            st.error(f"Could not import clustering data: {error}")
+            clustering_df = None
+
+    if clustering_df is None or clustering_df.empty:
+        st.info("Run the visibility analysis above or import a saved VGA JSON session to begin clustering.")
+    elif not {"x", "y"}.issubset(clustering_df.columns):
+        st.error("VGA results must include `x` and `y` coordinates to draw the clustered floorplan.")
+    else:
+        try:
+            clustered_df, metric_columns, selected_k, silhouette, elbow_df = cluster_vga_metrics(
+                clustering_df
+            )
+            st.caption(f"Metrics used: {', '.join(metric_columns)}")
+            metric_col, score_col = st.columns(2)
+            metric_col.metric("Automatically selected groups", selected_k)
+            score_col.metric("Silhouette coefficient", f"{silhouette:.3f}")
+
+            st.plotly_chart(
+                px.line(
+                    elbow_df,
+                    x="k",
+                    y="inertia",
+                    markers=True,
+                    title="Elbow Method",
+                    labels={"k": "Number of groups", "inertia": "Within-group inertia"},
+                ),
+                use_container_width=True,
+            )
+
+            group_options = ["All groups"] + [
+                f"Group {group}" for group in sorted(clustered_df["cluster"].unique())
+            ]
+            selected_group_label = st.selectbox("View group", group_options)
+            selected_group = (
+                None
+                if selected_group_label == "All groups"
+                else int(selected_group_label.split()[-1])
+            )
+
+            if clustering_walls:
+                st.plotly_chart(
+                    render_cluster_map(clustered_df, clustering_walls, selected_group),
+                    use_container_width=True,
+                )
+            else:
+                st.warning("No CAD walls are available; showing clustered points without the floorplan underlay.")
+                st.plotly_chart(
+                    render_cluster_map(clustered_df, [], selected_group),
+                    use_container_width=True,
+                )
+            st.dataframe(clustered_df, use_container_width=True, hide_index=True)
+        except ValueError as error:
+            st.warning(str(error))
