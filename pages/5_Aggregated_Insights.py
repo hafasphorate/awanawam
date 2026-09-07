@@ -8,8 +8,10 @@ import plotly.graph_objects as go
 import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
+from utils.navigation import render_home_button
 
 st.set_page_config(page_title="Aggregated Insights", layout="wide")
+render_home_button()
 
 st.title("🌐 Global Aggregated Spatial & Crowd Insights")
 st.write(

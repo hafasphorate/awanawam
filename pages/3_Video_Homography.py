@@ -14,11 +14,13 @@ from shapely.geometry import LineString, Polygon
 from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
+from utils.navigation import render_home_button
 
 import math
 from scipy.spatial import KDTree
 
 st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
+render_home_button()
 st.session_state.use_exclusion_masks = False
 
 st.title("📹 Module 3: Video Homography & Region Selection")

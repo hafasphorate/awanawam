@@ -1,5 +1,7 @@
 import streamlit as st
 
+from utils.navigation import render_home_button
+
 # Must be the very first Streamlit command called on the page
 st.set_page_config(
     page_title="Spatial & Crowd Dynamics Toolkit",
@@ -8,6 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+render_home_button(location="main", width=260)
 st.title("🏗️ Spatial & Crowd Dynamics Toolkit")
 st.markdown("""
 ## Welcome to Awanawam!

@@ -11,11 +11,13 @@ import pandas as pd
 import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
+from utils.navigation import render_home_button
 
 # Page Configuration
 st.set_page_config(
     page_title="VGA & Crowd Metrics Correlation Analysis", layout="wide"
 )
+render_home_button()
 
 st.title("VGA & Crowd Metrics Pairwise Correlation Analysis")
 st.write(

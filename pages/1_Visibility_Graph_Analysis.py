@@ -17,6 +17,7 @@ from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
+from utils.navigation import render_home_button
 
 from utils.vga_engine import (
     compute_isovist_metrics,
@@ -26,6 +27,7 @@ from utils.vga_engine import (
 )
 
 st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
+render_home_button()
 
 # Force '+' crosshair cursor on interactive Plotly floorplan canvas
 st.markdown(

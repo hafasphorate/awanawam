@@ -15,8 +15,10 @@ from shapely.geometry import LineString, mapping, shape
 from shapely.ops import linemerge, substring
 from folium.plugins import Draw
 from geopy.distance import geodesic
+from utils.navigation import render_home_button
 
 st.set_page_config(page_title="Urban Space Syntax Analysis", layout="wide")
+render_home_button()
 
 # -----------------------------------------------------------------------------
 # 1. Page Title & Definitions
