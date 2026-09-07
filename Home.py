@@ -10,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-render_home_button(location="main", width=260)
+render_home_button(width=200)
 st.title("🏗️ Spatial & Crowd Dynamics Toolkit")
 st.markdown("""
 ## Welcome to Awanawam!
