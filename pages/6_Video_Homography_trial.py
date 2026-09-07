@@ -669,8 +669,10 @@ with tab_region:
                     layer="below",
                 )
             )
-            feature_grid_x = np.linspace(0, img_w, max(300, int(img_w / 2)))
-            feature_grid_y = np.linspace(0, img_h, max(200, int(img_h / 2)))
+            # Keep the invisible selection grid small enough that each click
+            # does not serialize tens of thousands of Plotly points.
+            feature_grid_x = np.linspace(0, img_w, 100)
+            feature_grid_y = np.linspace(0, img_h, 100)
             feature_xx, feature_yy = np.meshgrid(feature_grid_x, feature_grid_y)
             feature_fig.add_trace(
                 go.Scatter(
@@ -860,8 +862,8 @@ with tab_region:
             minx, maxx = bounds_x
             miny, maxy = bounds_y
 
-        gx = np.linspace(bounds_x[0], bounds_x[1], 200)
-        gy = np.linspace(bounds_y[0], bounds_y[1], 200)
+        gx = np.linspace(bounds_x[0], bounds_x[1], 100)
+        gy = np.linspace(bounds_y[0], bounds_y[1], 100)
         g_xx, g_yy = np.meshgrid(gx, gy)
 
         fig.add_trace(
