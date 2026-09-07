@@ -11,7 +11,6 @@ import streamlit as st
 from shapely.geometry import LineString, Polygon
 
 
-from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
 from utils.navigation import render_home_button
@@ -385,13 +384,21 @@ with tab_import:
                 tmp_path = tmp_file.name
 
             try:
+                from utils.vga_engine import process_cad_file
+
                 with st.spinner("Processing CAD file via VGA Engine..."):
                     raw_wall_lines = process_cad_file(tmp_path)
                     st.session_state.dxf_walls = raw_wall_lines
                     st.session_state.wall_lines = raw_wall_lines
                     st.success(f"✅ Successfully parsed CAD! {len(raw_wall_lines)} wall boundary lines ready.")
             except Exception as e:
-                st.error(f"Failed to parse CAD file: {e}")
+                if isinstance(e, ModuleNotFoundError) and e.name == "ezdxf":
+                    st.error(
+                        "CAD parsing requires the `ezdxf` package. Install the project requirements "
+                        "before uploading DXF/DWG files."
+                    )
+                else:
+                    st.error(f"Failed to parse CAD file: {e}")
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
