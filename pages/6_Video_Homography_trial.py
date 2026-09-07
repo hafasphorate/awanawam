@@ -460,12 +460,17 @@ with tab_region:
 
 
     def derive_video_corner_mapping(video_features, floorplan_features, frame_width, frame_height):
-        """Derive floorplan locations for the four video corners from 4 feature pairs."""
+        """Map image corners to the floor plane from four coplanar feature pairs."""
         if len(video_features) != 4 or len(floorplan_features) != 4:
             return None
 
         source = np.asarray(video_features, dtype=np.float32)
         destination = np.asarray(floorplan_features, dtype=np.float32)
+        if (
+            abs(cv2.contourArea(source.reshape(-1, 1, 2))) < 1.0
+            or abs(cv2.contourArea(destination.reshape(-1, 1, 2))) < 1e-6
+        ):
+            return None
         transform = cv2.getPerspectiveTransform(source, destination)
         if transform is None or not np.isfinite(transform).all():
             return None
@@ -637,7 +642,11 @@ with tab_region:
                 st.caption(f"{len(st.session_state.frame_sketches)} temporary sketch(es) on frame")
 
             st.markdown("#### Video Feature Selection")
-            st.caption("Select four distinctive features in the video frame. Use the same order on the floorplan.")
+            st.caption(
+                "Select four ground-plane features in the video frame, such as floor corners or markings. "
+                "Select the same four points in the same order on the floorplan. Camera height is handled "
+                "by the perspective transform; points on walls or ceilings are not valid."
+            )
             feature_fig = go.Figure()
             feature_fig.add_layout_image(
                 dict(
@@ -653,8 +662,8 @@ with tab_region:
                     layer="below",
                 )
             )
-            feature_grid_x = np.linspace(0, img_w, 160)
-            feature_grid_y = np.linspace(0, img_h, 160)
+            feature_grid_x = np.linspace(0, img_w, max(300, int(img_w / 2)))
+            feature_grid_y = np.linspace(0, img_h, max(200, int(img_h / 2)))
             feature_xx, feature_yy = np.meshgrid(feature_grid_x, feature_grid_y)
             feature_fig.add_trace(
                 go.Scatter(
@@ -736,7 +745,7 @@ with tab_region:
                 st.rerun()
 
         with col_btn2:
-            st.caption("The floorplan uses the same F1, F2, F3, F4 order as the video.")
+            st.caption("Use the same F1, F2, F3, F4 order. All four points must lie on the floor plane.")
 
         video_count = len(st.session_state.video_feature_points)
         floorplan_count = len(st.session_state.floorplan_feature_points)
@@ -844,8 +853,8 @@ with tab_region:
             minx, maxx = bounds_x
             miny, maxy = bounds_y
 
-        gx = np.linspace(bounds_x[0], bounds_x[1], 80)
-        gy = np.linspace(bounds_y[0], bounds_y[1], 80)
+        gx = np.linspace(bounds_x[0], bounds_x[1], 200)
+        gy = np.linspace(bounds_y[0], bounds_y[1], 200)
         g_xx, g_yy = np.meshgrid(gx, gy)
 
         fig.add_trace(
@@ -966,6 +975,10 @@ with tab_region:
                     if derived_corners is not None:
                         st.session_state.four_corners = derived_corners
                         st.rerun()
+                    st.error(
+                        "The four feature points are degenerate or nearly collinear. "
+                        "Choose four well-spread points on the same floor plane."
+                    )
 
 
 # ==========================================
