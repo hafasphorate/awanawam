@@ -756,21 +756,31 @@ with tab_region:
             st.warning(" No floorplan wall vectors detected in `st.session_state`. Please upload or parse your CAD file in Step 1.")
 
         # --- CLICK SENSOR GRID ---
-        if all_x and all_y:
-            minx, maxx = min(all_x), max(all_x)
-            miny, maxy = min(all_y), max(all_y)
-            pad_x = (maxx - minx) * 0.05 if (maxx - minx) > 0 else 2.0
-            pad_y = (maxy - miny) * 0.05 if (maxy - miny) > 0 else 2.0
+        # Keep the selectable canvas larger than the CAD geometry. A small
+        # CAD-relative margin made it impossible to place a corner outside a
+        # wall endpoint, while the old fallback imposed a hard 60-unit limit.
+        corner_x = [point[0] for point in st.session_state.four_corners]
+        corner_y = [point[1] for point in st.session_state.four_corners]
+        extent_x = all_x + corner_x
+        extent_y = all_y + corner_y
+
+        if extent_x and extent_y:
+            minx, maxx = min(extent_x), max(extent_x)
+            miny, maxy = min(extent_y), max(extent_y)
+            span_x = maxx - minx
+            span_y = maxy - miny
+            pad_x = max(span_x, 10.0)
+            pad_y = max(span_y, 10.0)
             bounds_x = [minx - pad_x, maxx + pad_x]
             bounds_y = [miny - pad_y, maxy + pad_y]
         else:
-            minx, maxx = -5.0, 60.0
-            miny, maxy = -5.0, 60.0
-            bounds_x = [-5.0, 60.0]
-            bounds_y = [-5.0, 60.0]
+            bounds_x = [-100.0, 100.0]
+            bounds_y = [-100.0, 100.0]
+            minx, maxx = bounds_x
+            miny, maxy = bounds_y
 
-        gx = np.linspace(minx, maxx, 80)
-        gy = np.linspace(miny, maxy, 80)
+        gx = np.linspace(bounds_x[0], bounds_x[1], 80)
+        gy = np.linspace(bounds_y[0], bounds_y[1], 80)
         g_xx, g_yy = np.meshgrid(gx, gy)
 
         fig.add_trace(
