@@ -460,26 +460,26 @@ with tab_region:
 
 
     def derive_video_corner_mapping(video_features, floorplan_features, frame_width, frame_height):
-        """Derive floorplan locations for the four video corners from 3 feature pairs."""
-        if len(video_features) != 3 or len(floorplan_features) != 3:
+        """Derive floorplan locations for the four video corners from 4 feature pairs."""
+        if len(video_features) != 4 or len(floorplan_features) != 4:
             return None
 
-        source = np.asarray([[x, y, 1.0] for x, y in video_features], dtype=float)
-        destination = np.asarray(floorplan_features, dtype=float)
-        if abs(np.linalg.det(source)) < 1e-9:
+        source = np.asarray(video_features, dtype=np.float32)
+        destination = np.asarray(floorplan_features, dtype=np.float32)
+        transform = cv2.getPerspectiveTransform(source, destination)
+        if transform is None or not np.isfinite(transform).all():
             return None
-
-        transform = np.linalg.solve(source, destination)
         video_corners = [
             [0.0, 0.0],
             [float(frame_width), 0.0],
             [float(frame_width), float(frame_height)],
             [0.0, float(frame_height)],
         ]
-        corner_source = np.asarray(
-            [[x, y, 1.0] for x, y in video_corners], dtype=float
+        mapped_corners = cv2.perspectiveTransform(
+            np.asarray(video_corners, dtype=np.float32).reshape(-1, 1, 2),
+            transform,
         )
-        return (corner_source @ transform).tolist()
+        return mapped_corners.reshape(-1, 2).tolist()
 
 
     # ==========================================
@@ -637,7 +637,7 @@ with tab_region:
                 st.caption(f"{len(st.session_state.frame_sketches)} temporary sketch(es) on frame")
 
             st.markdown("#### Video Feature Selection")
-            st.caption("Select three distinctive features in the video frame. Use the same order on the floorplan.")
+            st.caption("Select four distinctive features in the video frame. Use the same order on the floorplan.")
             feature_fig = go.Figure()
             feature_fig.add_layout_image(
                 dict(
@@ -699,7 +699,7 @@ with tab_region:
             )
             if video_feature_events and "selection" in video_feature_events:
                 event_points = video_feature_events["selection"].get("points", [])
-                if event_points and len(st.session_state.video_feature_points) < 3:
+                if event_points and len(st.session_state.video_feature_points) < 4:
                     point = event_points[0]
                     selected_point = [float(point["x"]), float(point["y"])]
                     click_hash = f"video_{selected_point[0]:.2f}_{selected_point[1]:.2f}"
@@ -707,7 +707,7 @@ with tab_region:
                         st.session_state.last_feature_click_hash = click_hash
                         st.session_state.video_feature_points.append(selected_point)
                         st.rerun()
-            st.info(f"Video features selected: {len(st.session_state.video_feature_points)}/3")
+            st.info(f"Video features selected: {len(st.session_state.video_feature_points)}/4")
         else:
             st.error("Failed to decode video frame at the selected frame index.")
 
@@ -719,7 +719,7 @@ with tab_region:
     st.markdown("---")
 
     # --- SECTION B: INTERACTIVE FEATURE CALIBRATION ---
-    st.markdown("###  2. Three-Feature Camera Mapping")
+    st.markdown("###  2. Four-Feature Camera Mapping")
 
     col_controls, col_plot = st.columns([1.2, 2.8])
 
@@ -736,16 +736,16 @@ with tab_region:
                 st.rerun()
 
         with col_btn2:
-            st.caption("The floorplan uses the same F1, F2, F3 order as the video.")
+            st.caption("The floorplan uses the same F1, F2, F3, F4 order as the video.")
 
         video_count = len(st.session_state.video_feature_points)
         floorplan_count = len(st.session_state.floorplan_feature_points)
-        if video_count < 3:
-            st.info(f"Select {3 - video_count} more feature(s) on the video above.")
-        elif floorplan_count < 3:
-            st.info(f"Select {3 - floorplan_count} matching feature(s) on this floorplan.")
+        if video_count < 4:
+            st.info(f"Select {4 - video_count} more feature(s) on the video above.")
+        elif floorplan_count < 4:
+            st.info(f"Select {4 - floorplan_count} matching feature(s) on this floorplan.")
         elif len(st.session_state.four_corners) == 4:
-            st.success("Three feature pairs configured. Four video corners mapped automatically.")
+            st.success("Four feature pairs configured. Four video corners mapped automatically.")
 
         st.markdown("##### Selected Feature Pairs")
         for idx in range(max(video_count, floorplan_count)):
@@ -947,8 +947,8 @@ with tab_region:
             event_pts = chart_events["selection"].get("points", [])
             if (
                 event_pts
-                and len(st.session_state.video_feature_points) == 3
-                and len(st.session_state.floorplan_feature_points) < 3
+                and len(st.session_state.video_feature_points) == 4
+                and len(st.session_state.floorplan_feature_points) < 4
             ):
                 click_x = float(event_pts[0]["x"])
                 click_y = float(event_pts[0]["y"])
