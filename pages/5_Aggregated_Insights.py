@@ -40,10 +40,25 @@ except Exception:
 @st.cache_data(ttl=600)  # Refresh cache every 10 mins
 def fetch_aggregated_records():
     """Fetch all raw records including metadata from Supabase."""
-    response = supabase.table("vga_crowd_records").select("*").execute()
-    if response.data:
-        return pd.DataFrame(response.data)
-    return pd.DataFrame()
+    page_size = 1000
+    offset = 0
+    records = []
+
+    while True:
+        response = (
+            supabase.table("vga_crowd_records")
+            .select("*")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        page = response.data or []
+        records.extend(page)
+
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    return pd.DataFrame(records)
 
 
 # -----------------------------------------------------------------------------
