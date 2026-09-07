@@ -15,11 +15,11 @@ from utils.navigation import render_home_button
 
 # Page Configuration
 st.set_page_config(
-    page_title="VGA & Crowd Metrics Correlation Analysis", layout="wide"
+    page_title="Module 4: Spatial vs. Crowd Data Correlation", layout="wide"
 )
 render_home_button()
 
-st.title("VGA & Crowd Metrics Pairwise Correlation Analysis")
+st.title("Module 4: Spatial vs. Crowd Data Correlation")
 st.write(
     "Upload your combined dataset (JSON) to compute pairwise correlations and "
     "analyze relationships across all spatial, visibility, and crowd metrics."
@@ -258,7 +258,7 @@ if uploaded_file is not None:
         # ---------------------------------------------------------------------
         # Metadata Labeling Form (Sidebar)
         # ---------------------------------------------------------------------
-        st.sidebar.header("🏷️ Dataset Labeling Metadata")
+        st.sidebar.header(" Dataset Labeling Metadata")
         meta_location = st.sidebar.text_input(
             "Location", placeholder="e.g., Main Concourse Floor 1"
         )
@@ -289,7 +289,7 @@ if uploaded_file is not None:
 
         if not is_valid_time:
             st.sidebar.error(
-                "⚠️ Invalid time format. Please use **HH:MM** (e.g., 08:30 or 17:45)."
+                " Invalid time format. Please use **HH:MM** (e.g., 08:30 or 17:45)."
             )
 
         meta_comments = st.sidebar.text_area(
@@ -339,11 +339,11 @@ if uploaded_file is not None:
             # 4. Cloud Upload Section (Targeted Omission & Metadata Packaging)
             # -----------------------------------------------------------------
             st.markdown("---")
-            st.subheader("🌐 Store Dataset to Cloud Repository")
+            st.subheader(" Store Dataset to Cloud Repository")
 
             # Standard VGA Settings Checklist / Reminder Box
             with st.expander(
-                "⚠️ Standard VGA Protocol Checklist (Verify Before Upload)",
+                " Standard VGA Protocol Checklist (Verify Before Upload)",
                 expanded=True,
             ):
                 st.markdown("""
@@ -431,4 +431,4 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Error parsing JSON file: {e}")
 else:
-    st.info("👆 Please upload your VGA & Crowd `.json` file to run analysis.")
+    st.info(" Please upload your VGA & Crowd `.json` file to run analysis.")

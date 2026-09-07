@@ -10,10 +10,10 @@ import streamlit as st
 from supabase import Client, create_client
 from utils.navigation import render_home_button
 
-st.set_page_config(page_title="Aggregated Insights", layout="wide")
+st.set_page_config(page_title="Module 5: Aggregated Insights", layout="wide")
 render_home_button()
 
-st.title("🌐 Global Aggregated Spatial & Crowd Insights")
+st.title("Module 5: Aggregated Insights")
 st.write(
     "This page synthesizes all user-contributed node data stored in the central database "
     "to compute collective correlation trends."
@@ -182,7 +182,7 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
     c1, c2 = st.columns([1.6, 1])
 
     with c1:
-        st.markdown(f"##### 📉 Pair Scatter Analysis: `{clean_y}` vs `{clean_x}`")
+        st.markdown(f"#####  Pair Scatter Analysis: `{clean_y}` vs `{clean_x}`")
         fig_scatter = go.Figure()
 
         # Scatter points
@@ -242,7 +242,7 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
         st.plotly_chart(fig_scatter, use_container_width=True)
 
     with c2:
-        st.markdown("##### 🧮 Statistical Relationship Comparison")
+        st.markdown("#####  Statistical Relationship Comparison")
 
         # Metric Display Cards
         st.markdown(
@@ -265,7 +265,7 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
             unsafe_allow_html=True,
         )
 
-        with st.expander("📖 Understanding these metrics & trendlines", expanded=True):
+        with st.expander(" Understanding these metrics & trendlines", expanded=True):
             st.markdown(
                 """
                 * **Red Solid Line — Pearson ($r$):** Fits a straight-line model. Evaluates pure **linear** proportionality.
@@ -281,7 +281,7 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
 def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
     """Pure NumPy implementation of Standardized Linear, Ridge, and Lasso Regression."""
     st.markdown("---")
-    st.subheader("🎯 Drivers Analysis (Multivariate Regression)")
+    st.subheader(" Drivers Analysis (Multivariate Regression)")
     st.write(
         "Identify which specific spatial properties exert the strongest influence on a key target metric. "
         "Variables are **$Z$-score standardized** so coefficient magnitudes can be directly compared."
@@ -446,7 +446,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
         st.plotly_chart(fig_bar, use_container_width=True)
 
     with rc2:
-        st.markdown("##### 🏆 Ranked Feature Impact")
+        st.markdown("#####  Ranked Feature Impact")
         st.dataframe(
             res_df[
                 [
@@ -463,7 +463,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
 def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
     """Estimate a simple mediation model with a percentile bootstrap interval."""
     st.markdown("---")
-    st.subheader("🔗 Mediation Analysis")
+    st.subheader(" Mediation Analysis")
     st.write(
         "Test whether a mediator helps explain the relationship between a predictor "
         "and an outcome. The indirect effect is the product of paths $a$ and $b$."
@@ -650,7 +650,7 @@ else:
             plt.close(fig_highres)
 
             st.download_button(
-                label="📥 Download High-Res Matrix Image (300 DPI PNG)",
+                label=" Download High-Res Matrix Image (300 DPI PNG)",
                 data=buffer.getvalue(),
                 file_name="spatial_correlation_matrix_300dpi.png",
                 mime="image/png",
@@ -658,7 +658,7 @@ else:
 
             # Focused Inspector Tool
             st.markdown("---")
-            st.subheader("🔍 Focused Pair Inspector")
+            st.subheader(" Focused Pair Inspector")
             st.write(
                 "Select any variable pair below to inspect their detailed scatter plot and multi-correlation metrics:"
             )
@@ -717,7 +717,7 @@ else:
 # 6. Admin Management Section
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.header("🔒 Admin Portal")
+st.sidebar.header(" Admin Portal")
 
 admin_password = st.secrets.get("ADMIN_PASSWORD", "admin123")
 input_pass = st.sidebar.text_input("Admin Password", type="password")
@@ -726,7 +726,7 @@ if input_pass == admin_password:
     st.sidebar.success("Admin Access Granted")
 
     st.markdown("---")
-    st.header("🔑 Admin Dataset Management")
+    st.header(" Admin Dataset Management")
 
     if not raw_db_df.empty and "upload_batch_id" in raw_db_df.columns:
         meta_cols = [

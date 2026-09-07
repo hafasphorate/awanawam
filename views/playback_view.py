@@ -16,7 +16,7 @@ except ImportError:
 # =============================================================================
 
 def render_playback_view(wall_lines=None, tracking_df=None):
-    st.title("📊 2D Movement Playback & Crowd Metric Heatmaps")
+    st.title(" 2D Movement Playback & Crowd Metric Heatmaps")
 
     # --- 1. SESSION STATE INITIALIZATION ---
     if "wall_lines" not in st.session_state:
@@ -28,14 +28,14 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         st.session_state.wall_lines = wall_lines
 
     # --- 2. DATA IMPORT SECTION ---
-    st.markdown("## 📥 1. Import Data")
+    st.markdown("##  1. Import Data")
     
     upload_mode = st.radio(
         "Select Data Input Method:",
         options=[
-            "1️⃣ JSON (Mapped Trajectories + Embedded CAD Floorplan)",
-            "2️⃣ CSV Only (Standard Bounding Box / Grid Trajectories)",
-            "3️⃣ CSV + DXF Layout (Overlay Trajectories onto CAD Layout)"
+            "1 JSON (Mapped Trajectories + Embedded CAD Floorplan)",
+            "2 CSV Only (Standard Bounding Box / Grid Trajectories)",
+            "3 CSV + DXF Layout (Overlay Trajectories onto CAD Layout)"
         ],
         key="pb_upload_mode"
     )
@@ -43,7 +43,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
     col_up, col_mock = st.columns([3, 1])
 
     with col_up:
-        if "1️⃣" in upload_mode:
+        if "1" in upload_mode:
             uploaded_json = st.file_uploader("Upload JSON File", type=["json"], key="pb_json")
             if uploaded_json:
                 parsed_df, extracted_walls = _parse_tracking_json(uploaded_json)
@@ -53,7 +53,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                         st.session_state.wall_lines = extracted_walls
                     st.success(f"✅ Successfully loaded {len(parsed_df)} records from JSON.")
 
-        elif "2️⃣" in upload_mode:
+        elif "2" in upload_mode:
             uploaded_csv = st.file_uploader("Upload Trajectory CSV", type=["csv"], key="pb_csv")
             if uploaded_csv:
                 parsed_df = pd.read_csv(uploaded_csv)
@@ -61,7 +61,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
                 st.session_state.wall_lines = []
                 st.success(f"✅ Successfully loaded {len(parsed_df)} CSV records.")
 
-        elif "3️⃣" in upload_mode:
+        elif "3" in upload_mode:
             c1, c2 = st.columns(2)
             with c1:
                 uploaded_csv = st.file_uploader("Upload Trajectory CSV", type=["csv"], key="pb_csv_combo")
@@ -78,7 +78,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     with col_mock:
         st.markdown("**Test Drive:**")
-        if st.button("🧪 Load Sample Data", use_container_width=True):
+        if st.button(" Load Sample Data", use_container_width=True):
             st.session_state.tracking_results_df = _generate_mock_tracking_data()
             st.session_state.wall_lines = _generate_mock_walls()
             st.rerun()
@@ -88,7 +88,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
     active_walls = st.session_state.get("wall_lines", [])
 
     if df is None or df.empty:
-        st.info("👆 Please upload data or click **Load Sample Data** to proceed.")
+        st.info(" Please upload data or click **Load Sample Data** to proceed.")
         return
 
     # --- 3. DATA CLEANING & METRICS CALCULATION ---
@@ -130,7 +130,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     # --- 4. METRIC DISPLAY CONTROLS ---
     st.markdown("---")
-    st.markdown("## ⚙️ 2. Visual & Heatmap Settings")
+    st.markdown("##  2. Visual & Heatmap Settings")
 
     c_metric, c_bins, c_trail = st.columns([1.5, 1, 1])
     
@@ -148,12 +148,12 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     # --- 5. DATA VIEWS (Interactive Playback & Summary) ---
     st.markdown("---")
-    st.markdown("## 📺 3. View Data")
+    st.markdown("##  3. View Data")
 
     tab_video, tab_frame, tab_agg = st.tabs([
-        "🎬 Interactive Video Playback",
-        "🖼️ Frame-by-Frame Inspector",
-        "📈 Aggregated Summary Heatmap"
+        " Interactive Video Playback",
+        " Frame-by-Frame Inspector",
+        " Aggregated Summary Heatmap"
     ])
 
     # --- TAB 1: Client-Side Native Plotly Video Playback ---
@@ -189,7 +189,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     # --- 6. EXPORT SECTION ---
     st.markdown("---")
-    st.markdown("## 📤 4. Export Data")
+    st.markdown("##  4. Export Data")
     
     exp_col1, exp_col2 = st.columns([2, 1])
     with exp_col1:
@@ -197,7 +197,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
     with exp_col2:
         json_bytes = _export_to_json(df, active_walls)
         st.download_button(
-            label="💾 Download JSON Package",
+            label=" Download JSON Package",
             data=json_bytes,
             file_name="crowd_analytics_export.json",
             mime="application/json",
@@ -336,7 +336,7 @@ def _build_plotly_animation(df, wall_lines, metric_choice, trail_length):
             "showactive": False,
             "buttons": [
                 {"label": "▶ Play", "method": "animate", "args": [None, {"frame": {"duration": 100, "redraw": True}, "fromcurrent": True}]},
-                {"label": "⏸ Pause", "method": "animate", "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]}
+                {"label": " Pause", "method": "animate", "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]}
             ],
             "x": 0.1, "y": 1.15
         }],
@@ -514,7 +514,7 @@ def _parse_tracking_json(uploaded_json):
 
 def _parse_dxf_file(uploaded_dxf):
     if ezdxf is None:
-        st.warning("⚠️ `ezdxf` library missing. Install via `pip install ezdxf`.")
+        st.warning(" `ezdxf` library missing. Install via `pip install ezdxf`.")
         return []
     try:
         bytes_data = uploaded_dxf.read()

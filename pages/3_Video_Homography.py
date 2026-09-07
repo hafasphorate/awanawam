@@ -19,11 +19,11 @@ from utils.navigation import render_home_button
 import math
 from scipy.spatial import KDTree
 
-st.set_page_config(page_title="Module 2: Video Homography & Tracking", layout="wide")
+st.set_page_config(page_title="Module 3: Video Homography & Tracking", layout="wide")
 render_home_button()
 st.session_state.use_exclusion_masks = False
 
-st.title("📹 Module 3: Video Homography & Region Selection")
+st.title("Module 3: Video Homography & Tracking")
 
 # ==========================================
 # SESSION STATE INITIALIZATION
@@ -63,10 +63,10 @@ if "sketch_canvas_key_ver" not in st.session_state:
 
 # Navigation Tabs
 tab_import, tab_region, tab_tracking, tab_playback = st.tabs([
-    "📂 3.1 Import CAD / Session & Video",
-    "📐 3.2 Define ROI & Video Masking",
-    "🔥 3.3 Occupancy Analytics",
-    "🎬 3.4 2D Playback & Crowd Heatmaps",
+    " 3.1 Import CAD / Session & Video",
+    " 3.2 Define ROI & Video Masking",
+    " 3.3 Occupancy Analytics",
+    " 3.4 2D Playback & Crowd Heatmaps",
 ])
 
 # ==========================================
@@ -311,7 +311,7 @@ with tab_import:
     col_json, col_dxf = st.columns(2)
 
     with col_json:
-        st.markdown("### 📄 Option A: Import Exported JSON Session")
+        st.markdown("###  Option A: Import Exported JSON Session")
         uploaded_json = st.file_uploader(
             "Upload JSON Floorplan / Export (VGA + Polygon Config)",
             type=["json"],
@@ -369,7 +369,7 @@ with tab_import:
                 st.error(f"Error parsing JSON session file: {e}")
 
     with col_dxf:
-        st.markdown("### 📐 Option B: Import Raw CAD File")
+        st.markdown("###  Option B: Import Raw CAD File")
         uploaded_cad = st.file_uploader(
             "Upload CAD Floorplan (DXF or DWG)",
             type=["dxf", "dwg"],
@@ -395,7 +395,7 @@ with tab_import:
                     os.remove(tmp_path)
 
     st.markdown("---")
-    st.markdown("### 📹 Surveillance Video Target")
+    st.markdown("###  Surveillance Video Target")
     uploaded_video = st.file_uploader(
         "Upload Surveillance Video (.mp4, .avi, .mov)",
         type=["mp4", "avi", "mov"],
@@ -413,7 +413,7 @@ with tab_region:
     st.subheader("Step 3.2: Video Masking & ROI Corner Calibration")
 
     # --- SECTION A: VIDEO PREVIEW & TEMPORARY SKETCHING ---
-    st.markdown("### ✏️ 1. Temporary Frame Sketching")
+    st.markdown("###  1. Temporary Frame Sketching")
     st.info(
         "Sketch reference lines on the frame to help place the floorplan nodes. "
         "These sketches are temporary and are not used by or saved with tracking."
@@ -495,7 +495,7 @@ with tab_region:
             st.markdown(
                 "<div style='margin-top: 15px;'></div>", unsafe_allow_html=True
             )
-            if st.button("🧹 Clear Sketches", use_container_width=True):
+            if st.button(" Clear Sketches", use_container_width=True):
                 st.session_state.frame_sketches = []
                 st.session_state.sketch_canvas_key_ver += 1
                 st.rerun()
@@ -613,13 +613,13 @@ with tab_region:
 
     else:
         st.warning(
-            "⚠️ Please upload a video file in Step 3.1 to display the frame preview."
+            " Please upload a video file in Step 3.1 to display the frame preview."
         )
 
     st.markdown("---")
 
     # --- SECTION B: INTERACTIVE FLOORPLAN CORNER CALIBRATION ---
-    st.markdown("### 📐 2. Camera ROI Corner Mapping")
+    st.markdown("###  2. Camera ROI Corner Mapping")
 
     col_controls, col_plot = st.columns([1.2, 2.8])
 
@@ -628,7 +628,7 @@ with tab_region:
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("🔴 Clear All Corners", use_container_width=True):
+            if st.button(" Clear All Corners", use_container_width=True):
                 st.session_state.four_corners = []
                 st.session_state.editing_point_idx = None
                 st.session_state.last_click_hash = None
@@ -643,11 +643,11 @@ with tab_region:
         num_pts = len(st.session_state.four_corners)
         if st.session_state.editing_point_idx is not None:
             st.warning(
-                f"🎯 **Editing P{st.session_state.editing_point_idx + 1}:** Click floorplan map to place."
+                f" **Editing P{st.session_state.editing_point_idx + 1}:** Click floorplan map to place."
             )
         elif num_pts < 4:
             st.info(
-                f"⚠️ Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map."
+                f" Selected **{num_pts}/4** corners. Click **{4 - num_pts}** more point(s) on the map."
             )
         else:
             st.success("✅ All 4 ROI Corners Configured!")
@@ -672,7 +672,7 @@ with tab_region:
                     )
                 with col_edit:
                     is_editing = st.session_state.editing_point_idx == idx
-                    btn_label = "🎯 Target" if is_editing else "✏️ Edit"
+                    btn_label = " Target" if is_editing else " Edit"
                     if st.button(
                         btn_label, key=f"edit_btn_{idx}", use_container_width=True
                     ):
@@ -681,7 +681,7 @@ with tab_region:
                         st.rerun()
                 with col_del:
                     if st.button(
-                        "🗑️",
+                        "",
                         key=f"del_btn_{idx}",
                         help=f"Delete {c_lbl}",
                         use_container_width=True,
@@ -753,7 +753,7 @@ with tab_region:
                 )
             )
         else:
-            st.warning("⚠️ No floorplan wall vectors detected in `st.session_state`. Please upload or parse your CAD file in Step 1.")
+            st.warning(" No floorplan wall vectors detected in `st.session_state`. Please upload or parse your CAD file in Step 1.")
 
         # --- CLICK SENSOR GRID ---
         if all_x and all_y:
@@ -1088,10 +1088,10 @@ with tab_playback:
         for k in ["wall_lines", "cad_walls", "vga_walls", "walls"]
     )
     if has_walls:
-        st.caption("🟢 CAD Floorplan geometry loaded and active for overlays.")
+        st.caption(" CAD Floorplan geometry loaded and active for overlays.")
     else:
         st.caption(
-            "🟡 No CAD floorplan geometry found in session. (Upload CAD floorplan in Step 3.1 to display walls)."
+            " No CAD floorplan geometry found in session. (Upload CAD floorplan in Step 3.1 to display walls)."
         )
 
     st.markdown("---")
@@ -1181,7 +1181,7 @@ with tab_playback:
                     df_track, vga_nodes, x_col, y_col
                 )
                 st.info(
-                    f"🔗 Matched movement tracking data to {len(vga_nodes)} floorplan grid nodes."
+                    f" Matched movement tracking data to {len(vga_nodes)} floorplan grid nodes."
                 )
 
             # --- 2. Motion Playback ---
@@ -1256,10 +1256,10 @@ with tab_playback:
 
             m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs(
                 [
-                    "📊 Crowd Volume",
-                    "🔥 Density Heatmap",
-                    "⚡ Speed Distribution",
-                    "🧭 Directional Flow",
+                    " Crowd Volume",
+                    " Density Heatmap",
+                    " Speed Distribution",
+                    " Directional Flow",
                 ]
             )
 
@@ -1430,7 +1430,7 @@ with tab_playback:
             }
 
             st.download_button(
-                label="💾 Export Integrated VGA & Crowd Correlation Dataset (JSON)",
+                label=" Export Integrated VGA & Crowd Correlation Dataset (JSON)",
                 data=json.dumps(crowd_vga_export, indent=2),
                 file_name="integrated_vga_crowd_analysis.json",
                 mime="application/json",
@@ -1445,10 +1445,10 @@ with tab_playback:
 
         else:
             st.error(
-                f"⚠️ Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}"
+                f" Could not resolve coordinate columns in dataset. Found columns: {list(df_track.columns)}"
             )
 
     else:
         st.info(
-            "💡 Upload a JSON/CSV tracking file above or run tracking in Step 3.3 to view movement playback and heatmaps."
+            " Upload a JSON/CSV tracking file above or run tracking in Step 3.3 to view movement playback and heatmaps."
         )

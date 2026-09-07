@@ -1,4 +1,4 @@
-# 🏗️ Awanawam - Spatial & Crowd Dynamics Toolkit
+#  Awanawam - Spatial & Crowd Dynamics Toolkit
 
 **Designing Intuitive Crowd Management Interventions using Urban Data and Simulations**
 
@@ -6,7 +6,7 @@ A comprehensive Streamlit-based web application for analyzing how spatial config
 
 ---
 
-## 📖 Table of Contents
+##  Table of Contents
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Module Guide](#module-guide)
@@ -19,7 +19,7 @@ A comprehensive Streamlit-based web application for analyzing how spatial config
 
 ---
 
-## ✨ Features
+##  Features
 
 ### Core Capabilities
 - **Visibility Graph Analysis (VGA):** Calculate spatial metrics (visual integration, entropy, isovist) from CAD floorplans
@@ -40,7 +40,7 @@ A comprehensive Streamlit-based web application for analyzing how spatial config
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Step 1: Choose Your Analysis Type
 Select from the modules in the sidebar to begin your analysis. Each module is designed for a specific type of spatial research.
@@ -55,9 +55,9 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 📚 Module Guide
+##  Module Guide
 
-### 1️⃣ Visibility Graph Analysis (VGA)
+### Module 2: Visibility Graph Analysis (VGA)
 **What it does:** Analyzes how visible different zones are from each point in a floorplan.
 
 **Key Metrics:**
@@ -78,7 +78,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 2️⃣ Urban Space Syntax Analysis
+### Module 1: Urban Space Syntax Analysis
 **What it does:** Analyzes urban street networks to identify primary movement corridors and spatial integration.
 
 **Key Metrics:**
@@ -105,7 +105,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 3️⃣ Video Homography & Tracking
+### Module 3: Video Homography & Tracking
 **What it does:** Tracks human movement from surveillance videos and projects real-world coordinates onto your floorplan.
 
 **Key Steps:**
@@ -143,7 +143,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 4️⃣ Spatial vs. Crowd Data Correlation
+### Module 4: Spatial vs. Crowd Data Correlation
 **What it does:** Statistical analysis linking spatial metrics (from VGA) to crowd behavior metrics (from video tracking).
 
 **Analysis Types:**
@@ -170,7 +170,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 5️⃣ Aggregated Insights
+### Module 5: Aggregated Insights
 **What it does:** Synthesizes data from all case studies stored in the central database to identify patterns and trends across multiple buildings/spaces.
 
 **Features:**
@@ -189,27 +189,27 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 🎯 Typical Workflows
+##  Typical Workflows
 
 ### For Architects/Designers:
-1. Start with Module 1 (VGA) to analyze your floorplan
+1. Start with Module 2 (VGA) to analyze your floorplan
 2. Use Module 4 to compare metrics to existing crowd data
 3. Iterate design based on spatial insights
 
 ### For Researchers:
 1. Collect surveillance video data (Module 3)
-2. Analyze floorplan with VGA metrics (Module 1)
+2. Analyze floorplan with VGA metrics (Module 2)
 3. Run correlation analysis (Module 4)
 4. Publish findings; contribute to Module 5 aggregated database
 
 ### For Urban Planners:
-1. Use Module 2 for street network analysis
+1. Use Module 1 for street network analysis
 2. Identify high-betweenness corridors for intervention
 3. Plan crowd management or accessibility improvements
 
 ---
 
-## 📊 Data Formats
+##  Data Formats
 
 ### Floorplans
 - **Format:** DXF or DWG (AutoCAD-compatible)
@@ -240,7 +240,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 💻 Installation
+##  Installation
 
 ### Prerequisites
 - Python 3.9+
@@ -268,7 +268,7 @@ The app will open at `http://localhost:8501`
 
 ---
 
-## ⚙️ Configuration
+##  Configuration
 
 ### Supabase Setup (for Module 5 - Aggregated Insights)
 
@@ -285,7 +285,7 @@ This enables:
 
 ---
 
-## 🎯 Tips for Best Results
+##  Tips for Best Results
 
 ### VGA Analysis
 - **Grid Size:** Smaller grids (200-500mm) = more detail but slower computation
@@ -308,12 +308,12 @@ This enables:
 
 ---
 
-## 📥 Export & Visualization Features
+##  Export & Visualization Features
 
 ### Built-in Export Formats
 - **JSON:** Complete session data with CAD layout, tracking results, and metrics
 - **CSV:** Tabular tracking data for external analysis
-- **GeoJSON:** For Module 2 (street networks) to import into GIS software
+- **GeoJSON:** For Module 1 (street networks) to import into GIS software
 - **PNG/SVG:** High-resolution chart images (Plotly right-click menu)
 
 ### Chart Interactions
@@ -328,8 +328,8 @@ This enables:
 ## ❌ Known Limitations & Coming Features
 
 ### Currently Not Implemented
-- ✗ Keyboard shortcuts to jump between modules (1-5) — *coming soon*
-- ✗ Real-time video processing — currently processes frame-by-frame
+-  Keyboard shortcuts to jump between modules (1-5) — *coming soon*
+-  Real-time video processing — currently processes frame-by-frame
 
 ### DWG File Support
 - DWG conversion requires system tools (dwg2dxf or ODA)
@@ -337,7 +337,7 @@ This enables:
 
 ---
 
-## ❓ FAQ
+##  FAQ
 
 **Q: Can I use DWG files directly?**  
 A: DWG conversion requires system tools (dwg2dxf or ODA). If unavailable, export your DWG as DXF in your CAD software.
@@ -362,7 +362,7 @@ A: Analyze each floor separately using different floorplan files, then aggregate
 
 ---
 
-## 🔧 Requirements
+##  Requirements
 
 See `requirements.txt` for full dependency list. Key packages:
 - **streamlit** >= 1.28.0 — Web framework
@@ -377,7 +377,7 @@ See `requirements.txt` for full dependency list. Key packages:
 
 ---
 
-## 📝 Project Structure
+##  Project Structure
 
 ```
 awanawam/
@@ -401,7 +401,7 @@ awanawam/
 
 ---
 
-## 📧 Support & Contributing
+##  Support & Contributing
 
 For issues, questions, or feature requests, please open an issue on the repository.
 
@@ -413,7 +413,7 @@ Contributions are welcome! Areas for enhancement:
 
 ---
 
-## 📄 Citation
+##  Citation
 
 If you use Awanawam in your research, please cite:
 

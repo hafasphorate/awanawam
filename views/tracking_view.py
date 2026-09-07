@@ -47,20 +47,20 @@ def get_video_frame_count_cached(file_name: str, video_bytes: bytes) -> int:
 
 
 def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
-    """Renders Tab 2.3: Video Homography and Live 2D Motion Mapping."""
-    st.subheader("Step 2.3: Occupancy & Human Movement Analytics")
+    """Renders Tab 3.3: Video Homography and Live 2D Motion Mapping."""
+    st.subheader("Step 3.3: Occupancy & Human Movement Analytics")
 
     # Check for Uploaded Video
     uploaded_video = st.session_state.get("uploaded_video_file", None)
     if uploaded_video is None:
-        st.warning("⚠️ Please upload a surveillance video file in **Tab 3.1** first.")
+        st.warning("Please upload a surveillance video file in **Tab 3.1** first.")
         return
 
     # Check for Floorplan Corners
     four_corners = st.session_state.get("four_corners", [])
     if len(four_corners) < 4:
         st.warning(
-            f"⚠️ Please select all **4 ROI corners** on the 2D floorplan in **Tab 3.2** first "
+            f"Please select all **4 ROI corners** on the 2D floorplan in **Tab 3.2** first "
             f"(Currently selected: {len(four_corners)}/4)."
         )
         return
@@ -74,8 +74,8 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     max_frames = get_video_frame_count_cached(uploaded_video.name, video_bytes)
 
-    # 🎛️ Advanced Precision & CPU Controls
-    with st.expander("🛠️ Detection Sensitivity & CPU Optimization Controls", expanded=True):
+    #  Advanced Precision & CPU Controls
+    with st.expander(" Detection Sensitivity & CPU Optimization Controls", expanded=True):
         col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
         with col_cfg1:
             model_name = st.selectbox(
@@ -129,7 +129,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
                 help="Process 1 out of N frames during video tracking to prevent CPU throttling.",
             )
 
-    st.markdown("### 🎞️ Single Frame Preview")
+    st.markdown("###  Single Frame Preview")
     frame_idx = st.slider(
         "Select Frame to Preview",
         min_value=0,
@@ -177,7 +177,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Manual button trigger to protect CPU from continuous slider inference
     col_btn, col_info = st.columns([1, 2])
     with col_btn:
-        run_preview = st.button("🔍 Run Frame Preview", type="primary", use_container_width=True)
+        run_preview = st.button(" Run Frame Preview", type="primary", use_container_width=True)
     with col_info:
         st.caption("Click button to execute YOLO model on selected frame. Prevents slider CPU throttling.")
 
@@ -203,18 +203,18 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Render Side-by-Side Interface
     col_video, col_plan = st.columns(2)
 
-    # 🎥 Left Column: Video Detection Stream
+    #  Left Column: Video Detection Stream
     with col_video:
-        st.markdown("#### 📹 Camera Feed (Detections)")
+        st.markdown("####  Camera Feed (Detections)")
         st.image(
             annotated_frame,
             caption=f"Frame #{frame_idx} | Detected People: {len(df_detections)}",
             use_container_width=True,
         )
 
-    # 🗺️ Right Column: 2D Floorplan Mapping
+    #  Right Column: 2D Floorplan Mapping
     with col_plan:
-        st.markdown("#### 🗺️ 2D Floorplan Real-Time Map")
+        st.markdown("####  2D Floorplan Real-Time Map")
 
         fig_2d = go.Figure()
 
@@ -303,16 +303,16 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
     # Position table
     if not df_detections.empty:
-        st.markdown("### 📊 Single Frame Position Coordinates")
+        st.markdown("###  Single Frame Position Coordinates")
         display_df = df_detections[["track_id", "img_x", "img_y", "world_x", "world_y"]].copy()
         display_df.columns = ["Track ID", "Image X (px)", "Image Y (px)", "Floorplan X (m)", "Floorplan Y (m)"]
         st.dataframe(display_df, use_container_width=True)
 
-    # 🚀 Batch Video Sequence Execution
+    #  Batch Video Sequence Execution
     st.markdown("---")
-    st.markdown("### 🎬 Full Video Tracking Execution")
+    st.markdown("###  Full Video Tracking Execution")
 
-    if st.button("▶️ Run Batch Video Tracking"):
+    if st.button(" Run Batch Video Tracking"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         video_placeholder = st.empty()
@@ -378,18 +378,18 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         st.session_state["batch_completed"] = True
         st.success(f"✅ Full Video Batch Tracking Completed! {len(full_df)} detections recorded.")
 
-    # 📥 Dual Export Options (CSV & JSON with VGA Metadata)
+    #  Dual Export Options (CSV & JSON with VGA Metadata)
     full_df = st.session_state.get("full_tracking_df", pd.DataFrame())
 
     if st.session_state.get("batch_completed"):
-        st.markdown("#### 📥 Export Tracking & VGA Analytics")
+        st.markdown("####  Export Tracking & VGA Analytics")
         col_dl1, col_dl2 = st.columns(2)
 
         # 1. Standard CSV Export
         csv_bytes = full_df.to_csv(index=False).encode("utf-8")
         with col_dl1:
             st.download_button(
-                label="📄 Download Motion Data (CSV)",
+                label=" Download Motion Data (CSV)",
                 data=csv_bytes,
                 file_name="human_tracking_data.csv",
                 mime="text/csv",
@@ -415,7 +415,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
 
         with col_dl2:
             st.download_button(
-                label="📦 Download Complete Dataset (JSON + VGA)",
+                label=" Download Complete Dataset (JSON + VGA)",
                 data=json_bytes,
                 file_name="human_tracking_and_vga.json",
                 mime="application/json",

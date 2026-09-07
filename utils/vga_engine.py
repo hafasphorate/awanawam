@@ -19,7 +19,7 @@ def convert_dwg_to_dxf(dwg_path: str) -> str:
     if not dwg_bin:
         raise RuntimeError(
             "DWG conversion is not enabled on this cloud instance because a native DWG converter binary is not installed.\n\n"
-            "👉 **Solution:** Please upload your floorplan directly as a **.dxf** file (Export as DXF in AutoCAD/Revit)."
+            " **Solution:** Please upload your floorplan directly as a **.dxf** file (Export as DXF in AutoCAD/Revit)."
         )
 
     try:

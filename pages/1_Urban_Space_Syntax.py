@@ -17,13 +17,13 @@ from folium.plugins import Draw
 from geopy.distance import geodesic
 from utils.navigation import render_home_button
 
-st.set_page_config(page_title="Urban Space Syntax Analysis", layout="wide")
+st.set_page_config(page_title="Module 1: Urban Space Syntax Analysis", layout="wide")
 render_home_button()
 
 # -----------------------------------------------------------------------------
 # 1. Page Title & Definitions
 # -----------------------------------------------------------------------------
-st.title("Singapore Urban Space Syntax Analysis")
+st.title("Module 1: Urban Space Syntax Analysis")
 
 st.markdown("""
 **Metric Definition:** **Betweenness Centrality** (used here as an axial proxy for *Space Syntax Choice / Integration*) measures the fraction of all shortest topological paths passing through a specific street segment within the network:

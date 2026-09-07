@@ -5,13 +5,12 @@ from utils.navigation import render_home_button
 # Must be the very first Streamlit command called on the page
 st.set_page_config(
     page_title="Spatial & Crowd Dynamics Toolkit",
-    page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 render_home_button(width=200)
-st.title("🏗️ Spatial & Crowd Dynamics Toolkit")
+st.title("Awanawam: Spatial & Crowd Dynamics Toolkit")
 st.markdown("""
 ## Welcome to Awanawam!
 
@@ -25,7 +24,7 @@ This toolkit provides integrated spatial analysis and computer vision tools for 
 # ============================================================================
 st.markdown("---")
 st.markdown("""
-## 🚀 Quick Start Guide
+##  Quick Start Guide
 
 ### Step 1: Choose Your Analysis Type
 Select from the modules in the sidebar to begin your analysis. Each module is designed for a specific type of spatial research.
@@ -40,9 +39,29 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 📚 Module Guide
+##  Module Guide
 
-### 1️⃣ Visibility Graph Analysis (VGA)
+### Module 1: Urban Space Syntax Analysis
+**What it does:** Analyzes urban street networks to identify primary movement corridors and spatial integration.
+
+**Key Metrics:**
+- **Betweenness Centrality:** Percentage of all shortest paths that pass through a street segment (proxy for movement/foot traffic)
+- **Network Choice:** Streets that are "shortcuts" between distant areas
+- **Spatial Integration:** How easily locations connect to the rest of the network
+
+**How to use:**
+1. Enter a location (e.g., "Tiong Bahru, Singapore")
+2. Set analysis radius (300-2000 meters)
+3. Choose network type: walk, drive, or all
+4. Click "Run Axial Analysis"
+5. View interactive map showing street segments colored by betweenness centrality
+6. Red nodes highlight high-contrast intersections
+
+**Best for:** Urban planning, traffic studies, walkability analysis, retail location analysis
+
+---
+
+### Module 2: Visibility Graph Analysis (VGA)
 **What it does:** Analyzes how visible different zones are from each point in a floorplan.
 
 **Key Metrics:**
@@ -63,27 +82,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 2️⃣ Urban Space Syntax Analysis
-**What it does:** Analyzes urban street networks to identify primary movement corridors and spatial integration.
-
-**Key Metrics:**
-- **Betweenness Centrality:** Percentage of all shortest paths that pass through a street segment (proxy for movement/foot traffic)
-- **Network Choice:** Streets that are "shortcuts" between distant areas
-- **Spatial Integration:** How easily locations connect to the rest of the network
-
-**How to use:**
-1. Enter a location (e.g., "Tiong Bahru, Singapore")
-2. Set analysis radius (300-2000 meters)
-3. Choose network type: walk, drive, or all
-4. Click "Run Axial Analysis"
-5. View interactive map showing street segments colored by betweenness centrality
-6. Red nodes highlight high-contrast intersections
-
-**Best for:** Urban planning, traffic studies, walkability analysis, retail location analysis
-
----
-
-### 3️⃣ Video Homography & Tracking
+### Module 3: Video Homography & Tracking
 **What it does:** Tracks human movement from surveillance videos and projects real-world coordinates onto your floorplan.
 
 **Key Steps:**
@@ -120,7 +119,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 4️⃣ Spatial vs. Crowd Data Correlation
+### Module 4: Spatial vs. Crowd Data Correlation
 **What it does:** Statistical analysis linking spatial metrics (from VGA) to crowd behavior metrics (from video tracking).
 
 **Analysis Types:**
@@ -147,7 +146,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### 5️⃣ Aggregated Insights
+### Module 5: Aggregated Insights
 **What it does:** Synthesizes data from all case studies stored in the central database to identify patterns and trends across multiple buildings/spaces.
 
 **Features:**
@@ -166,27 +165,27 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 🎯 Typical Workflow
+## Typical Workflow
 
 ### For Architects/Designers:
-1. Start with Module 1 (VGA) to analyze your floorplan
+1. Start with Module 2 (VGA) to analyze your floorplan
 2. Use Module 4 to compare metrics to existing crowd data
 3. Iterate design based on spatial insights
 
 ### For Researchers:
 1. Collect surveillance video data (Module 3)
-2. Analyze floorplan with VGA metrics (Module 1)
+2. Analyze floorplan with VGA metrics (Module 2)
 3. Run correlation analysis (Module 4)
 4. Publish findings; contribute to Module 5 aggregated database
 
 ### For Urban Planners:
-1. Use Module 2 for street network analysis
+1. Use Module 1 for street network analysis
 2. Identify high-betweenness corridors for intervention
 3. Plan crowd management or accessibility improvements
 
 ---
 
-## 📊 Data Formats
+## Data Formats
 
 ### Floorplans
 - **Format:** DXF or DWG (AutoCAD-compatible)
@@ -217,7 +216,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## ⚙️ Tips for Best Results
+## Tips for Best Results
 
 ### VGA Analysis
 - **Grid Size:** Smaller grids (200-500mm) = more detail but slower computation
@@ -237,7 +236,7 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-## 🔗 Integration
+## Integration
 
 ### Supabase Database
 Module 5 connects to a Supabase database for collaborative research:
@@ -254,7 +253,7 @@ SUPABASE_KEY = "your-anon-key"
 
 ---
 
-## 📝 Tips & Interactions
+##  Tips & Interactions
 
 - **VGA Selection:** Click inside a zone to select; hold and drag to pan
 - **Video Playback:** Use frame slider to navigate; click Play button in animated charts for continuous replay (Plotly feature)
@@ -263,7 +262,7 @@ SUPABASE_KEY = "your-anon-key"
 
 ---
 
-## ❓ FAQ
+##  FAQ
 
 **Q: Can I use DWG files directly?**  
 A: DWG conversion requires system tools (dwg2dxf or ODA). If unavailable, export your DWG as DXF in your CAD software.
@@ -279,9 +278,9 @@ A: No, this is designed for post-hoc analysis. Processing takes minutes to hours
 
 ---
 
-## 📧 Support & Feedback
+##  Support & Feedback
 
 For issues, questions, or feature requests, please contact the development team.
 
-**Happy analyzing! 🎉**
+**Happy analyzing! **
 """)

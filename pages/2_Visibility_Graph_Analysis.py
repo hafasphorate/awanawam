@@ -26,7 +26,7 @@ from utils.vga_engine import (
     process_cad_file,
 )
 
-st.set_page_config(page_title="Visibility Graph Analysis", layout="wide")
+st.set_page_config(page_title="Module 2: Visibility Graph Analysis", layout="wide")
 render_home_button()
 
 # Force '+' crosshair cursor on interactive Plotly floorplan canvas
@@ -44,7 +44,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("1. Visibility Graph Analysis (VGA)")
+st.title("Module 2: Visibility Graph Analysis (VGA)")
 st.markdown(
     "Upload a CAD floorplan (**DXF or DWG**) or a **saved JSON session**. Hover with the **`+` crosshair**, click directly inside any room or corridor zone to highlight it in green, and run spatial metrics strictly for selected areas."
 )
@@ -123,7 +123,7 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
         if completed % 5 == 0 or completed == num_nodes:
             progress_bar.progress(progress_ratio)
             status_container.markdown(
-                f"⌛ **Computing Graph Topology (Integration & Entropy)...** Node {completed}/{num_nodes} ({int(progress_ratio * 100)}%) | **Est. remaining:** `{time_str}`"
+                f" **Computing Graph Topology (Integration & Entropy)...** Node {completed}/{num_nodes} ({int(progress_ratio * 100)}%) | **Est. remaining:** `{time_str}`"
             )
 
     for i in range(num_nodes):
@@ -601,7 +601,7 @@ def render_clustering_tab():
     st.dataframe(group_averages, use_container_width=True, hide_index=True)
 
 
-analysis_tab, clustering_tab = st.tabs(["VGA Analysis", "Metric Clustering"])
+analysis_tab, clustering_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering"])
 
 def render_analysis_tab():
     uploaded_file = st.file_uploader(
@@ -666,7 +666,7 @@ def render_analysis_tab():
 
         st.subheader("Interactive Public Space Selection")
         st.info(
-            "💡 **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
+            " **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
         )
 
         selection_mode_option = st.radio(
@@ -680,7 +680,7 @@ def render_analysis_tab():
 
         col1, col2 = st.columns([1, 4])
         with col1:
-            if st.button("🔴 Reset Selected Regions"):
+            if st.button(" Reset Selected Regions"):
                 st.session_state["selected_rooms"] = []
                 st.rerun()
 
@@ -778,7 +778,7 @@ def render_analysis_tab():
                     if completed % 5 == 0 or completed == total_points:
                         progress_bar.progress(progress_ratio)
                         status_text.markdown(
-                            f"⌛ **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
+                            f" **Phase 1: Analyzing Isovists {completed}/{total_points}** ({int(progress_ratio * 100)}%) | **Est. time remaining:** `{time_str}`"
                         )
 
                 if vga_results:
@@ -850,7 +850,7 @@ def render_analysis_tab():
         json_data = json.dumps(complete_vga_export, indent=2)
 
         st.download_button(
-            label="📥 Download Complete VGA Session JSON",
+            label=" Download Complete VGA Session JSON",
             data=json_data,
             file_name="vga_complete_session.json",
             mime="application/json",
