@@ -275,10 +275,8 @@ if uploaded_file is not None:
         )
 
         # Direct 24-hour key-in input field
-        default_24h_time = sgt_now.strftime("%H:%M")
         meta_time_str = st.sidebar.text_input(
             "Time (24-Hour Format)",
-            value=default_24h_time,
             placeholder="e.g., 14:30 or 08:15",
             help="Type in the video/recording time in HH:MM format (24-hour clock).",
         )
