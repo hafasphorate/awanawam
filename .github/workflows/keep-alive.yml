@@ -9,9 +9,8 @@ jobs:
   ping-supabase:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase Health Endpoint
+      - name: Ping Supabase Database
         run: |
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/" \
+          curl -s -f -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/" \
             -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
-          echo "$RESPONSE"
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
