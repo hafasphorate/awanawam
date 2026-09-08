@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+from supabase import Client, create_client
 from shapely.geometry import Point, LineString, Polygon
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
@@ -417,6 +418,16 @@ def matplotlib_color(plotly_color):
     return plotly_color
 
 
+def render_png_download(fig, label, file_name, key):
+    """Offer a PNG export for Plotly figures when Kaleido is installed."""
+    try:
+        png_data = fig.to_image(format="png")
+    except Exception:
+        st.caption("PNG export requires the `kaleido` package.")
+        return
+    st.download_button(label, png_data, file_name, "image/png", key=key)
+
+
 def cluster_map_png(df, wall_lines, selected_group=None):
     """Create a PNG directly with Matplotlib, avoiding Plotly's Chrome dependency."""
     figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
@@ -579,11 +590,13 @@ def render_clustering_tab():
         labels={"k": "Number of groups", "inertia": "Within-group inertia"},
     )
     st.plotly_chart(elbow_fig, use_container_width=True)
+    render_png_download(elbow_fig, "Download elbow chart as PNG", "vga_elbow.png", "clustering_elbow_png")
     group_options = ["All groups"] + [f"Group {group}" for group in sorted(clustered_df["cluster"].unique())]
     selected_group_label = st.selectbox("View group", group_options)
     selected_group = None if selected_group_label == "All groups" else int(selected_group_label.split()[-1])
     cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group)
     st.plotly_chart(cluster_fig, use_container_width=True)
+    render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
     st.download_button(
         "Download colour-coded plan as PNG",
         data=cluster_map_png(clustered_df, clustering_walls, selected_group),
@@ -592,16 +605,164 @@ def render_clustering_tab():
     )
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
-    st.plotly_chart(
-        render_cluster_radar(group_averages, metric_columns, selected_group),
-        use_container_width=True,
-    )
+    radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
+    st.plotly_chart(radar_fig, use_container_width=True)
+    render_png_download(radar_fig, "Download radar chart as PNG", "vga_cluster_radar.png", "clustering_radar_png")
     group_averages.insert(0, "Group", group_averages.pop("cluster").map(lambda value: f"Group {value}"))
     st.subheader("Average Metrics by Group")
     st.dataframe(group_averages, use_container_width=True, hide_index=True)
 
 
-analysis_tab, clustering_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering"])
+@st.cache_resource
+def init_supabase() -> Client:
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+
+
+@st.cache_data(ttl=600)
+def fetch_historical_crowd_metrics(_supabase):
+    """Fetch and flatten the historical metric payload used by Module 4."""
+    page_size = 1000
+    offset = 0
+    records = []
+    while True:
+        response = (
+            _supabase.table("vga_crowd_records")
+            .select("metrics_data")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        page = response.data or []
+        records.extend(row.get("metrics_data", {}) for row in page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return pd.json_normalize(records) if records else pd.DataFrame()
+
+
+def extract_vga_rows(data):
+    """Support the saved-session and common standalone VGA JSON shapes."""
+    if isinstance(data, list):
+        return data, []
+    rows = next(
+        (data.get(key) for key in ("vga_results", "vga_grid", "vga_floorplan_nodes", "nodes")
+         if isinstance(data.get(key), list)),
+        [],
+    )
+    walls = data.get("floorplan", {}).get("wall_lines", [])
+    return rows, [LineString(coords) for coords in walls]
+
+
+def projection_png(projected_df, density_column, walls):
+    """Render the projected density map without requiring Plotly's image engine."""
+    figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
+    axis.set_facecolor("#111111")
+    for line in walls:
+        x_values, y_values = line.xy
+        axis.plot(x_values, y_values, color="#666666", linewidth=1.0)
+    scatter = axis.scatter(projected_df["x"], projected_df["y"], c=projected_df[density_column], cmap="YlOrRd", s=42)
+    figure.colorbar(scatter, ax=axis, label="Projected people / m²")
+    axis.set_aspect("equal", adjustable="datalim")
+    axis.set_title("Projected Crowd Density", color="white")
+    axis.set_xlabel("X (mm)", color="white")
+    axis.set_ylabel("Y (mm)", color="white")
+    axis.tick_params(colors="white")
+    figure.tight_layout()
+    output = BytesIO()
+    figure.savefig(output, format="png", dpi=160, facecolor=figure.get_facecolor())
+    plt.close(figure)
+    return output.getvalue()
+
+
+def render_projection_tab():
+    st.subheader("Projected Crowd Metrics")
+    st.caption("Historical Pearson correlations from Supabase are used with standardized linear models to estimate crowd metrics for uploaded VGA nodes.")
+    projection_upload = st.file_uploader("Upload previous VGA results (JSON)", type=["json"], key="projection_json_uploader")
+    source_df = st.session_state.get("vga_df")
+    source_walls = st.session_state.get("wall_lines", [])
+
+    if projection_upload is not None:
+        try:
+            imported = json.load(projection_upload)
+            rows, imported_walls = extract_vga_rows(imported)
+            source_df = pd.DataFrame(rows)
+            if imported_walls:
+                source_walls = imported_walls
+            st.success(f"Loaded {len(source_df)} VGA points from `{projection_upload.name}`.")
+        except (ValueError, TypeError, KeyError) as error:
+            st.error(f"Could not load VGA results: {error}")
+            return
+
+    if source_df is None or source_df.empty or not {"x", "y"}.issubset(source_df.columns):
+        st.info("Upload a VGA JSON session or run VGA analysis above to begin.")
+        return
+    try:
+        historical_df = fetch_historical_crowd_metrics(init_supabase())
+    except Exception:
+        st.warning("Supabase credentials or the `vga_crowd_records` table are unavailable.")
+        return
+    if historical_df.empty:
+        st.info("No historical VGA and crowd records are available in Supabase yet.")
+        return
+
+    vga_columns = [column for column in source_df.select_dtypes(include=np.number).columns if column not in {"x", "y"}]
+    crowd_columns = [column for column in historical_df.select_dtypes(include=np.number).columns if any(word in column.lower() for word in ("crowd", "density", "people", "pedestrian", "count", "volume"))]
+    if not vga_columns or not crowd_columns:
+        st.warning("The uploaded VGA data or Supabase data does not contain usable numeric metrics.")
+        return
+
+    selected_targets = st.multiselect("Crowd metrics to project", crowd_columns, default=[column for column in crowd_columns if "density" in column.lower()] or crowd_columns[:1], key="projection_targets")
+    if not selected_targets:
+        return
+
+    projections = {}
+    model_rows = []
+    for target in selected_targets:
+        best = None
+        for feature in vga_columns:
+            paired = historical_df[[feature, target]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(paired) < 3 or paired[feature].nunique() < 2:
+                continue
+            correlation = paired[feature].corr(paired[target])
+            if pd.notna(correlation) and (best is None or abs(correlation) > abs(best["correlation"])):
+                best = {"feature": feature, "correlation": float(correlation), "paired": paired}
+        if best is None:
+            continue
+        paired = best["paired"]
+        x_values = pd.to_numeric(source_df[best["feature"]], errors="coerce")
+        x_std = paired[best["feature"]].std()
+        slope = best["correlation"] * paired[target].std() / x_std if x_std else 0.0
+        intercept = paired[target].mean() - slope * paired[best["feature"]].mean()
+        projections[target] = (intercept + slope * x_values).clip(lower=0)
+        model_rows.append({"Crowd metric": target, "Best VGA metric": best["feature"], "Pearson r": best["correlation"]})
+
+    if not projections:
+        st.warning("No VGA-to-crowd pairs have at least three complete historical records.")
+        return
+    projected_df = source_df[["x", "y"]].copy()
+    for target, values in projections.items():
+        projected_df[f"projected_{target}"] = values
+    st.dataframe(pd.DataFrame(model_rows).style.format({"Pearson r": "{:.3f}"}), use_container_width=True, hide_index=True)
+
+    density_column = next((column for column in projections if "density" in column.lower()), None)
+    if density_column:
+        projected_density = f"projected_{density_column}"
+        high_density = projected_df[projected_density] > 3
+        st.metric("Projected areas above 3 people / m²", f"{int(high_density.sum())} / {len(projected_df)} nodes")
+        st.caption("Nodes above 3 people / m² are the mid-to-high density areas.")
+        map_fig = go.Figure()
+        for line in source_walls:
+            x_values, y_values = line.xy
+            map_fig.add_trace(go.Scatter(x=x_values, y=y_values, mode="lines", line=dict(color="#666"), showlegend=False))
+        map_fig.add_trace(go.Scatter(x=projected_df.x, y=projected_df.y, mode="markers", marker=dict(size=9, color=projected_df[projected_density], colorscale="YlOrRd", showscale=True, colorbar=dict(title="people / m²")), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold"), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
+        map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
+        st.plotly_chart(map_fig, use_container_width=True)
+        st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
+    else:
+        st.info("No historical density column was found, so the >3 people / m² map cannot be calculated.")
+    st.download_button("Download projected metrics as CSV", projected_df.to_csv(index=False), "projected_crowd_metrics.csv", "text/csv", key="projection_csv")
+
+
+analysis_tab, clustering_tab, projection_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering", "2.3 Crowd Projection"])
 
 def render_analysis_tab():
     uploaded_file = st.file_uploader(
@@ -698,6 +859,7 @@ def render_analysis_tab():
                 selection_mode="points",
                 key="floorplan_selector",
             )
+            render_png_download(fig_plan, "Download floorplan as PNG", "vga_floorplan.png", "vga_floorplan_png")
 
             if chart_events and "selection" in chart_events:
                 pts = chart_events["selection"].get("points", [])
@@ -814,6 +976,7 @@ def render_analysis_tab():
                     df, selected_metric, st.session_state["wall_lines"]
                 )
                 st.plotly_chart(fig_heatmap, use_container_width=True)
+                render_png_download(fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png")
 
         # Serialize Shapely wall lines to list of coordinate lists
         wall_lines_serialized = []
@@ -862,5 +1025,8 @@ with analysis_tab:
 
 with clustering_tab:
     render_clustering_tab()
+
+with projection_tab:
+    render_projection_tab()
 
 
