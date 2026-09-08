@@ -752,8 +752,8 @@ def render_projection_tab():
         map_fig = go.Figure()
         for line in source_walls:
             x_values, y_values = line.xy
-            map_fig.add_trace(go.Scatter(x=x_values, y=y_values, mode="lines", line=dict(color="#666"), showlegend=False))
-        map_fig.add_trace(go.Scatter(x=projected_df.x, y=projected_df.y, mode="markers", marker=dict(size=9, color=projected_df[projected_density], colorscale="YlOrRd", showscale=True, colorbar=dict(title="people / m²")), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold"), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
+            map_fig.add_trace(go.Scatter(x=list(x_values), y=list(y_values), mode="lines", line=dict(color="#666"), showlegend=False))
+        map_fig.add_trace(go.Scatter(x=projected_df["x"].tolist(), y=projected_df["y"].tolist(), mode="markers", marker=dict(size=9, color=projected_df[projected_density].tolist(), colorscale="YlOrRd", showscale=True, colorbar=dict(title="people / m²")), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold").tolist(), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
         map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
         st.plotly_chart(map_fig, use_container_width=True)
         st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
