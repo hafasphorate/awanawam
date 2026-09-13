@@ -1370,111 +1370,86 @@ with tab_playback:
 
             # --- Spine Reference Placement ---
             st.markdown("### 2. Define Spine Reference")
-            st.caption("Select two plan points. The first point to the second point defines the spine direction and 0°.")
-            spine_col, spine_clear_col = st.columns([4, 1])
-            with spine_col:
-                if len(st.session_state.spine_reference_points) < 2:
-                    st.info(f"Select {2 - len(st.session_state.spine_reference_points)} more point(s) on the plan.")
-                else:
-                    spine_start = st.session_state.spine_reference_points[0]
-                    spine_end = st.session_state.spine_reference_points[1]
-                    spine_angle = calculate_bearing_from_north(
-                        spine_end[0] - spine_start[0], spine_end[1] - spine_start[1]
-                    )
-                    st.success(f"Spine angle from North: {spine_angle:.1f}°. Direction 0° now follows the spine.")
-            with spine_clear_col:
-                if st.button("Clear Spine", use_container_width=True):
-                    st.session_state.spine_reference_points = []
-                    st.session_state.spine_reference_click_hash = None
-                    st.session_state.spine_reference_canvas_version += 1
-                    st.rerun()
-
-            st.radio(
-                "Angle from spine orientation",
-                options=["Clockwise", "Anti-clockwise"],
-                horizontal=True,
-                key="spine_angle_orientation",
-                help="Clockwise keeps the current direction calculation. Anti-clockwise reverses it around 360 degrees.",
-            )
-
-            spine_fig = go.Figure()
-            spine_fig = add_cad_walls_to_fig(spine_fig, line_color="#FFFFFF", line_width=1.2)
-            spine_candidates = df_track[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
-            if spine_candidates.empty:
-                st.warning("No numeric tracking coordinates are available for placing the spine reference.")
-                spine_candidates = pd.DataFrame({x_col: [0.0], y_col: [0.0]})
-            if len(spine_candidates) > 10000:
-                spine_candidates = spine_candidates.iloc[::max(len(spine_candidates) // 10000, 1)]
-            spine_fig.add_trace(
-                go.Scatter(
-                    x=spine_candidates[x_col],
-                    y=spine_candidates[y_col],
-                    mode="markers",
-                    marker=dict(size=5, color="rgba(255, 87, 34, 0.22)"),
-                    name="Tracking points",
-                    hoverinfo="skip",
+            st.caption("Enter the spine bearing from North. The spine is treated as an axis, so its direction is used as 0°.")
+            spine_input_col, spine_orientation_col = st.columns(2)
+            with spine_input_col:
+                spine_angle_deg = st.number_input(
+                    "Spine angle from North (degrees)",
+                    min_value=0.0,
+                    max_value=359.999,
+                    value=float(st.session_state.get("spine_angle_from_north_input", 0.0)),
+                    step=1.0,
+                    key="spine_angle_from_north_input",
                 )
-            )
-            click_x_min, click_x_max = spine_candidates[x_col].min(), spine_candidates[x_col].max()
-            click_y_min, click_y_max = spine_candidates[y_col].min(), spine_candidates[y_col].max()
-            click_grid_size = 60
-            click_grid_x, click_grid_y = np.meshgrid(
-                np.linspace(click_x_min, click_x_max, click_grid_size),
-                np.linspace(click_y_min, click_y_max, click_grid_size),
-            )
-            spine_fig.add_trace(
-                go.Scatter(
-                    x=click_grid_x.ravel(),
-                    y=click_grid_y.ravel(),
-                    mode="markers",
-                    marker=dict(size=12, color="rgba(255, 255, 255, 0.01)"),
-                    name="Select spine point",
-                    hoverinfo="skip",
+            with spine_orientation_col:
+                st.radio(
+                    "Angle from spine orientation",
+                    options=["Clockwise", "Anti-clockwise"],
+                    horizontal=True,
+                    key="spine_angle_orientation",
+                    help="Clockwise keeps the current direction calculation. Anti-clockwise reverses it around 360 degrees.",
                 )
-            )
-            if st.session_state.spine_reference_points:
-                spine_x = [point[0] for point in st.session_state.spine_reference_points]
-                spine_y = [point[1] for point in st.session_state.spine_reference_points]
-                spine_fig.add_trace(
+
+            preview_col, vector_col = st.columns(2)
+            with preview_col:
+                st.markdown("#### Floorplan Preview")
+                preview_fig = go.Figure()
+                preview_fig = add_cad_walls_to_fig(preview_fig, line_color="#FFFFFF", line_width=1.2)
+                preview_points = df_track[[x_col, y_col]].dropna()
+                preview_fig.add_trace(
                     go.Scatter(
-                        x=spine_x,
-                        y=spine_y,
-                        mode="lines+markers+text",
-                        line=dict(color="#00E5FF", width=4),
-                        marker=dict(size=14, color="#00E5FF"),
-                        text=[f"Spine {index + 1}" for index in range(len(spine_x))],
-                        textposition="top center",
-                        name="Spine reference",
+                        x=preview_points[x_col],
+                        y=preview_points[y_col],
+                        mode="markers",
+                        marker=dict(size=4, color="rgba(255, 87, 34, 0.35)"),
+                        name="Tracking points",
+                        hoverinfo="skip",
                     )
                 )
-            spine_fig.update_layout(
-                template="plotly_dark",
-                height=360,
-                xaxis=dict(title=x_col, scaleanchor="y", scaleratio=1),
-                yaxis=dict(title=y_col),
-                margin=dict(l=10, r=10, t=20, b=10),
-                clickmode="event+select",
-                hovermode="closest",
-            )
-            spine_events = st.plotly_chart(
-                spine_fig,
-                use_container_width=True,
-                on_select="rerun",
-                selection_mode="points",
-                key=f"spine_reference_canvas_{st.session_state.spine_reference_canvas_version}",
-            )
-            if spine_events and "selection" in spine_events:
-                selected_points = spine_events["selection"].get("points", [])
-                if selected_points and len(st.session_state.spine_reference_points) < 2:
-                    selected_point = selected_points[0]
-                    click_x = float(selected_point["x"])
-                    click_y = float(selected_point["y"])
-                    click_hash = f"{click_x:.6f}_{click_y:.6f}_{len(st.session_state.spine_reference_points)}"
-                    if click_hash != st.session_state.spine_reference_click_hash:
-                        st.session_state.spine_reference_click_hash = click_hash
-                        st.session_state.spine_reference_points.append([click_x, click_y])
-                        st.session_state.spine_reference_canvas_version += 1
-                        st.rerun()
+                preview_fig.update_layout(
+                    template="plotly_dark",
+                    height=300,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    xaxis=dict(title="X (m)", scaleanchor="y", scaleratio=1),
+                    yaxis=dict(title="Y (m)"),
+                    showlegend=False,
+                )
+                st.plotly_chart(preview_fig, use_container_width=True, key="spine_floorplan_preview")
+
+            with vector_col:
+                st.markdown("#### Spine Vector Preview")
+                vector_angle_rad = np.radians(float(spine_angle_deg))
+                vector_dx = np.sin(vector_angle_rad)
+                vector_dy = np.cos(vector_angle_rad)
+                vector_fig = go.Figure()
+                vector_fig.add_trace(
+                    go.Scatter(
+                        x=[0, vector_dx],
+                        y=[0, vector_dy],
+                        mode="lines+markers",
+                        line=dict(color="#00E5FF", width=5),
+                        marker=dict(size=[10, 16], color="#00E5FF"),
+                        name="Spine",
+                    )
+                )
+                vector_fig.add_annotation(
+                    x=vector_dx,
+                    y=vector_dy,
+                    text=f"{float(spine_angle_deg):.1f}° from North",
+                    showarrow=True,
+                    arrowhead=2,
+                    ax=-35,
+                    ay=35,
+                )
+                vector_fig.update_layout(
+                    template="plotly_dark",
+                    height=300,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    xaxis=dict(range=[-1.2, 1.2], zeroline=True, showgrid=False, title="East"),
+                    yaxis=dict(range=[-1.2, 1.2], zeroline=True, showgrid=False, title="North", scaleanchor="x", scaleratio=1),
+                    showlegend=False,
+                )
+                st.plotly_chart(vector_fig, use_container_width=True, key="spine_vector_preview")
 
             # --- Calculate Motion Metrics ---
             df_track = df_track.sort_values(by=[id_col, frame_col])
@@ -1488,11 +1463,8 @@ with tab_playback:
                 calculate_bearing_from_north(dx, dy)
                 for dx, dy in zip(df_track["dx"], df_track["dy"])
             ]
-            if len(st.session_state.spine_reference_points) == 2:
-                spine_start, spine_end = st.session_state.spine_reference_points
-                spine_angle_deg = calculate_bearing_from_north(
-                    spine_end[0] - spine_start[0], spine_end[1] - spine_start[1]
-                )
+            if "spine_angle_from_north_input" in st.session_state:
+                spine_angle_deg = float(st.session_state.spine_angle_from_north_input) % 360
                 df_track["dir_deg_spine"] = [
                     calculate_bearing_from_spine(dx, dy, spine_angle_deg)
                     for dx, dy in zip(df_track["dx"], df_track["dy"])
@@ -1742,10 +1714,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_dir, use_container_width=True)
-                if len(st.session_state.spine_reference_points) == 2:
-                    st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
-                else:
-                    st.caption("Direction is circularly averaged per spatial bin and currently uses North as the reference until two spine points are selected.")
+                st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
 
             with m_tab5:
                 st.markdown("#### Deviation Angle from Spine")
@@ -1842,6 +1811,7 @@ with tab_playback:
                     "x_column": x_col,
                     "y_column": y_col,
                     "spine_reference_points": st.session_state.get("spine_reference_points", []),
+                    "spine_angle_from_north": float(spine_angle_deg),
                     "metric_units": {
                         "volume": "average people per spatial bin",
                         "density": density_unit,
@@ -1850,7 +1820,6 @@ with tab_playback:
                         "direction": f"circular mean degrees {st.session_state.spine_angle_orientation.lower()} from spine",
                         "direction_orientation": st.session_state.spine_angle_orientation,
                         "deviation_angle_from_spine": "degrees from undirected spine axis (0-90)",
-                        "spine_angle_from_north": float(spine_angle_deg),
                     },
                 },
                 "summary": {
