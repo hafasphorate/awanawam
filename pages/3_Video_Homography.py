@@ -1177,6 +1177,7 @@ def circular_mean_degrees(values):
 
 def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
     """Maps continuous trajectory points to the nearest VGA grid node."""
+    grid_nodes = serialize_vga_nodes(grid_nodes)
     if not grid_nodes or df_track.empty:
         return df_track
 
@@ -1346,6 +1347,13 @@ with tab_playback:
         )
 
         if x_col and y_col:
+            df_track[x_col] = pd.to_numeric(df_track[x_col], errors="coerce")
+            df_track[y_col] = pd.to_numeric(df_track[y_col], errors="coerce")
+            df_track = df_track.dropna(subset=[x_col, y_col]).copy()
+            if df_track.empty:
+                st.error("Tracking data contains no numeric x/y coordinates.")
+                st.stop()
+
             if not frame_col:
                 df_track["frame_idx"] = 0
                 frame_col = "frame_idx"
@@ -1384,7 +1392,10 @@ with tab_playback:
 
             spine_fig = go.Figure()
             spine_fig = add_cad_walls_to_fig(spine_fig, line_color="#FFFFFF", line_width=1.2)
-            spine_candidates = df_track[[x_col, y_col]].dropna().drop_duplicates()
+            spine_candidates = df_track[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
+            if spine_candidates.empty:
+                st.warning("No numeric tracking coordinates are available for placing the spine reference.")
+                spine_candidates = pd.DataFrame({x_col: [0.0], y_col: [0.0]})
             if len(spine_candidates) > 10000:
                 spine_candidates = spine_candidates.iloc[::max(len(spine_candidates) // 10000, 1)]
             spine_fig.add_trace(
@@ -1503,6 +1514,7 @@ with tab_playback:
                     vga_nodes = vga_res
                 elif isinstance(vga_res, dict) and "nodes" in vga_res:
                     vga_nodes = vga_res["nodes"]
+            vga_nodes = serialize_vga_nodes(vga_nodes)
 
             if vga_nodes:
                 df_track = map_points_to_grid_nodes(
