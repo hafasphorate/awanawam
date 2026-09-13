@@ -48,6 +48,10 @@ if "processed_click_sig" not in st.session_state:
     st.session_state.processed_click_sig = None
 if "tracking_results_df" not in st.session_state:
     st.session_state.tracking_results_df = None
+if "spine_reference_points" not in st.session_state:
+    st.session_state.spine_reference_points = []
+if "spine_reference_click_hash" not in st.session_state:
+    st.session_state.spine_reference_click_hash = None
 
 # Plot Range Axes State
 if "current_x_range" not in st.session_state:
@@ -169,6 +173,109 @@ def infer_cell_area_m2(node):
     return 1.0
 
 
+def build_average_density_grid(x_values, y_values, frame_count, bins=35):
+    """Build average people density per spatial bin over the imported video."""
+    points = pd.DataFrame({"x": x_values, "y": y_values}).apply(pd.to_numeric, errors="coerce").dropna()
+    if points.empty:
+        return None
+
+    x_min, x_max = points["x"].min(), points["x"].max()
+    y_min, y_max = points["y"].min(), points["y"].max()
+    if x_min == x_max:
+        x_min, x_max = x_min - 0.5, x_max + 0.5
+    if y_min == y_max:
+        y_min, y_max = y_min - 0.5, y_max + 0.5
+
+    x_edges = np.linspace(x_min, x_max, bins + 1)
+    y_edges = np.linspace(y_min, y_max, bins + 1)
+    observations, _, _ = np.histogram2d(points["x"], points["y"], bins=[x_edges, y_edges])
+    cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
+    average_density = observations.T / max(int(frame_count), 1) / cell_area
+
+    return {
+        "x": (x_edges[:-1] + x_edges[1:]) / 2,
+        "y": (y_edges[:-1] + y_edges[1:]) / 2,
+        "density": average_density,
+        "average_people": observations.T / max(int(frame_count), 1),
+        "cell_area": cell_area,
+    }
+
+
+def build_peak_density_grid(x_values, y_values, frame_values, bins=35):
+    """Build maximum instantaneous people density per spatial bin over the video."""
+    points = pd.DataFrame({"x": x_values, "y": y_values, "frame": frame_values})
+    points["x"] = pd.to_numeric(points["x"], errors="coerce")
+    points["y"] = pd.to_numeric(points["y"], errors="coerce")
+    points = points.dropna(subset=["x", "y", "frame"])
+    if points.empty:
+        return None
+
+    x_min, x_max = points["x"].min(), points["x"].max()
+    y_min, y_max = points["y"].min(), points["y"].max()
+    if x_min == x_max:
+        x_min, x_max = x_min - 0.5, x_max + 0.5
+    if y_min == y_max:
+        y_min, y_max = y_min - 0.5, y_max + 0.5
+
+    x_edges = np.linspace(x_min, x_max, bins + 1)
+    y_edges = np.linspace(y_min, y_max, bins + 1)
+    peak_observations = np.zeros((bins, bins))
+    for _, frame_points in points.groupby("frame", sort=False):
+        frame_counts, _, _ = np.histogram2d(
+            frame_points["x"], frame_points["y"], bins=[x_edges, y_edges]
+        )
+        peak_observations = np.maximum(peak_observations, frame_counts)
+
+    cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
+    return {
+        "x": (x_edges[:-1] + x_edges[1:]) / 2,
+        "y": (y_edges[:-1] + y_edges[1:]) / 2,
+        "density": peak_observations.T / cell_area,
+        "cell_area": cell_area,
+    }
+
+
+def build_average_metric_grid(x_values, y_values, metric_values, circular=False, bins=35):
+    """Build a spatial grid of arithmetic or circular mean metric values."""
+    points = pd.DataFrame({"x": x_values, "y": y_values, "metric": metric_values})
+    points["x"] = pd.to_numeric(points["x"], errors="coerce")
+    points["y"] = pd.to_numeric(points["y"], errors="coerce")
+    points["metric"] = pd.to_numeric(points["metric"], errors="coerce")
+    points = points.dropna()
+    if points.empty:
+        return None
+
+    x_min, x_max = points["x"].min(), points["x"].max()
+    y_min, y_max = points["y"].min(), points["y"].max()
+    if x_min == x_max:
+        x_min, x_max = x_min - 0.5, x_max + 0.5
+    if y_min == y_max:
+        y_min, y_max = y_min - 0.5, y_max + 0.5
+
+    x_edges = np.linspace(x_min, x_max, bins + 1)
+    y_edges = np.linspace(y_min, y_max, bins + 1)
+    x_index = np.clip(np.digitize(points["x"], x_edges) - 1, 0, bins - 1)
+    y_index = np.clip(np.digitize(points["y"], y_edges) - 1, 0, bins - 1)
+    mean_values = np.full((bins, bins), np.nan)
+
+    for x_bin in range(bins):
+        for y_bin in range(bins):
+            selected = points[(x_index == x_bin) & (y_index == y_bin)]["metric"]
+            if selected.empty:
+                continue
+            mean_values[y_bin, x_bin] = (
+                circular_mean_degrees(selected)
+                if circular
+                else float(selected.mean())
+            )
+
+    return {
+        "x": (x_edges[:-1] + x_edges[1:]) / 2,
+        "y": (y_edges[:-1] + y_edges[1:]) / 2,
+        "metric": mean_values,
+    }
+
+
 def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, x_col, y_col):
     """Merge VGA node metadata with per-grid crowd metrics keyed by grid_node_idx."""
     vga_rows = []
@@ -177,19 +284,43 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
     elif not isinstance(vga_nodes, list):
         vga_nodes = []
 
+    heading_col = "dir_deg_spine" if "dir_deg_spine" in df_track.columns else "dir_deg_north"
+    deviation_col = "deviation_deg_spine" if "deviation_deg_spine" in df_track.columns else None
     crowd_by_grid = {}
     if "grid_node_idx" in df_track.columns:
         crowd_by_grid = (
             df_track.groupby("grid_node_idx")
             .agg(
-                pedestrian_count=(id_col, "count"),
                 unique_pedestrians=(id_col, "nunique"),
+                person_frames=(id_col, "count"),
                 avg_speed=("speed", "mean"),
-                mean_heading_deg=("dir_deg_north", "mean"),
-                crowd_volume=(id_col, "count"),
+                mean_deviation_deg=(deviation_col, "mean") if deviation_col else ("speed", "mean"),
             )
             .to_dict("index")
         )
+        mean_heading_by_grid = (
+            df_track.groupby("grid_node_idx")[heading_col]
+            .apply(circular_mean_degrees)
+            .to_dict()
+        )
+        mean_people_by_grid = (
+            df_track.groupby(["grid_node_idx", frame_col])[id_col]
+            .nunique()
+            .groupby(level=0)
+            .mean()
+            .to_dict()
+        )
+        peak_people_by_grid = (
+            df_track.groupby(["grid_node_idx", frame_col])[id_col]
+            .nunique()
+            .groupby(level=0)
+            .max()
+            .to_dict()
+        )
+    else:
+        mean_people_by_grid = {}
+        peak_people_by_grid = {}
+        mean_heading_by_grid = {}
 
     for idx, node in enumerate(vga_nodes):
         row = dict(node) if isinstance(node, dict) else {"node_id": idx}
@@ -200,20 +331,28 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
             grid_key = int(grid_key)
 
         agg = crowd_by_grid.get(grid_key, {})
-        pedestrian_count = int(agg.get("pedestrian_count", row.get("pedestrian_count", 0)))
+        unique_pedestrians = int(agg.get("unique_pedestrians", row.get("unique_pedestrians", 0)))
         cell_area_m2 = infer_cell_area_m2(row)
-        crowd_volume = int(agg.get("crowd_volume", row.get("crowd_volume", pedestrian_count)))
-        crowd_density = (pedestrian_count / cell_area_m2) if cell_area_m2 > 0 else 0.0
+        person_frames = int(agg.get("person_frames", row.get("person_frames", row.get("crowd_volume", 0))))
+        mean_people = float(mean_people_by_grid.get(grid_key, row.get("mean_people", 0.0)))
+        peak_people = float(peak_people_by_grid.get(grid_key, row.get("peak_people", 0.0)))
+        crowd_density = (mean_people / cell_area_m2) if cell_area_m2 > 0 else 0.0
+        peak_density = (peak_people / cell_area_m2) if cell_area_m2 > 0 else 0.0
 
         row.update(
             {
-                "pedestrian_count": pedestrian_count,
-                "unique_pedestrians": int(agg.get("unique_pedestrians", row.get("unique_pedestrians", 0))),
+                "pedestrian_count": unique_pedestrians,
+                "unique_pedestrians": unique_pedestrians,
                 "avg_speed": float(agg.get("avg_speed", row.get("avg_speed", 0.0))),
-                "mean_heading_deg": float(agg.get("mean_heading_deg", row.get("mean_heading_deg", 0.0))),
-                "crowd_volume": crowd_volume,
+                "mean_heading_deg": float(mean_heading_by_grid.get(grid_key, row.get("mean_heading_deg", 0.0))),
+                "deviation_angle_from_spine": float(agg.get("mean_deviation_deg", row.get("deviation_angle_from_spine", 0.0))) if deviation_col else float(row.get("deviation_angle_from_spine", 0.0)),
+                "person_frames": person_frames,
+                "crowd_volume": person_frames,
+                "mean_people": mean_people,
                 "crowd_density": float(crowd_density),
-                "volume": float(crowd_volume),
+                "peak_people": peak_people,
+                "peak_density": float(peak_density),
+                "volume": mean_people,
                 "density": float(crowd_density),
                 "speed": float(agg.get("avg_speed", row.get("speed", row.get("avg_speed", 0.0)))),
                 "direction": float(agg.get("mean_heading_deg", row.get("direction", row.get("mean_heading_deg", 0.0)))),
@@ -223,23 +362,32 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
 
     if not vga_rows and "grid_node_idx" in df_track.columns:
         for grid_idx, group in df_track.groupby("grid_node_idx"):
-            pedestrian_count = int(group[id_col].count())
+            unique_pedestrians = int(group[id_col].nunique())
+            person_frames = int(group[id_col].count())
+            mean_people = float(group.groupby(frame_col)[id_col].nunique().mean())
+            peak_people = float(group.groupby(frame_col)[id_col].nunique().max())
             cell_area_m2 = 1.0
-            crowd_density = pedestrian_count / cell_area_m2 if cell_area_m2 > 0 else 0.0
+            crowd_density = mean_people / cell_area_m2 if cell_area_m2 > 0 else 0.0
+            peak_density = peak_people / cell_area_m2 if cell_area_m2 > 0 else 0.0
             vga_rows.append(
                 {
                     "node_id": int(grid_idx),
                     "grid_node_idx": int(grid_idx),
-                    "pedestrian_count": pedestrian_count,
-                    "unique_pedestrians": int(group[id_col].nunique()),
+                    "pedestrian_count": unique_pedestrians,
+                    "unique_pedestrians": unique_pedestrians,
                     "avg_speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
-                    "mean_heading_deg": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
-                    "crowd_volume": pedestrian_count,
+                    "mean_heading_deg": circular_mean_degrees(group[heading_col]) if heading_col in group.columns else 0.0,
+                    "deviation_angle_from_spine": float(group[deviation_col].mean()) if deviation_col else 0.0,
+                    "person_frames": person_frames,
+                    "crowd_volume": person_frames,
+                    "mean_people": mean_people,
                     "crowd_density": float(crowd_density),
-                    "volume": float(pedestrian_count),
+                    "peak_people": peak_people,
+                    "peak_density": float(peak_density),
+                    "volume": mean_people,
                     "density": float(crowd_density),
                     "speed": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
-                    "direction": float(group["dir_deg_north"].mean()) if "dir_deg_north" in group.columns else 0.0,
+                    "direction": float(group[heading_col].mean()) if heading_col in group.columns else 0.0,
                 }
             )
 
@@ -986,6 +1134,29 @@ def calculate_bearing_from_north(dx, dy):
     return float(angle_deg % 360)
 
 
+def calculate_bearing_from_spine(dx, dy, spine_angle_deg):
+    """Return movement direction clockwise from the user-defined spine axis."""
+    if dx == 0 and dy == 0:
+        return 0.0
+    north_bearing = calculate_bearing_from_north(dx, dy)
+    return float((north_bearing - spine_angle_deg) % 360)
+
+
+def calculate_deviation_from_spine(dx, dy, spine_angle_deg):
+    """Return the smallest angle to an undirected spine axis, from 0 to 90 degrees."""
+    spine_relative_bearing = calculate_bearing_from_spine(dx, dy, spine_angle_deg)
+    return float(abs(((spine_relative_bearing + 90) % 180) - 90))
+
+
+def circular_mean_degrees(values):
+    """Average compass angles without treating 0 and 360 as far apart."""
+    numeric_values = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    if numeric_values.empty:
+        return 0.0
+    radians = np.radians(numeric_values.to_numpy())
+    return float(np.degrees(np.arctan2(np.sin(radians).mean(), np.cos(radians).mean())) % 360)
+
+
 def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
     """Maps continuous trajectory points to the nearest VGA grid node."""
     if not grid_nodes or df_track.empty:
@@ -1164,17 +1335,115 @@ with tab_playback:
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
 
+            # --- Spine Reference Placement ---
+            st.markdown("### 2. Define Spine Reference")
+            st.caption("Select two plan points. The first point to the second point defines the spine direction and 0°.")
+            spine_col, spine_clear_col = st.columns([4, 1])
+            with spine_col:
+                if len(st.session_state.spine_reference_points) < 2:
+                    st.info(f"Select {2 - len(st.session_state.spine_reference_points)} more point(s) on the plan.")
+                else:
+                    spine_start = st.session_state.spine_reference_points[0]
+                    spine_end = st.session_state.spine_reference_points[1]
+                    spine_angle = calculate_bearing_from_north(
+                        spine_end[0] - spine_start[0], spine_end[1] - spine_start[1]
+                    )
+                    st.success(f"Spine angle from North: {spine_angle:.1f}°. Direction 0° now follows the spine.")
+            with spine_clear_col:
+                if st.button("Clear Spine", use_container_width=True):
+                    st.session_state.spine_reference_points = []
+                    st.session_state.spine_reference_click_hash = None
+                    st.rerun()
+
+            spine_fig = go.Figure()
+            spine_fig = add_cad_walls_to_fig(spine_fig, line_color="#FFFFFF", line_width=1.2)
+            spine_candidates = df_track[[x_col, y_col]].dropna().drop_duplicates()
+            if len(spine_candidates) > 10000:
+                spine_candidates = spine_candidates.iloc[::max(len(spine_candidates) // 10000, 1)]
+            spine_fig.add_trace(
+                go.Scatter(
+                    x=spine_candidates[x_col],
+                    y=spine_candidates[y_col],
+                    mode="markers",
+                    marker=dict(size=5, color="rgba(255, 87, 34, 0.22)"),
+                    name="Tracking points",
+                    hoverinfo="skip",
+                )
+            )
+            if st.session_state.spine_reference_points:
+                spine_x = [point[0] for point in st.session_state.spine_reference_points]
+                spine_y = [point[1] for point in st.session_state.spine_reference_points]
+                spine_fig.add_trace(
+                    go.Scatter(
+                        x=spine_x,
+                        y=spine_y,
+                        mode="lines+markers+text",
+                        line=dict(color="#00E5FF", width=4),
+                        marker=dict(size=14, color="#00E5FF"),
+                        text=[f"Spine {index + 1}" for index in range(len(spine_x))],
+                        textposition="top center",
+                        name="Spine reference",
+                    )
+                )
+            spine_fig.update_layout(
+                template="plotly_dark",
+                height=360,
+                xaxis=dict(title=x_col, scaleanchor="y", scaleratio=1),
+                yaxis=dict(title=y_col),
+                margin=dict(l=10, r=10, t=20, b=10),
+                clickmode="event+select",
+                hovermode="closest",
+            )
+            spine_events = st.plotly_chart(
+                spine_fig,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="points",
+                key="spine_reference_canvas",
+            )
+            if spine_events and "selection" in spine_events:
+                selected_points = spine_events["selection"].get("points", [])
+                if selected_points and len(st.session_state.spine_reference_points) < 2:
+                    selected_point = selected_points[0]
+                    click_x = float(selected_point["x"])
+                    click_y = float(selected_point["y"])
+                    click_hash = f"{click_x:.6f}_{click_y:.6f}_{len(st.session_state.spine_reference_points)}"
+                    if click_hash != st.session_state.spine_reference_click_hash:
+                        st.session_state.spine_reference_click_hash = click_hash
+                        st.session_state.spine_reference_points.append([click_x, click_y])
+                        st.rerun()
+
             # --- Calculate Motion Metrics ---
             df_track = df_track.sort_values(by=[id_col, frame_col])
             df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
             df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
             df_track["speed"] = np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
+            speed_unit = "coordinate units/frame"
 
-            # Compass Bearing (0° North)
+            # Compass Bearing (0° North) and user-relative spine bearing.
             df_track["dir_deg_north"] = [
                 calculate_bearing_from_north(dx, dy)
                 for dx, dy in zip(df_track["dx"], df_track["dy"])
             ]
+            if len(st.session_state.spine_reference_points) == 2:
+                spine_start, spine_end = st.session_state.spine_reference_points
+                spine_angle_deg = calculate_bearing_from_north(
+                    spine_end[0] - spine_start[0], spine_end[1] - spine_start[1]
+                )
+                df_track["dir_deg_spine"] = [
+                    calculate_bearing_from_spine(dx, dy, spine_angle_deg)
+                    for dx, dy in zip(df_track["dx"], df_track["dy"])
+                ]
+                df_track["deviation_deg_spine"] = [
+                    calculate_deviation_from_spine(dx, dy, spine_angle_deg)
+                    for dx, dy in zip(df_track["dx"], df_track["dy"])
+                ]
+            else:
+                spine_angle_deg = 0.0
+                df_track["dir_deg_spine"] = df_track["dir_deg_north"]
+                df_track["deviation_deg_spine"] = df_track["dir_deg_north"].apply(
+                    lambda angle: abs(((angle + 90) % 180) - 90)
+                )
 
             # --- Grid Alignment (VGA Node Mapping) ---
             vga_nodes = st.session_state.get("vga_floorplan_nodes", [])
@@ -1264,38 +1533,47 @@ with tab_playback:
             # --- 3. Aggregated Metrics ---
             st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
 
-            m_tab1, m_tab2, m_tab3, m_tab4 = st.tabs(
+            m_tab1, m_tab2, m_tab3, m_tab4, m_tab5, m_tab6 = st.tabs(
                 [
                     " Crowd Volume",
                     " Density Heatmap",
                     " Speed Distribution",
                     " Directional Flow",
+                    " Deviation from Spine",
+                    " Peak Density",
                 ]
             )
 
             with m_tab1:
-                st.markdown("#### Cumulative Occupancy Heatmap")
+                st.markdown("#### Average Occupancy Heatmap")
                 fig_vol = go.Figure()
                 fig_vol = add_cad_walls_to_fig(
                     fig_vol, line_color="#FFFFFF", line_width=1.5
                 )
-                fig_vol.add_trace(
-                    go.Histogram2dContour(
-                        x=df_track[x_col],
-                        y=df_track[y_col],
-                        colorscale="Viridis",
-                        showscale=True,
-                    )
+                volume_grid = build_average_density_grid(
+                    df_track[x_col], df_track[y_col], df_track[frame_col].nunique()
                 )
+                if volume_grid is not None:
+                    fig_vol.add_trace(
+                        go.Heatmap(
+                            x=volume_grid["x"],
+                            y=volume_grid["y"],
+                            z=volume_grid["average_people"],
+                            colorscale="Viridis",
+                            colorbar=dict(title="people / bin"),
+                            hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>average people=%{z:.3f}<extra></extra>",
+                        )
+                    )
                 fig_vol.update_layout(
                     template="plotly_dark",
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_vol, use_container_width=True)
+                st.caption(f"Volume is average people per spatial bin across {df_track[frame_col].nunique()} frames. Cumulative person-frames remain available in the export.")
 
             with m_tab2:
-                st.markdown("#### Binned Pedestrian Density Grid")
+                st.markdown("#### Average Pedestrian Density Grid")
                 fig_dens = go.Figure()
                 fig_dens = add_cad_walls_to_fig(
                     fig_dens, line_color="#FFFFFF", line_width=1.5
@@ -1312,33 +1590,47 @@ with tab_playback:
                     else df_track[y_col]
                 )
 
-                fig_dens.add_trace(
-                    go.Histogram2d(
-                        x=plot_x,
-                        y=plot_y,
-                        colorscale="Hot",
-                        showscale=True,
-                        nbinsx=35,
-                        nbinsy=35,
-                    )
+                density_grid = build_average_density_grid(
+                    plot_x, plot_y, df_track[frame_col].nunique()
                 )
+                coordinate_unit = "m" if x_col in {"world_x", "x_m", "x (m)"} and y_col in {"world_y", "y_m", "y (m)"} else "coordinate unit"
+                density_unit = f"people / {coordinate_unit}²"
+                if density_grid is not None:
+                    fig_dens.add_trace(
+                        go.Heatmap(
+                            x=density_grid["x"],
+                            y=density_grid["y"],
+                            z=density_grid["density"],
+                            colorscale="Hot",
+                            colorbar=dict(title=density_unit),
+                            hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>average density=%{{z:.3f}} {density_unit}<extra></extra>",
+                        )
+                    )
                 fig_dens.update_layout(
                     template="plotly_dark",
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_dens, use_container_width=True)
+                st.caption(f"Density is averaged across {df_track[frame_col].nunique()} frames and normalized by each spatial bin area ({density_unit}).")
 
             with m_tab3:
-                st.markdown("#### Velocity Heatmap")
-                fig_spd = px.scatter(
-                    df_track,
-                    x=x_col,
-                    y=y_col,
-                    color="speed",
-                    color_continuous_scale="Plasma",
-                    title="Pedestrian Speed Distribution",
+                st.markdown("#### Average Speed Heatmap")
+                fig_spd = go.Figure()
+                speed_grid = build_average_metric_grid(
+                    df_track[x_col], df_track[y_col], df_track["speed"]
                 )
+                if speed_grid is not None:
+                    fig_spd.add_trace(
+                        go.Heatmap(
+                            x=speed_grid["x"],
+                            y=speed_grid["y"],
+                            z=speed_grid["metric"],
+                            colorscale="Plasma",
+                            colorbar=dict(title=speed_unit),
+                            hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>average speed=%{{z:.3f}} {speed_unit}<extra></extra>",
+                        )
+                    )
                 fig_spd = add_cad_walls_to_fig(fig_spd)
                 fig_spd.update_layout(
                     template="plotly_dark",
@@ -1346,19 +1638,27 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_spd, use_container_width=True)
+                st.caption(f"Speed is averaged per spatial bin. Unit: {speed_unit}. Convert to m/s only when coordinates are meters and the source frame rate is known.")
 
             with m_tab4:
-                st.markdown("#### Directional Shift Field (Degrees from North)")
-                fig_dir = px.scatter(
-                    df_track,
-                    x=x_col,
-                    y=y_col,
-                    color="dir_deg_north",
-                    color_continuous_scale="twilight",
-                    range_color=[0, 360],
-                    labels={"dir_deg_north": "Heading (° North)"},
-                    title="Movement Direction Relative to North (0° = Up/North)",
+                st.markdown("#### Average Directional Flow (Degrees from Spine)")
+                fig_dir = go.Figure()
+                direction_grid = build_average_metric_grid(
+                    df_track[x_col], df_track[y_col], df_track["dir_deg_spine"], circular=True
                 )
+                if direction_grid is not None:
+                    fig_dir.add_trace(
+                        go.Heatmap(
+                            x=direction_grid["x"],
+                            y=direction_grid["y"],
+                            z=direction_grid["metric"],
+                            colorscale="twilight",
+                            zmin=0,
+                            zmax=360,
+                            colorbar=dict(title="degrees from spine"),
+                            hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>circular mean direction=%{z:.2f}°<extra></extra>",
+                        )
+                    )
                 fig_dir = add_cad_walls_to_fig(fig_dir)
                 fig_dir.update_layout(
                     template="plotly_dark",
@@ -1366,6 +1666,60 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_dir, use_container_width=True)
+                if len(st.session_state.spine_reference_points) == 2:
+                    st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees clockwise from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
+                else:
+                    st.caption("Direction is circularly averaged per spatial bin and currently uses North as the reference until two spine points are selected.")
+
+            with m_tab5:
+                st.markdown("#### Deviation Angle from Spine")
+                fig_deviation = px.scatter(
+                    df_track,
+                    x=x_col,
+                    y=y_col,
+                    color="deviation_deg_spine",
+                    color_continuous_scale="Turbo",
+                    range_color=[0, 90],
+                    labels={"deviation_deg_spine": "Deviation angle (°)"},
+                    title="Movement Deviation from Spine (0° = along either spine direction)",
+                )
+                fig_deviation = add_cad_walls_to_fig(fig_deviation)
+                fig_deviation.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
+                st.plotly_chart(fig_deviation, use_container_width=True)
+                st.caption("Deviation is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°.")
+
+            with m_tab6:
+                st.markdown("#### Peak Pedestrian Density")
+                fig_peak_density = go.Figure()
+                fig_peak_density = add_cad_walls_to_fig(
+                    fig_peak_density, line_color="#FFFFFF", line_width=1.5
+                )
+                peak_density_grid = build_peak_density_grid(
+                    plot_x, plot_y, df_track[frame_col]
+                )
+                if peak_density_grid is not None:
+                    fig_peak_density.add_trace(
+                        go.Heatmap(
+                            x=peak_density_grid["x"],
+                            y=peak_density_grid["y"],
+                            z=peak_density_grid["density"],
+                            colorscale="Inferno",
+                            zmin=0,
+                            colorbar=dict(title=density_unit),
+                            hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>peak density=%{{z:.3f}} {density_unit}<extra></extra>",
+                        )
+                    )
+                fig_peak_density.update_layout(
+                    template="plotly_dark",
+                    height=500,
+                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                )
+                st.plotly_chart(fig_peak_density, use_container_width=True)
+                st.caption(f"Peak density is the highest single-frame density observed in each spatial bin ({density_unit}).")
 
             st.markdown("---")
             st.markdown(
@@ -1402,6 +1756,16 @@ with tab_playback:
                     "track_id_column": id_col,
                     "x_column": x_col,
                     "y_column": y_col,
+                    "spine_reference_points": st.session_state.get("spine_reference_points", []),
+                    "metric_units": {
+                        "volume": "average people per spatial bin",
+                        "density": density_unit,
+                        "peak_density": density_unit + " (maximum single-frame value)",
+                        "speed": "arithmetic average " + speed_unit,
+                        "direction": "circular mean degrees clockwise from spine",
+                        "deviation_angle_from_spine": "degrees from undirected spine axis (0-90)",
+                        "spine_angle_from_north": float(spine_angle_deg),
+                    },
                 },
                 "summary": {
                     "total_frames": int(df_track[frame_col].nunique()),
@@ -1434,6 +1798,8 @@ with tab_playback:
                         y_col,
                         "speed",
                         "dir_deg_north",
+                        "dir_deg_spine",
+                        "deviation_deg_spine",
                     ]
                     + (["grid_node_idx"] if "grid_node_idx" in df_track else [])
                 ].to_dict(orient="records"),
