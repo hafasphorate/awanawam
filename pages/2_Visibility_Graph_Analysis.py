@@ -957,9 +957,41 @@ def projection_png(projected_df, density_column, walls):
     return output.getvalue()
 
 
+def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_columns, neighbor_fraction=0.05):
+    """Project crowd metrics using inverse-distance weighted neighbors in VGA feature space."""
+    historical_features = historical_df[feature_columns].apply(pd.to_numeric, errors="coerce")
+    source_features = source_df[feature_columns].apply(pd.to_numeric, errors="coerce")
+    imputer = SimpleImputer(strategy="median")
+    scaler = StandardScaler()
+    historical_space = scaler.fit_transform(imputer.fit_transform(historical_features))
+    source_space = scaler.transform(imputer.transform(source_features))
+
+    neighbor_count = max(1, int(np.ceil(len(historical_df) * neighbor_fraction)))
+    neighbor_count = min(neighbor_count, len(historical_df))
+    projections = {target: np.full(len(source_df), np.nan) for target in target_columns}
+    for source_index, source_point in enumerate(source_space):
+        distances = np.linalg.norm(historical_space - source_point, axis=1)
+        nearest_indices = np.argsort(distances)[:neighbor_count]
+        nearest_distances = distances[nearest_indices]
+        for target in target_columns:
+            target_values = pd.to_numeric(historical_df[target], errors="coerce").to_numpy()
+            valid = pd.notna(target_values[nearest_indices])
+            if not valid.any():
+                continue
+            values = target_values[nearest_indices][valid]
+            selected_distances = nearest_distances[valid]
+            if np.any(selected_distances == 0):
+                projections[target][source_index] = float(values[selected_distances == 0][0])
+                continue
+            weights = 1.0 / selected_distances
+            projections[target][source_index] = float(np.average(values, weights=weights))
+
+    return projections, neighbor_count
+
+
 def render_projection_tab():
     st.subheader("Projected Crowd Metrics")
-    st.caption("Historical Pearson correlations from Supabase are used with standardized linear models to estimate crowd metrics for uploaded VGA nodes.")
+    st.caption("Each VGA node is mapped into a standardized 10D VGA space. Its closest 5% of historical nodes estimate crowd metrics using inverse-distance weighting.")
     projection_upload = st.file_uploader("Upload previous VGA results (JSON)", type=["json"], key="projection_json_uploader")
     source_df = st.session_state.get("vga_df")
     source_walls = st.session_state.get("wall_lines", [])
@@ -989,43 +1021,44 @@ def render_projection_tab():
         return
 
     vga_columns = [column for column in source_df.select_dtypes(include=np.number).columns if column not in {"x", "y"}]
+    shared_vga_columns = [
+        column
+        for column in vga_columns
+        if column in historical_df.columns and pd.to_numeric(historical_df[column], errors="coerce").notna().any()
+    ]
     crowd_columns = [column for column in historical_df.select_dtypes(include=np.number).columns if any(word in column.lower() for word in ("crowd", "density", "people", "pedestrian", "count", "volume"))]
-    if not vga_columns or not crowd_columns:
-        st.warning("The uploaded VGA data or Supabase data does not contain usable numeric metrics.")
+    if len(shared_vga_columns) < 10 or not crowd_columns:
+        st.warning("The uploaded VGA data and Supabase data must share at least 10 numeric VGA metrics and contain crowd metrics.")
         return
 
     selected_targets = st.multiselect("Crowd metrics to project", crowd_columns, default=[column for column in crowd_columns if "density" in column.lower()] or crowd_columns[:1], key="projection_targets")
     if not selected_targets:
         return
 
-    projections = {}
-    model_rows = []
-    for target in selected_targets:
-        best = None
-        for feature in vga_columns:
-            paired = historical_df[[feature, target]].apply(pd.to_numeric, errors="coerce").dropna()
-            if len(paired) < 3 or paired[feature].nunique() < 2:
-                continue
-            correlation = paired[feature].corr(paired[target])
-            if pd.notna(correlation) and (best is None or abs(correlation) > abs(best["correlation"])):
-                best = {"feature": feature, "correlation": float(correlation), "paired": paired}
-        if best is None:
-            continue
-        paired = best["paired"]
-        x_values = pd.to_numeric(source_df[best["feature"]], errors="coerce")
-        x_std = paired[best["feature"]].std()
-        slope = best["correlation"] * paired[target].std() / x_std if x_std else 0.0
-        intercept = paired[target].mean() - slope * paired[best["feature"]].mean()
-        projections[target] = (intercept + slope * x_values).clip(lower=0)
-        model_rows.append({"Crowd metric": target, "Best VGA metric": best["feature"], "Pearson r": best["correlation"]})
-
+    feature_columns = shared_vga_columns[:10]
+    projections, neighbor_count = project_crowd_metrics_knn(
+        source_df,
+        historical_df,
+        feature_columns,
+        selected_targets,
+    )
+    projections = {
+        target: pd.Series(values, index=source_df.index).clip(lower=0)
+        for target, values in projections.items()
+        if pd.notna(values).any()
+    }
     if not projections:
-        st.warning("No VGA-to-crowd pairs have at least three complete historical records.")
+        st.warning("No selected crowd metrics have usable historical values in the closest VGA neighbors.")
         return
     projected_df = source_df[["x", "y"]].copy()
     for target, values in projections.items():
         projected_df[f"projected_{target}"] = values
-    st.dataframe(pd.DataFrame(model_rows).style.format({"Pearson r": "{:.3f}"}), use_container_width=True, hide_index=True)
+    st.caption(f"VGA dimensions: {', '.join(feature_columns)} | Historical neighbors per node: {neighbor_count} of {len(historical_df)}")
+    st.dataframe(
+        pd.DataFrame({"Crowd metric": list(projections), "Method": "Inverse-distance weighted average"}),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     density_column = next((column for column in projections if "density" in column.lower()), None)
     if density_column:
