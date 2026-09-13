@@ -1883,10 +1883,11 @@ with tab_playback:
                             y=peak_density_grid["y"],
                             z=peak_density_grid.get("metric", peak_density_grid.get("density")),
                             colorscale=[
-                                [0.0, "#ffffff"],
+                                [0.0, "#22c55e"],
+                                [1 / 7, "#22c55e"],
                                 [2 / 7, "#facc15"],
                                 [3 / 7, "#facc15"],
-                                [4 / 7, "#22c55e"],
+                                [4 / 7, "#f97316"],
                                 [5 / 7, "#ef4444"],
                                 [1.0, "#b91c1c"],
                             ],
