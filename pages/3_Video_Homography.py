@@ -347,6 +347,15 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
         "avg_speed",
         "mean_heading_deg",
         "deviation_angle_from_spine",
+        "unique_pedestrian_count",
+        "average_speed_mps",
+        "average_direction_from_spine_degrees",
+        "average_deviation_from_spine_degrees",
+        "total_pedestrian_observations",
+        "average_people_per_frame",
+        "average_density_people_per_m2",
+        "peak_people_in_frame",
+        "peak_density_people_per_m2",
         "person_frames",
         "crowd_volume",
         "mean_people",
@@ -423,15 +432,11 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
 
         row.update(
             {
-                "unique_pedestrian_count": unique_pedestrians,
-                "average_speed_mps": float(agg.get("avg_speed", 0.0)),
-                "average_direction_from_spine_degrees": float(mean_heading_by_grid.get(grid_key, 0.0)),
-                "average_deviation_from_spine_degrees": float(agg.get("mean_deviation_deg", 0.0)) if deviation_col else 0.0,
-                "total_pedestrian_observations": person_frames,
-                "average_people_per_frame": mean_people,
-                "average_density_people_per_m2": float(crowd_density),
-                "peak_people_in_frame": peak_people,
-                "peak_density_people_per_m2": float(peak_density),
+                "crowd_density": float(crowd_density),
+                "peak_density": float(peak_density),
+                "speed_mps": float(agg.get("avg_speed", 0.0)),
+                "degrees_from_spine": float(mean_heading_by_grid.get(grid_key, 0.0)),
+                "deviation_from_spine_degrees": float(agg.get("mean_deviation_deg", 0.0)) if deviation_col else 0.0,
             }
         )
         vga_rows.append(row)
@@ -449,15 +454,11 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
                 {
                     "node_id": int(grid_idx),
                     "grid_node_idx": int(grid_idx),
-                    "unique_pedestrian_count": unique_pedestrians,
-                    "average_speed_mps": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
-                    "average_direction_from_spine_degrees": circular_mean_degrees(group[heading_col]) if heading_col in group.columns else 0.0,
-                    "average_deviation_from_spine_degrees": float(group[deviation_col].mean()) if deviation_col else 0.0,
-                    "total_pedestrian_observations": person_frames,
-                    "average_people_per_frame": mean_people,
-                    "average_density_people_per_m2": float(crowd_density),
-                    "peak_people_in_frame": peak_people,
-                    "peak_density_people_per_m2": float(peak_density),
+                    "crowd_density": float(crowd_density),
+                    "peak_density": float(peak_density),
+                    "speed_mps": float(group["speed"].mean()) if "speed" in group.columns else 0.0,
+                    "degrees_from_spine": circular_mean_degrees(group[heading_col]) if heading_col in group.columns else 0.0,
+                    "deviation_from_spine_degrees": float(group[deviation_col].mean()) if deviation_col else 0.0,
                 }
             )
 
@@ -1314,6 +1315,7 @@ with tab_playback:
                 "grid_nodes_correlation_data",
                 "crowd_metrics_by_grid",
                 "grid_node_metrics",
+                "nodes",
             ]:
                 if key in raw_json:
                     st.session_state["vga_floorplan_nodes"] = raw_json[key]
@@ -1333,6 +1335,7 @@ with tab_playback:
                 "tracking_data",
                 "grid_nodes_correlation_data",
                 "crowd_metrics_by_grid",
+                "nodes",
             ]:
                 if (
                     key in raw_json
@@ -1950,14 +1953,12 @@ with tab_playback:
                     "spine_angle_from_horizontal": float(st.session_state.get("spine_angle_from_horizontal_input", 0.0)),
                     "spine_bearing_from_north": float(spine_angle_deg),
                     "metric_units": {
-                        "average_people_per_frame": "people per spatial bin, averaged across observed frames",
-                        "average_density_people_per_m2": density_unit,
-                        "peak_density_people_per_m2": density_unit + " (maximum single-frame value)",
-                        "average_speed_mps": "arithmetic average " + speed_unit,
-                        "average_direction_from_spine_degrees": f"circular mean degrees {st.session_state.spine_angle_orientation.lower()} from spine",
+                        "crowd_density": density_unit + " (average across observed frames)",
+                        "peak_density": density_unit + " (maximum single-frame value)",
+                        "speed_mps": "arithmetic average " + speed_unit,
+                        "degrees_from_spine": f"circular mean degrees {st.session_state.spine_angle_orientation.lower()} from spine",
                         "direction_orientation": st.session_state.spine_angle_orientation,
-                        "average_deviation_from_spine_degrees": "degrees from undirected spine axis (0-90)",
-                        "total_pedestrian_observations": "tracking records across all observed frames",
+                        "deviation_from_spine_degrees": "degrees from undirected spine axis (0-90)",
                     },
                 },
                 "summary": {
@@ -1977,8 +1978,7 @@ with tab_playback:
                 },
                 "wall_lines": wall_lines_serialized,
                 "cad_walls": wall_lines_serialized,
-                "grid_node_metrics": integrated_correlation_nodes,
-                "raw_vga_analysis": raw_vga_analysis,
+                "nodes": integrated_correlation_nodes,
                 "trajectories": df_track[
                     [frame_col, id_col, x_col, y_col, "speed", "dir_deg_north", "dir_deg_spine", "deviation_deg_spine"]
                     + (["grid_node_idx"] if "grid_node_idx" in df_track else [])
