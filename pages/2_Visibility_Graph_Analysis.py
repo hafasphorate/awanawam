@@ -427,12 +427,11 @@ def calculate_cluster_spine(cluster_df, count_df=None):
     edge_length = math.hypot(edge_dx, edge_dy)
     center_x, center_y = minimum_rectangle.centroid.x, minimum_rectangle.centroid.y
     direction_x, direction_y = edge_dx / edge_length, edge_dy / edge_length
-    spine_start = (center_x - direction_x * edge_length / 2, center_y - direction_y * edge_length / 2)
-    spine_end = (center_x + direction_x * edge_length / 2, center_y + direction_y * edge_length / 2)
-    spine_angle = math.degrees(math.atan2(direction_y, direction_x)) % 180
     count_points = (count_df if count_df is not None else cluster_df)[["x", "y"]].apply(
         pd.to_numeric, errors="coerce"
     ).dropna().to_numpy(dtype=float)
+    spine_start = (center_x - direction_x * edge_length / 2, center_y - direction_y * edge_length / 2)
+    spine_end = (center_x + direction_x * edge_length / 2, center_y + direction_y * edge_length / 2)
     side_values = direction_x * (count_points[:, 1] - center_y) - direction_y * (count_points[:, 0] - center_x)
     side_tolerance = max(min(x_step, y_step) * 0.05, 1e-9)
     side_labels = np.where(
@@ -443,17 +442,37 @@ def calculate_cluster_spine(cluster_df, count_df=None):
     positive_count = int(np.sum(side_labels == "Side 1"))
     negative_count = int(np.sum(side_labels == "Side 2"))
     boundary_count = int(np.sum(side_labels == "On spine"))
+    end_values = direction_x * (count_points[:, 0] - center_x) + direction_y * (count_points[:, 1] - center_y)
+    end_positive_count = int(np.sum(end_values > side_tolerance))
+    end_negative_count = int(np.sum(end_values < -side_tolerance))
+    end_boundary_count = int(np.sum(np.abs(end_values) <= side_tolerance))
+    if end_positive_count > end_negative_count:
+        point_zero, point_one = spine_end, spine_start
+        point_zero_count, point_one_count = end_positive_count, end_negative_count
+    else:
+        point_zero, point_one = spine_start, spine_end
+        point_zero_count, point_one_count = end_negative_count, end_positive_count
+    spine_angle = math.degrees(
+        math.atan2(point_one[1] - point_zero[1], point_one[0] - point_zero[0])
+    ) % 360
     return {
         "selected_points": selected_points,
         "rectangle_coords": rectangle_coords,
         "spine_start": spine_start,
         "spine_end": spine_end,
+        "point_zero": point_zero,
+        "point_one": point_one,
         "spine_angle": spine_angle,
         "count_points": count_points,
         "side_labels": side_labels,
         "positive_count": positive_count,
         "negative_count": negative_count,
         "boundary_count": boundary_count,
+        "end_positive_count": end_positive_count,
+        "end_negative_count": end_negative_count,
+        "end_boundary_count": end_boundary_count,
+        "point_zero_count": point_zero_count,
+        "point_one_count": point_one_count,
         "component_count": len(components),
         "largest_component_size": len(largest_component),
     }
@@ -465,6 +484,10 @@ def add_cluster_spine_overlay(fig, spine_result):
         "rectangle_coords",
         "count_points",
         "side_labels",
+        "point_zero",
+        "point_one",
+        "point_zero_count",
+        "point_one_count",
     }.issubset(spine_result):
         return fig
     rectangle_coords = spine_result["rectangle_coords"]
@@ -492,14 +515,17 @@ def add_cluster_spine_overlay(fig, spine_result):
                 hovertemplate=f"{side_label}<br>x=%{{x}}<br>y=%{{y}}<extra></extra>",
             )
         )
-    spine_start = spine_result["spine_start"]
-    spine_end = spine_result["spine_end"]
+    point_zero = spine_result.get("point_zero", spine_result["spine_start"])
+    point_one = spine_result.get("point_one", spine_result["spine_end"])
     fig.add_trace(
         go.Scatter(
-            x=[spine_start[0], spine_end[0]],
-            y=[spine_start[1], spine_end[1]],
-            mode="lines",
+            x=[point_zero[0], point_one[0]],
+            y=[point_zero[1], point_one[1]],
+            mode="lines+markers+text",
             line=dict(color="#FFD166", width=6),
+            marker=dict(size=12, color="#FFD166"),
+            text=["Point 0", "Point 1"],
+            textposition="top center",
             name="Calculated spine",
             hovertemplate=f"Spine angle: {spine_result['spine_angle']:.1f}°<extra></extra>",
         )
@@ -513,7 +539,9 @@ def add_cluster_spine_overlay(fig, spine_result):
             f"Spine angle: {spine_result['spine_angle']:.1f}°<br>"
             f"Side 1 (red): {spine_result['positive_count']} cells | "
             f"Side 2 (blue): {spine_result['negative_count']} cells<br>"
-            f"On spine: {spine_result['boundary_count']} cells"
+            f"On spine: {spine_result['boundary_count']} cells<br>"
+            f"Point 0 end: {spine_result['point_zero_count']} cells | "
+            f"Point 1 end: {spine_result['point_one_count']} cells"
         ),
         showarrow=False,
         bgcolor="rgba(17,17,17,0.85)",
@@ -642,21 +670,32 @@ def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None):
                     label=side_label,
                     zorder=7,
                 )
-        spine_start = spine_result["spine_start"]
-        spine_end = spine_result["spine_end"]
+        point_zero = spine_result.get("point_zero", spine_result["spine_start"])
+        point_one = spine_result.get("point_one", spine_result["spine_end"])
         axis.plot(
-            [spine_start[0], spine_end[0]],
-            [spine_start[1], spine_end[1]],
+            [point_zero[0], point_one[0]],
+            [point_zero[1], point_one[1]],
             color="#FFD166",
             linewidth=4,
             zorder=8,
             label="Calculated spine",
         )
+        axis.scatter(
+            [point_zero[0], point_one[0]],
+            [point_zero[1], point_one[1]],
+            s=70,
+            color="#FFD166",
+            edgecolors="#111111",
+            zorder=9,
+        )
+        axis.text(point_zero[0], point_zero[1], "Point 0", color="white", zorder=10)
+        axis.text(point_one[0], point_one[1], "Point 1", color="white", zorder=10)
         axis.text(
             rectangle_coords[0, 0],
             rectangle_coords[0, 1],
             f"Spine angle: {spine_result['spine_angle']:.1f}°\n"
             f"Side 1: {spine_result['positive_count']} | Side 2: {spine_result['negative_count']}\n"
+            f"Point 0 end: {spine_result['point_zero_count']} | Point 1 end: {spine_result['point_one_count']}\n"
             f"On spine: {spine_result['boundary_count']}",
             color="white",
             fontsize=8,
@@ -827,6 +866,10 @@ def render_clustering_tab():
             "rectangle_coords",
             "count_points",
             "side_labels",
+            "point_zero",
+            "point_one",
+            "point_zero_count",
+            "point_one_count",
         }.issubset(spine_result):
             st.session_state.pop("cluster_spine_result", None)
             spine_result = None
