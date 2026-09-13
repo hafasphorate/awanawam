@@ -468,29 +468,12 @@ def add_cluster_spine_overlay(fig, spine_result):
     }.issubset(spine_result):
         return fig
     rectangle_coords = spine_result["rectangle_coords"]
-    fig.add_trace(
-        go.Scatter(
-            x=[point[0] for point in rectangle_coords],
-            y=[point[1] for point in rectangle_coords],
-            mode="lines",
-            fill="toself",
-            fillcolor="rgba(0, 229, 255, 0.08)",
-            line=dict(color="#00E5FF", width=2, dash="dash"),
-            name="Minimum bounding box",
-            hoverinfo="skip",
-        )
-    )
-    spine_start = spine_result["spine_start"]
-    spine_end = spine_result["spine_end"]
-    fig.add_trace(
-        go.Scatter(
-            x=[spine_start[0], spine_end[0]],
-            y=[spine_start[1], spine_end[1]],
-            mode="lines",
-            line=dict(color="#FFD166", width=4),
-            name="Calculated spine",
-            hovertemplate=f"Spine angle: {spine_result['spine_angle']:.1f}°<extra></extra>",
-        )
+    fig.add_shape(
+        type="path",
+        path="M " + " L ".join(f"{point[0]},{point[1]}" for point in rectangle_coords) + " Z",
+        line=dict(color="#00E5FF", width=3, dash="dash"),
+        fillcolor="rgba(0, 229, 255, 0.08)",
+        layer="above",
     )
     side_colors = {"Side 1": "#FF6B6B", "Side 2": "#4D96FF", "On spine": "#FFFFFF"}
     selected_points = spine_result["count_points"]
@@ -509,6 +492,18 @@ def add_cluster_spine_overlay(fig, spine_result):
                 hovertemplate=f"{side_label}<br>x=%{{x}}<br>y=%{{y}}<extra></extra>",
             )
         )
+    spine_start = spine_result["spine_start"]
+    spine_end = spine_result["spine_end"]
+    fig.add_trace(
+        go.Scatter(
+            x=[spine_start[0], spine_end[0]],
+            y=[spine_start[1], spine_end[1]],
+            mode="lines",
+            line=dict(color="#FFD166", width=6),
+            name="Calculated spine",
+            hovertemplate=f"Spine angle: {spine_result['spine_angle']:.1f}°<extra></extra>",
+        )
+    )
     fig.add_annotation(
         x=rectangle_coords[0][0],
         y=rectangle_coords[0][1],
@@ -592,7 +587,7 @@ def render_png_download(fig, label, file_name, key):
     st.download_button(label, png_data, file_name, "image/png", key=key)
 
 
-def cluster_map_png(df, wall_lines, selected_group=None):
+def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None):
     """Create a PNG directly with Matplotlib, avoiding Plotly's Chrome dependency."""
     figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
     axis.set_facecolor("#111111")
@@ -613,6 +608,61 @@ def cluster_map_png(df, wall_lines, selected_group=None):
             group_df["x"], group_df["y"], s=48, color=color,
             alpha=0.95 if is_selected else 0.22, label=f"Group {group}",
             edgecolors="#111111", linewidths=0.5,
+        )
+    if spine_result and {"rectangle_coords", "count_points", "side_labels"}.issubset(spine_result):
+        rectangle_coords = np.asarray(spine_result["rectangle_coords"])
+        axis.fill(
+            rectangle_coords[:, 0],
+            rectangle_coords[:, 1],
+            color="#00E5FF",
+            alpha=0.08,
+            zorder=5,
+        )
+        axis.plot(
+            rectangle_coords[:, 0],
+            rectangle_coords[:, 1],
+            color="#00E5FF",
+            linewidth=2.5,
+            linestyle="--",
+            zorder=6,
+        )
+        side_colors = {"Side 1": "#FF6B6B", "Side 2": "#4D96FF", "On spine": "#FFFFFF"}
+        count_points = spine_result["count_points"]
+        side_labels = spine_result["side_labels"]
+        for side_label, color in side_colors.items():
+            side_points = count_points[side_labels == side_label]
+            if len(side_points):
+                axis.scatter(
+                    side_points[:, 0],
+                    side_points[:, 1],
+                    s=72,
+                    color=color,
+                    edgecolors="#111111",
+                    linewidths=0.7,
+                    label=side_label,
+                    zorder=7,
+                )
+        spine_start = spine_result["spine_start"]
+        spine_end = spine_result["spine_end"]
+        axis.plot(
+            [spine_start[0], spine_end[0]],
+            [spine_start[1], spine_end[1]],
+            color="#FFD166",
+            linewidth=4,
+            zorder=8,
+            label="Calculated spine",
+        )
+        axis.text(
+            rectangle_coords[0, 0],
+            rectangle_coords[0, 1],
+            f"Spine angle: {spine_result['spine_angle']:.1f}°\n"
+            f"Side 1: {spine_result['positive_count']} | Side 2: {spine_result['negative_count']}\n"
+            f"On spine: {spine_result['boundary_count']}",
+            color="white",
+            fontsize=8,
+            va="top",
+            bbox=dict(facecolor="#111111", edgecolor="#FFD166", alpha=0.85),
+            zorder=9,
         )
     axis.set_aspect("equal", adjustable="datalim")
     axis.set_title("VGA Metric Clusters", color="white")
@@ -790,7 +840,7 @@ def render_clustering_tab():
     render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
     st.download_button(
         "Download colour-coded plan as PNG",
-        data=cluster_map_png(clustered_df, clustering_walls, selected_group),
+        data=cluster_map_png(clustered_df, clustering_walls, selected_group, spine_result),
         file_name="vga_metric_clusters.png",
         mime="image/png",
     )
