@@ -54,6 +54,8 @@ if "spine_reference_click_hash" not in st.session_state:
     st.session_state.spine_reference_click_hash = None
 if "spine_reference_canvas_version" not in st.session_state:
     st.session_state.spine_reference_canvas_version = 0
+if "spine_angle_orientation" not in st.session_state:
+    st.session_state.spine_angle_orientation = "Clockwise"
 
 # Plot Range Axes State
 if "current_x_range" not in st.session_state:
@@ -175,7 +177,7 @@ def infer_cell_area_m2(node):
     return 1.0
 
 
-def build_average_density_grid(x_values, y_values, frame_count, bins=35):
+def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     """Build average people density per spatial bin over the imported video."""
     points = pd.DataFrame({"x": x_values, "y": y_values}).apply(pd.to_numeric, errors="coerce").dropna()
     if points.empty:
@@ -188,8 +190,12 @@ def build_average_density_grid(x_values, y_values, frame_count, bins=35):
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.linspace(x_min, x_max, bins + 1)
-    y_edges = np.linspace(y_min, y_max, bins + 1)
+    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
+    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
+    if len(x_edges) < 2:
+        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
+    if len(y_edges) < 2:
+        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
     observations, _, _ = np.histogram2d(points["x"], points["y"], bins=[x_edges, y_edges])
     cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
     average_density = observations.T / max(int(frame_count), 1) / cell_area
@@ -203,7 +209,7 @@ def build_average_density_grid(x_values, y_values, frame_count, bins=35):
     }
 
 
-def build_peak_density_grid(x_values, y_values, frame_values, bins=35):
+def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1.0):
     """Build maximum instantaneous people density per spatial bin over the video."""
     points = pd.DataFrame({"x": x_values, "y": y_values, "frame": frame_values})
     points["x"] = pd.to_numeric(points["x"], errors="coerce")
@@ -219,9 +225,13 @@ def build_peak_density_grid(x_values, y_values, frame_values, bins=35):
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.linspace(x_min, x_max, bins + 1)
-    y_edges = np.linspace(y_min, y_max, bins + 1)
-    peak_observations = np.zeros((bins, bins))
+    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
+    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
+    if len(x_edges) < 2:
+        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
+    if len(y_edges) < 2:
+        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    peak_observations = np.zeros((len(x_edges) - 1, len(y_edges) - 1))
     for _, frame_points in points.groupby("frame", sort=False):
         frame_counts, _, _ = np.histogram2d(
             frame_points["x"], frame_points["y"], bins=[x_edges, y_edges]
@@ -237,7 +247,7 @@ def build_peak_density_grid(x_values, y_values, frame_values, bins=35):
     }
 
 
-def build_average_metric_grid(x_values, y_values, metric_values, circular=False, bins=35):
+def build_average_metric_grid(x_values, y_values, metric_values, circular=False, cell_size=1.0):
     """Build a spatial grid of arithmetic or circular mean metric values."""
     points = pd.DataFrame({"x": x_values, "y": y_values, "metric": metric_values})
     points["x"] = pd.to_numeric(points["x"], errors="coerce")
@@ -254,14 +264,20 @@ def build_average_metric_grid(x_values, y_values, metric_values, circular=False,
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.linspace(x_min, x_max, bins + 1)
-    y_edges = np.linspace(y_min, y_max, bins + 1)
-    x_index = np.clip(np.digitize(points["x"], x_edges) - 1, 0, bins - 1)
-    y_index = np.clip(np.digitize(points["y"], y_edges) - 1, 0, bins - 1)
-    mean_values = np.full((bins, bins), np.nan)
+    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
+    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
+    if len(x_edges) < 2:
+        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
+    if len(y_edges) < 2:
+        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    x_bin_count = len(x_edges) - 1
+    y_bin_count = len(y_edges) - 1
+    x_index = np.clip(np.digitize(points["x"], x_edges) - 1, 0, x_bin_count - 1)
+    y_index = np.clip(np.digitize(points["y"], y_edges) - 1, 0, y_bin_count - 1)
+    mean_values = np.full((y_bin_count, x_bin_count), np.nan)
 
-    for x_bin in range(bins):
-        for y_bin in range(bins):
+    for x_bin in range(x_bin_count):
+        for y_bin in range(y_bin_count):
             selected = points[(x_index == x_bin) & (y_index == y_bin)]["metric"]
             if selected.empty:
                 continue
@@ -1358,6 +1374,14 @@ with tab_playback:
                     st.session_state.spine_reference_canvas_version += 1
                     st.rerun()
 
+            st.radio(
+                "Angle from spine orientation",
+                options=["Clockwise", "Anti-clockwise"],
+                horizontal=True,
+                key="spine_angle_orientation",
+                help="Clockwise keeps the current direction calculation. Anti-clockwise reverses it around 360 degrees.",
+            )
+
             spine_fig = go.Figure()
             spine_fig = add_cad_walls_to_fig(spine_fig, line_color="#FFFFFF", line_width=1.2)
             spine_candidates = df_track[[x_col, y_col]].dropna().drop_duplicates()
@@ -1439,7 +1463,7 @@ with tab_playback:
             df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
             df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
             df_track["speed"] = np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
-            speed_unit = "coordinate units/frame"
+            speed_unit = "m/frame"
 
             # Compass Bearing (0° North) and user-relative spine bearing.
             df_track["dir_deg_north"] = [
@@ -1455,6 +1479,10 @@ with tab_playback:
                     calculate_bearing_from_spine(dx, dy, spine_angle_deg)
                     for dx, dy in zip(df_track["dx"], df_track["dy"])
                 ]
+                if st.session_state.spine_angle_orientation == "Anti-clockwise":
+                    df_track["dir_deg_spine"] = (
+                        360 - df_track["dir_deg_spine"]
+                    ) % 360
                 df_track["deviation_deg_spine"] = [
                     calculate_deviation_from_spine(dx, dy, spine_angle_deg)
                     for dx, dy in zip(df_track["dx"], df_track["dy"])
@@ -1487,6 +1515,7 @@ with tab_playback:
             # --- 2. Motion Playback ---
             st.markdown("### 2. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
+            observed_frame_count = df_track[frame_col].nunique()
             selected_f = st.slider(
                 "Select Frame for Instant Inspection",
                 min_value=int(min(frames_available)),
@@ -1572,7 +1601,7 @@ with tab_playback:
                     fig_vol, line_color="#FFFFFF", line_width=1.5
                 )
                 volume_grid = build_average_density_grid(
-                    df_track[x_col], df_track[y_col], df_track[frame_col].nunique()
+                    df_track[x_col], df_track[y_col], observed_frame_count
                 )
                 if volume_grid is not None:
                     fig_vol.add_trace(
@@ -1591,7 +1620,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_vol, use_container_width=True)
-                st.caption(f"Volume is average people per spatial bin across {df_track[frame_col].nunique()} frames. Cumulative person-frames remain available in the export.")
+                st.caption(f"Volume is average people per 1 m x 1 m bin across {observed_frame_count} observed frames. Empty/skipped frame indices are not included. Cumulative person-frames remain available in the export.")
 
             with m_tab2:
                 st.markdown("#### Average Pedestrian Density Grid")
@@ -1612,9 +1641,9 @@ with tab_playback:
                 )
 
                 density_grid = build_average_density_grid(
-                    plot_x, plot_y, df_track[frame_col].nunique()
+                    plot_x, plot_y, observed_frame_count
                 )
-                coordinate_unit = "m" if x_col in {"world_x", "x_m", "x (m)"} and y_col in {"world_y", "y_m", "y (m)"} else "coordinate unit"
+                coordinate_unit = "m"
                 density_unit = f"people / {coordinate_unit}²"
                 if density_grid is not None:
                     fig_dens.add_trace(
@@ -1633,7 +1662,14 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_dens, use_container_width=True)
-                st.caption(f"Density is averaged across {df_track[frame_col].nunique()} frames and normalized by each spatial bin area ({density_unit}).")
+                if density_grid is not None:
+                    bin_width = density_grid["x"][1] - density_grid["x"][0] if len(density_grid["x"]) > 1 else 0.0
+                    bin_height = density_grid["y"][1] - density_grid["y"][0] if len(density_grid["y"]) > 1 else 0.0
+                    st.caption(
+                        f"Density = average people / bin area across {observed_frame_count} observed frames. "
+                        f"This display uses {bin_width:.3f} x {bin_height:.3f} {coordinate_unit} bins "
+                        f"({density_grid['cell_area']:.5f} {coordinate_unit}²), so the maximum shown is {np.nanmax(density_grid['density']):.3f} {density_unit}."
+                    )
 
             with m_tab3:
                 st.markdown("#### Average Speed Heatmap")
@@ -1688,7 +1724,7 @@ with tab_playback:
                 )
                 st.plotly_chart(fig_dir, use_container_width=True)
                 if len(st.session_state.spine_reference_points) == 2:
-                    st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees clockwise from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
+                    st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
                 else:
                     st.caption("Direction is circularly averaged per spatial bin and currently uses North as the reference until two spine points are selected.")
 
@@ -1749,7 +1785,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_peak_density, use_container_width=True)
-                st.caption(f"Peak density is the highest single-frame density observed in each spatial bin ({density_unit}).")
+                st.caption(f"Peak density is the highest single-frame density observed in each 1 m x 1 m spatial bin ({density_unit}).")
 
             st.markdown("---")
             st.markdown(
@@ -1792,7 +1828,8 @@ with tab_playback:
                         "density": density_unit,
                         "peak_density": density_unit + " (maximum single-frame value)",
                         "speed": "arithmetic average " + speed_unit,
-                        "direction": "circular mean degrees clockwise from spine",
+                        "direction": f"circular mean degrees {st.session_state.spine_angle_orientation.lower()} from spine",
+                        "direction_orientation": st.session_state.spine_angle_orientation,
                         "deviation_angle_from_spine": "degrees from undirected spine axis (0-90)",
                         "spine_angle_from_north": float(spine_angle_deg),
                     },
