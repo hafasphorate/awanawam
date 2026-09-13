@@ -56,6 +56,8 @@ if "spine_reference_canvas_version" not in st.session_state:
     st.session_state.spine_reference_canvas_version = 0
 if "spine_angle_orientation" not in st.session_state:
     st.session_state.spine_angle_orientation = "Clockwise"
+if "spine_setup_confirmed" not in st.session_state:
+    st.session_state.spine_setup_confirmed = False
 
 # Plot Range Axes State
 if "current_x_range" not in st.session_state:
@@ -1270,6 +1272,7 @@ with tab_playback:
                 raw_json = json.load(uploaded_tb_json)
                 df_loaded = parse_tracking_json(raw_json)
                 st.session_state.tracking_results_df = df_loaded
+                st.session_state.spine_setup_confirmed = False
                 st.success(
                     f"✅ Successfully imported {len(df_loaded)} tracking records!"
                 )
@@ -1285,6 +1288,7 @@ with tab_playback:
                 st.session_state.tracking_results_df = pd.read_csv(
                     uploaded_tb_csv
                 )
+                st.session_state.spine_setup_confirmed = False
                 st.success("✅ Successfully imported CSV tracking records!")
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
@@ -1451,6 +1455,20 @@ with tab_playback:
                 )
                 st.plotly_chart(vector_fig, use_container_width=True, key="spine_vector_preview")
 
+            st.markdown("---")
+            if st.button(
+                "Load Playback and Crowd Metrics",
+                type="primary",
+                use_container_width=True,
+                key="confirm_spine_setup",
+            ):
+                st.session_state.spine_setup_confirmed = True
+                st.rerun()
+
+            if not st.session_state.spine_setup_confirmed:
+                st.info("Set the spine angle and orientation, then click the button above to load playback and aggregated crowd metrics.")
+                st.stop()
+
             # --- Calculate Motion Metrics ---
             df_track = df_track.sort_values(by=[id_col, frame_col])
             df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
@@ -1504,7 +1522,7 @@ with tab_playback:
                 )
 
             # --- 2. Motion Playback ---
-            st.markdown("### 2. Motion Playback & Frame Analytics")
+            st.markdown("### 3. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
             observed_frame_count = df_track[frame_col].nunique()
             selected_f = st.slider(
@@ -1572,7 +1590,7 @@ with tab_playback:
             st.markdown("---")
 
             # --- 3. Aggregated Metrics ---
-            st.markdown("### 3. Aggregated Crowd Metrics (Entire Video)")
+            st.markdown("### 4. Aggregated Crowd Metrics (Entire Video)")
 
             m_tab1, m_tab2, m_tab3, m_tab4, m_tab5, m_tab6 = st.tabs(
                 [
@@ -1777,7 +1795,7 @@ with tab_playback:
 
             st.markdown("---")
             st.markdown(
-                "### 4. Export Combined Correlation Dataset (VGA + Crowd)"
+                "### 5. Export Combined Correlation Dataset (VGA + Crowd)"
             )
 
             # --- Retrieve Full VGA Analysis Metrics ---
