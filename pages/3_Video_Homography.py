@@ -889,6 +889,37 @@ with tab_region:
                         st.session_state.editing_point_idx = idx
                         st.session_state.last_click_hash = None
                         st.rerun()
+
+            st.markdown("##### Fine Coordinate Adjustment")
+            refine_options = [
+                f"P{index + 1}" for index in range(len(st.session_state.four_corners))
+            ]
+            refine_label = st.selectbox(
+                "Point to refine",
+                refine_options,
+                key="corner_refine_point",
+            )
+            refine_idx = refine_options.index(refine_label)
+            current_point = st.session_state.four_corners[refine_idx]
+            refine_x_key = f"corner_refine_x_{refine_idx}"
+            refine_y_key = f"corner_refine_y_{refine_idx}"
+            if refine_x_key not in st.session_state:
+                st.session_state[refine_x_key] = float(current_point[0])
+            if refine_y_key not in st.session_state:
+                st.session_state[refine_y_key] = float(current_point[1])
+            refine_x_col, refine_y_col = st.columns(2)
+            with refine_x_col:
+                st.number_input("X (m)", key=refine_x_key, format="%.6f")
+            with refine_y_col:
+                st.number_input("Y (m)", key=refine_y_key, format="%.6f")
+            if st.button("Apply exact coordinates", use_container_width=True, key="apply_corner_refinement"):
+                st.session_state.four_corners[refine_idx] = [
+                    float(st.session_state[refine_x_key]),
+                    float(st.session_state[refine_y_key]),
+                ]
+                st.session_state.editing_point_idx = None
+                st.session_state.last_click_hash = None
+                st.rerun()
                 with col_del:
                     if st.button(
                         "",
@@ -1096,11 +1127,16 @@ with tab_region:
                             click_x,
                             click_y,
                         ]
+                        st.session_state[f"corner_refine_x_{target_idx}"] = click_x
+                        st.session_state[f"corner_refine_y_{target_idx}"] = click_y
                         st.session_state.editing_point_idx = None
                         st.rerun()
 
                     elif len(st.session_state.four_corners) < 4:
                         st.session_state.four_corners.append([click_x, click_y])
+                        new_idx = len(st.session_state.four_corners) - 1
+                        st.session_state[f"corner_refine_x_{new_idx}"] = click_x
+                        st.session_state[f"corner_refine_y_{new_idx}"] = click_y
                         st.rerun()
 
 
