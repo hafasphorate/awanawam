@@ -1423,16 +1423,16 @@ with tab_playback:
 
             # --- Spine Reference Placement ---
             st.markdown("### 2. Define Spine Reference")
-            st.caption("Enter the spine bearing from North. The spine is treated as an axis, so its direction is used as 0°.")
+            st.caption("Enter the spine angle from the horizontal axis. Horizontal right is 0° and upward is 90°.")
             spine_input_col, spine_orientation_col = st.columns(2)
             with spine_input_col:
-                spine_angle_deg = st.number_input(
-                    "Spine angle from North (degrees)",
+                spine_angle_from_horizontal = st.number_input(
+                    "Spine angle from horizontal (degrees)",
                     min_value=0.0,
                     max_value=359.999,
-                    value=float(st.session_state.get("spine_angle_from_north_input", 0.0)),
+                    value=float(st.session_state.get("spine_angle_from_horizontal_input", 0.0)),
                     step=1.0,
-                    key="spine_angle_from_north_input",
+                    key="spine_angle_from_horizontal_input",
                 )
             with spine_orientation_col:
                 st.radio(
@@ -1471,9 +1471,9 @@ with tab_playback:
 
             with vector_col:
                 st.markdown("#### Spine Vector Preview")
-                vector_angle_rad = np.radians(float(spine_angle_deg))
-                vector_dx = np.sin(vector_angle_rad)
-                vector_dy = np.cos(vector_angle_rad)
+                vector_angle_rad = np.radians(float(spine_angle_from_horizontal))
+                vector_dx = np.cos(vector_angle_rad)
+                vector_dy = np.sin(vector_angle_rad)
                 vector_fig = go.Figure()
                 vector_fig.add_trace(
                     go.Scatter(
@@ -1488,7 +1488,7 @@ with tab_playback:
                 vector_fig.add_annotation(
                     x=vector_dx,
                     y=vector_dy,
-                    text=f"{float(spine_angle_deg):.1f}° from North",
+                    text=f"{float(spine_angle_from_horizontal):.1f}° from horizontal",
                     showarrow=True,
                     arrowhead=2,
                     ax=-35,
@@ -1530,8 +1530,8 @@ with tab_playback:
                 calculate_bearing_from_north(dx, dy)
                 for dx, dy in zip(df_track["dx"], df_track["dy"])
             ]
-            if "spine_angle_from_north_input" in st.session_state:
-                spine_angle_deg = float(st.session_state.spine_angle_from_north_input) % 360
+            if "spine_angle_from_horizontal_input" in st.session_state:
+                spine_angle_deg = (90.0 - float(st.session_state.spine_angle_from_horizontal_input)) % 360
                 df_track["dir_deg_spine"] = [
                     calculate_bearing_from_spine(dx, dy, spine_angle_deg)
                     for dx, dy in zip(df_track["dx"], df_track["dy"])
@@ -1785,7 +1785,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_dir, use_container_width=True)
-                st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine orientation is {spine_angle_deg:.1f}° clockwise from North.")
+                st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine is {float(st.session_state.spine_angle_from_horizontal_input):.1f}° from horizontal.")
 
             with m_tab5:
                 st.markdown("#### Deviation Angle from Spine")
@@ -1880,7 +1880,8 @@ with tab_playback:
                     "x_column": x_col,
                     "y_column": y_col,
                     "spine_reference_points": st.session_state.get("spine_reference_points", []),
-                    "spine_angle_from_north": float(spine_angle_deg),
+                    "spine_angle_from_horizontal": float(st.session_state.get("spine_angle_from_horizontal_input", 0.0)),
+                    "spine_bearing_from_north": float(spine_angle_deg),
                     "metric_units": {
                         "volume": "average people per spatial bin",
                         "density": density_unit,
