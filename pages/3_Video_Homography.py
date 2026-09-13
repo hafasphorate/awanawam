@@ -25,6 +25,9 @@ st.session_state.use_exclusion_masks = False
 
 st.title("Module 3: Video Homography & Tracking")
 
+VIDEO_FPS = 60.0
+COORDINATE_MM_TO_METERS = 0.001
+
 # ==========================================
 # SESSION STATE INITIALIZATION
 # ==========================================
@@ -1555,11 +1558,18 @@ with tab_playback:
                 st.stop()
 
             # --- Calculate Motion Metrics ---
-            df_track = df_track.sort_values(by=[id_col, frame_col])
+            df_track[frame_col] = pd.to_numeric(df_track[frame_col], errors="coerce")
+            df_track = df_track.dropna(subset=[frame_col]).sort_values(by=[id_col, frame_col])
             df_track["dx"] = df_track.groupby(id_col)[x_col].diff().fillna(0)
             df_track["dy"] = df_track.groupby(id_col)[y_col].diff().fillna(0)
-            df_track["speed"] = np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
-            speed_unit = "m/frame"
+            frame_delta = df_track.groupby(id_col)[frame_col].diff()
+            distance_m = (
+                np.sqrt(df_track["dx"] ** 2 + df_track["dy"] ** 2)
+                * COORDINATE_MM_TO_METERS
+            )
+            elapsed_seconds = frame_delta / VIDEO_FPS
+            df_track["speed"] = distance_m.div(elapsed_seconds).where(elapsed_seconds > 0, 0.0)
+            speed_unit = "m/s"
 
             # Compass Bearing (0° North) and user-relative spine bearing.
             df_track["dir_deg_north"] = [
@@ -1793,7 +1803,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_spd, use_container_width=True)
-                st.caption(f"Speed is averaged per spatial bin. Unit: {speed_unit}. Convert to m/s only when coordinates are meters and the source frame rate is known.")
+                st.caption(f"Speed is averaged per spatial bin. Assuming tracking coordinates are in millimetres and the video is {VIDEO_FPS:.0f} FPS, speed is reported in {speed_unit} using the frame-number differences.")
 
             with m_tab4:
                 st.markdown("#### Average Directional Flow (Degrees from Spine)")
@@ -1835,7 +1845,13 @@ with tab_playback:
                             x=deviation_grid["x"],
                             y=deviation_grid["y"],
                             z=deviation_grid.get("metric"),
-                            colorscale="Turbo",
+                            colorscale=[
+                                [0.0, "#ffffff"],
+                                [0.25, "#fff7bc"],
+                                [0.5, "#fec44f"],
+                                [0.75, "#d95f0e"],
+                                [1.0, "#8c2d04"],
+                            ],
                             zmin=0,
                             zmax=90,
                             colorbar=dict(title="deviation angle (°)"),
@@ -1866,8 +1882,16 @@ with tab_playback:
                             x=peak_density_grid["x"],
                             y=peak_density_grid["y"],
                             z=peak_density_grid.get("metric", peak_density_grid.get("density")),
-                            colorscale="Inferno",
+                            colorscale=[
+                                [0.0, "#ffffff"],
+                                [2 / 7, "#facc15"],
+                                [3 / 7, "#facc15"],
+                                [4 / 7, "#22c55e"],
+                                [5 / 7, "#ef4444"],
+                                [1.0, "#b91c1c"],
+                            ],
                             zmin=0,
+                            zmax=7,
                             colorbar=dict(title=density_unit),
                             hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>peak density=%{{z:.3f}} {density_unit}<extra></extra>",
                         )
