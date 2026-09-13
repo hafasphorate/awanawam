@@ -457,6 +457,8 @@ def calculate_cluster_spine(cluster_df):
 
 def add_cluster_spine_overlay(fig, spine_result):
     """Overlay the selected cluster bounding box, spine, and side counts."""
+    if not spine_result or "rectangle_coords" not in spine_result:
+        return fig
     rectangle_coords = spine_result["rectangle_coords"]
     fig.add_trace(
         go.Scatter(
@@ -760,6 +762,9 @@ def render_clustering_tab():
             except ValueError as error:
                 st.warning(str(error))
         spine_result = st.session_state.get("cluster_spine_result")
+        if spine_result is not None and "rectangle_coords" not in spine_result:
+            st.session_state.pop("cluster_spine_result", None)
+            spine_result = None
     else:
         st.session_state.pop("cluster_spine_result", None)
         st.session_state.pop("cluster_spine_group", None)
