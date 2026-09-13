@@ -207,21 +207,22 @@ def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     if points.empty:
         return None
 
-    x_min, x_max = points["x"].min(), points["x"].max()
-    y_min, y_max = points["y"].min(), points["y"].max()
-    if x_min == x_max:
-        x_min, x_max = x_min - 0.5, x_max + 0.5
-    if y_min == y_max:
-        y_min, y_max = y_min - 0.5, y_max + 0.5
-
-    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
-    observations, _, _ = np.histogram2d(points["x"], points["y"], bins=[x_edges, y_edges])
-    cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
-    average_density = observations.T / max(int(frame_count), 1) / cell_area
+    points["x_bin"] = np.floor(points["x"] / cell_size).astype(int)
+    points["y_bin"] = np.floor(points["y"] / cell_size).astype(int)
+    observations = points.groupby(["x_bin", "y_bin"]).size().rename("observations")
+    x_bins = sorted(points["x_bin"].unique())
+    y_bins = sorted(points["y_bin"].unique())
+    average_people = np.zeros((len(y_bins), len(x_bins)))
+    x_positions = {value: index for index, value in enumerate(x_bins)}
+    y_positions = {value: index for index, value in enumerate(y_bins)}
+    for (x_bin, y_bin), count in observations.items():
+        average_people[y_positions[y_bin], x_positions[x_bin]] = count / max(int(frame_count), 1)
+    cell_area = cell_size * cell_size
+    average_density = average_people / cell_area
 
     return {
-        "x": (x_edges[:-1] + x_edges[1:]) / 2,
-        "y": (y_edges[:-1] + y_edges[1:]) / 2,
+        "x": np.array(x_bins, dtype=float) * cell_size + cell_size / 2,
+        "y": np.array(y_bins, dtype=float) * cell_size + cell_size / 2,
         "density": average_density,
         "average_people": observations.T / max(int(frame_count), 1),
         "cell_area": cell_area,
@@ -237,26 +238,22 @@ def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1.0):
     if points.empty:
         return None
 
-    x_min, x_max = points["x"].min(), points["x"].max()
-    y_min, y_max = points["y"].min(), points["y"].max()
-    if x_min == x_max:
-        x_min, x_max = x_min - 0.5, x_max + 0.5
-    if y_min == y_max:
-        y_min, y_max = y_min - 0.5, y_max + 0.5
-
-    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
-    peak_observations = np.zeros((len(x_edges) - 1, len(y_edges) - 1))
-    for _, frame_points in points.groupby("frame", sort=False):
-        frame_counts, _, _ = np.histogram2d(
-            frame_points["x"], frame_points["y"], bins=[x_edges, y_edges]
-        )
-        peak_observations = np.maximum(peak_observations, frame_counts)
-
-    cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
+    points["x_bin"] = np.floor(points["x"] / cell_size).astype(int)
+    points["y_bin"] = np.floor(points["y"] / cell_size).astype(int)
+    frame_counts = points.groupby(["frame", "x_bin", "y_bin"]).size()
+    peak = frame_counts.groupby(level=[1, 2]).max()
+    x_bins = sorted(peak.index.get_level_values("x_bin").unique())
+    y_bins = sorted(peak.index.get_level_values("y_bin").unique())
+    peak_observations = np.zeros((len(y_bins), len(x_bins)))
+    x_positions = {value: index for index, value in enumerate(x_bins)}
+    y_positions = {value: index for index, value in enumerate(y_bins)}
+    for (x_bin, y_bin), count in peak.items():
+        peak_observations[y_positions[y_bin], x_positions[x_bin]] = count
+    cell_area = cell_size * cell_size
     return {
-        "x": (x_edges[:-1] + x_edges[1:]) / 2,
-        "y": (y_edges[:-1] + y_edges[1:]) / 2,
-        "density": peak_observations.T / cell_area,
+        "x": np.array(x_bins, dtype=float) * cell_size + cell_size / 2,
+        "y": np.array(y_bins, dtype=float) * cell_size + cell_size / 2,
+        "density": peak_observations / cell_area,
         "cell_area": cell_area,
     }
 
@@ -271,36 +268,74 @@ def build_average_metric_grid(x_values, y_values, metric_values, circular=False,
     if points.empty:
         return None
 
-    x_min, x_max = points["x"].min(), points["x"].max()
-    y_min, y_max = points["y"].min(), points["y"].max()
-    if x_min == x_max:
-        x_min, x_max = x_min - 0.5, x_max + 0.5
-    if y_min == y_max:
-        y_min, y_max = y_min - 0.5, y_max + 0.5
-
-    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
-    x_bin_count = len(x_edges) - 1
-    y_bin_count = len(y_edges) - 1
-    x_index = np.clip(np.digitize(points["x"], x_edges) - 1, 0, x_bin_count - 1)
-    y_index = np.clip(np.digitize(points["y"], y_edges) - 1, 0, y_bin_count - 1)
-    mean_values = np.full((y_bin_count, x_bin_count), np.nan)
-
-    for x_bin in range(x_bin_count):
-        for y_bin in range(y_bin_count):
-            selected = points[(x_index == x_bin) & (y_index == y_bin)]["metric"]
-            if selected.empty:
-                continue
-            mean_values[y_bin, x_bin] = (
-                circular_mean_degrees(selected)
-                if circular
-                else float(selected.mean())
-            )
+    points["x_bin"] = np.floor(points["x"] / cell_size).astype(int)
+    points["y_bin"] = np.floor(points["y"] / cell_size).astype(int)
+    grouped = points.groupby(["x_bin", "y_bin"])["metric"]
+    values = grouped.apply(circular_mean_degrees) if circular else grouped.mean()
+    x_bins = sorted(values.index.get_level_values("x_bin").unique())
+    y_bins = sorted(values.index.get_level_values("y_bin").unique())
+    mean_values = np.full((len(y_bins), len(x_bins)), np.nan)
+    x_positions = {value: index for index, value in enumerate(x_bins)}
+    y_positions = {value: index for index, value in enumerate(y_bins)}
+    for (x_bin, y_bin), value in values.items():
+        mean_values[y_positions[y_bin], x_positions[x_bin]] = value
 
     return {
-        "x": (x_edges[:-1] + x_edges[1:]) / 2,
-        "y": (y_edges[:-1] + y_edges[1:]) / 2,
+        "x": np.array(x_bins, dtype=float) * cell_size + cell_size / 2,
+        "y": np.array(y_bins, dtype=float) * cell_size + cell_size / 2,
         "metric": mean_values,
     }
+
+
+def build_vga_metric_grid(df_track, vga_nodes, frame_col, id_col, metric):
+    """Aggregate a crowd metric using imported VGA node cells and centers."""
+    nodes = serialize_vga_nodes(vga_nodes)
+    if "grid_node_idx" not in df_track.columns or not nodes:
+        return None
+
+    node_rows = []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        x_value = node.get("x", node.get("world_x", node.get("pos_x")))
+        y_value = node.get("y", node.get("world_y", node.get("pos_y")))
+        if x_value is None or y_value is None:
+            continue
+        node_rows.append(
+            {
+                "grid_node_idx": index,
+                "x": float(x_value),
+                "y": float(y_value),
+                "cell_area": infer_cell_area_m2(node),
+            }
+        )
+    if not node_rows:
+        return None
+
+    node_df = pd.DataFrame(node_rows)
+    grouped = df_track.merge(node_df, on="grid_node_idx", how="inner")
+    if grouped.empty:
+        return None
+
+    if metric == "volume" or metric == "density":
+        values = grouped.groupby(["grid_node_idx", frame_col])[id_col].nunique().groupby(level=0).mean()
+        if metric == "density":
+            values = values / node_df.set_index("grid_node_idx")["cell_area"]
+    elif metric == "peak_density":
+        values = grouped.groupby(["grid_node_idx", frame_col])[id_col].nunique().groupby(level=0).max()
+        values = values / node_df.set_index("grid_node_idx")["cell_area"]
+    elif metric == "direction":
+        values = grouped.groupby("grid_node_idx")["dir_deg_spine"].apply(circular_mean_degrees)
+    elif metric == "deviation":
+        values = grouped.groupby("grid_node_idx")["deviation_deg_spine"].mean()
+    else:
+        values = grouped.groupby("grid_node_idx")[metric].mean()
+
+    values_df = node_df.set_index("grid_node_idx").join(values.rename("value"), how="left").dropna(subset=["value"])
+    if values_df.empty:
+        return None
+    grid = values_df.pivot(index="y", columns="x", values="value").sort_index().sort_index(axis=1)
+    return {"x": grid.columns.to_numpy(), "y": grid.index.to_numpy(), "metric": grid.to_numpy()}
 
 
 def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, x_col, y_col):
@@ -1623,7 +1658,9 @@ with tab_playback:
                 fig_vol = add_cad_walls_to_fig(
                     fig_vol, line_color="#FFFFFF", line_width=1.5
                 )
-                volume_grid = build_average_density_grid(
+                volume_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "volume"
+                ) or build_average_density_grid(
                     df_track[x_col], df_track[y_col], observed_frame_count
                 )
                 if volume_grid is not None:
@@ -1631,7 +1668,7 @@ with tab_playback:
                         go.Heatmap(
                             x=volume_grid["x"],
                             y=volume_grid["y"],
-                            z=volume_grid["average_people"],
+                            z=volume_grid.get("metric", volume_grid.get("average_people")),
                             colorscale="Viridis",
                             colorbar=dict(title="people / bin"),
                             hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>average people=%{z:.3f}<extra></extra>",
@@ -1663,9 +1700,9 @@ with tab_playback:
                     else df_track[y_col]
                 )
 
-                density_grid = build_average_density_grid(
-                    plot_x, plot_y, observed_frame_count
-                )
+                density_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "density"
+                ) or build_average_density_grid(plot_x, plot_y, observed_frame_count)
                 coordinate_unit = "m"
                 density_unit = f"people / {coordinate_unit}²"
                 if density_grid is not None:
@@ -1673,7 +1710,7 @@ with tab_playback:
                         go.Heatmap(
                             x=density_grid["x"],
                             y=density_grid["y"],
-                            z=density_grid["density"],
+                            z=density_grid.get("metric", density_grid.get("density")),
                             colorscale="Hot",
                             colorbar=dict(title=density_unit),
                             hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>average density=%{{z:.3f}} {density_unit}<extra></extra>",
@@ -1688,24 +1725,26 @@ with tab_playback:
                 if density_grid is not None:
                     bin_width = density_grid["x"][1] - density_grid["x"][0] if len(density_grid["x"]) > 1 else 0.0
                     bin_height = density_grid["y"][1] - density_grid["y"][0] if len(density_grid["y"]) > 1 else 0.0
+                    density_values = density_grid.get("metric", density_grid.get("density"))
+                    cell_area_text = "VGA cell area" if "metric" in density_grid else f"{density_grid['cell_area']:.5f} {coordinate_unit}²"
                     st.caption(
-                        f"Density = average people / bin area across {observed_frame_count} observed frames. "
+                        f"Density = average people / imported VGA cell area across {observed_frame_count} observed frames. "
                         f"This display uses {bin_width:.3f} x {bin_height:.3f} {coordinate_unit} bins "
-                        f"({density_grid['cell_area']:.5f} {coordinate_unit}²), so the maximum shown is {np.nanmax(density_grid['density']):.3f} {density_unit}."
+                        f"({cell_area_text}), so the maximum shown is {np.nanmax(density_values):.3f} {density_unit}."
                     )
 
             with m_tab3:
                 st.markdown("#### Average Speed Heatmap")
                 fig_spd = go.Figure()
-                speed_grid = build_average_metric_grid(
-                    df_track[x_col], df_track[y_col], df_track["speed"]
-                )
+                speed_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "speed"
+                ) or build_average_metric_grid(df_track[x_col], df_track[y_col], df_track["speed"])
                 if speed_grid is not None:
                     fig_spd.add_trace(
                         go.Heatmap(
                             x=speed_grid["x"],
                             y=speed_grid["y"],
-                            z=speed_grid["metric"],
+                            z=speed_grid.get("metric"),
                             colorscale="Plasma",
                             colorbar=dict(title=speed_unit),
                             hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>average speed=%{{z:.3f}} {speed_unit}<extra></extra>",
@@ -1723,9 +1762,9 @@ with tab_playback:
             with m_tab4:
                 st.markdown("#### Average Directional Flow (Degrees from Spine)")
                 fig_dir = go.Figure()
-                direction_grid = build_average_metric_grid(
-                    df_track[x_col], df_track[y_col], df_track["dir_deg_spine"], circular=True
-                )
+                direction_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "direction"
+                ) or build_average_metric_grid(df_track[x_col], df_track[y_col], df_track["dir_deg_spine"], circular=True)
                 if direction_grid is not None:
                     fig_dir.add_trace(
                         go.Heatmap(
@@ -1751,17 +1790,15 @@ with tab_playback:
             with m_tab5:
                 st.markdown("#### Deviation Angle from Spine")
                 fig_deviation = go.Figure()
-                deviation_grid = build_average_metric_grid(
-                    plot_x,
-                    plot_y,
-                    df_track["deviation_deg_spine"],
-                )
+                deviation_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "deviation"
+                ) or build_average_metric_grid(plot_x, plot_y, df_track["deviation_deg_spine"])
                 if deviation_grid is not None:
                     fig_deviation.add_trace(
                         go.Heatmap(
                             x=deviation_grid["x"],
                             y=deviation_grid["y"],
-                            z=deviation_grid["metric"],
+                            z=deviation_grid.get("metric"),
                             colorscale="Turbo",
                             zmin=0,
                             zmax=90,
@@ -1784,15 +1821,15 @@ with tab_playback:
                 fig_peak_density = add_cad_walls_to_fig(
                     fig_peak_density, line_color="#FFFFFF", line_width=1.5
                 )
-                peak_density_grid = build_peak_density_grid(
-                    plot_x, plot_y, df_track[frame_col]
-                )
+                peak_density_grid = build_vga_metric_grid(
+                    df_track, vga_nodes, frame_col, id_col, "peak_density"
+                ) or build_peak_density_grid(plot_x, plot_y, df_track[frame_col])
                 if peak_density_grid is not None:
                     fig_peak_density.add_trace(
                         go.Heatmap(
                             x=peak_density_grid["x"],
                             y=peak_density_grid["y"],
-                            z=peak_density_grid["density"],
+                            z=peak_density_grid.get("metric", peak_density_grid.get("density")),
                             colorscale="Inferno",
                             zmin=0,
                             colorbar=dict(title=density_unit),
