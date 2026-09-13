@@ -177,6 +177,26 @@ def infer_cell_area_m2(node):
     return 1.0
 
 
+def build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size=1.0, max_cells=250000):
+    """Create square spatial bins without allocating an unsafe giant grid."""
+    x_span = max(float(x_max) - float(x_min), cell_size)
+    y_span = max(float(y_max) - float(y_min), cell_size)
+    requested_x = max(int(np.ceil(x_span / cell_size)), 1)
+    requested_y = max(int(np.ceil(y_span / cell_size)), 1)
+    requested_cells = requested_x * requested_y
+    if requested_cells > max_cells:
+        scale = np.sqrt(requested_cells / max_cells)
+        cell_size *= scale
+
+    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
+    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
+    if len(x_edges) < 2:
+        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
+    if len(y_edges) < 2:
+        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    return x_edges, y_edges
+
+
 def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     """Build average people density per spatial bin over the imported video."""
     points = pd.DataFrame({"x": x_values, "y": y_values}).apply(pd.to_numeric, errors="coerce").dropna()
@@ -190,12 +210,7 @@ def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
-    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
-    if len(x_edges) < 2:
-        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
-    if len(y_edges) < 2:
-        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
     observations, _, _ = np.histogram2d(points["x"], points["y"], bins=[x_edges, y_edges])
     cell_area = (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0])
     average_density = observations.T / max(int(frame_count), 1) / cell_area
@@ -225,12 +240,7 @@ def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1.0):
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
-    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
-    if len(x_edges) < 2:
-        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
-    if len(y_edges) < 2:
-        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
     peak_observations = np.zeros((len(x_edges) - 1, len(y_edges) - 1))
     for _, frame_points in points.groupby("frame", sort=False):
         frame_counts, _, _ = np.histogram2d(
@@ -264,12 +274,7 @@ def build_average_metric_grid(x_values, y_values, metric_values, circular=False,
     if y_min == y_max:
         y_min, y_max = y_min - 0.5, y_max + 0.5
 
-    x_edges = np.arange(np.floor(x_min), np.ceil(x_max) + cell_size, cell_size)
-    y_edges = np.arange(np.floor(y_min), np.ceil(y_max) + cell_size, cell_size)
-    if len(x_edges) < 2:
-        x_edges = np.array([x_min - cell_size / 2, x_min + cell_size / 2])
-    if len(y_edges) < 2:
-        y_edges = np.array([y_min - cell_size / 2, y_min + cell_size / 2])
+    x_edges, y_edges = build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size)
     x_bin_count = len(x_edges) - 1
     y_bin_count = len(y_edges) - 1
     x_index = np.clip(np.digitize(points["x"], x_edges) - 1, 0, x_bin_count - 1)
@@ -1184,6 +1189,8 @@ def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
     # Extract node positions (handles both list of dicts or DataFrame-like dicts)
     node_coords = []
     for n in grid_nodes:
+        if not isinstance(n, dict):
+            continue
         nx = n.get("x", n.get("world_x", n.get("pos_x")))
         ny = n.get("y", n.get("world_y", n.get("pos_y")))
         if nx is not None and ny is not None:
