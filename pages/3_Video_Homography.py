@@ -27,6 +27,7 @@ st.title("Module 3: Video Homography & Tracking")
 
 VIDEO_FPS = 60.0
 COORDINATE_MM_TO_METERS = 0.001
+MAX_REASONABLE_SPEED_MPS = 5.0
 
 # ==========================================
 # SESSION STATE INITIALIZATION
@@ -1577,7 +1578,9 @@ with tab_playback:
                 * COORDINATE_MM_TO_METERS
             )
             elapsed_seconds = frame_delta / VIDEO_FPS
-            df_track["speed"] = distance_m.div(elapsed_seconds).where(elapsed_seconds > 0, 0.0)
+            raw_speed_mps = distance_m.div(elapsed_seconds).where(elapsed_seconds > 0, 0.0)
+            valid_motion = raw_speed_mps.le(MAX_REASONABLE_SPEED_MPS) | elapsed_seconds.isna()
+            df_track["speed"] = raw_speed_mps.where(valid_motion, np.nan).fillna(0.0)
             speed_unit = "m/s"
 
             # Compass Bearing (0° North) and user-relative spine bearing.
