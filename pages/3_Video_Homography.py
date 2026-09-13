@@ -52,6 +52,8 @@ if "spine_reference_points" not in st.session_state:
     st.session_state.spine_reference_points = []
 if "spine_reference_click_hash" not in st.session_state:
     st.session_state.spine_reference_click_hash = None
+if "spine_reference_canvas_version" not in st.session_state:
+    st.session_state.spine_reference_canvas_version = 0
 
 # Plot Range Axes State
 if "current_x_range" not in st.session_state:
@@ -1353,6 +1355,7 @@ with tab_playback:
                 if st.button("Clear Spine", use_container_width=True):
                     st.session_state.spine_reference_points = []
                     st.session_state.spine_reference_click_hash = None
+                    st.session_state.spine_reference_canvas_version += 1
                     st.rerun()
 
             spine_fig = go.Figure()
@@ -1367,6 +1370,23 @@ with tab_playback:
                     mode="markers",
                     marker=dict(size=5, color="rgba(255, 87, 34, 0.22)"),
                     name="Tracking points",
+                    hoverinfo="skip",
+                )
+            )
+            click_x_min, click_x_max = spine_candidates[x_col].min(), spine_candidates[x_col].max()
+            click_y_min, click_y_max = spine_candidates[y_col].min(), spine_candidates[y_col].max()
+            click_grid_size = 60
+            click_grid_x, click_grid_y = np.meshgrid(
+                np.linspace(click_x_min, click_x_max, click_grid_size),
+                np.linspace(click_y_min, click_y_max, click_grid_size),
+            )
+            spine_fig.add_trace(
+                go.Scatter(
+                    x=click_grid_x.ravel(),
+                    y=click_grid_y.ravel(),
+                    mode="markers",
+                    marker=dict(size=12, color="rgba(255, 255, 255, 0.01)"),
+                    name="Select spine point",
                     hoverinfo="skip",
                 )
             )
@@ -1399,7 +1419,7 @@ with tab_playback:
                 use_container_width=True,
                 on_select="rerun",
                 selection_mode="points",
-                key="spine_reference_canvas",
+                key=f"spine_reference_canvas_{st.session_state.spine_reference_canvas_version}",
             )
             if spine_events and "selection" in spine_events:
                 selected_points = spine_events["selection"].get("points", [])
@@ -1411,6 +1431,7 @@ with tab_playback:
                     if click_hash != st.session_state.spine_reference_click_hash:
                         st.session_state.spine_reference_click_hash = click_hash
                         st.session_state.spine_reference_points.append([click_x, click_y])
+                        st.session_state.spine_reference_canvas_version += 1
                         st.rerun()
 
             # --- Calculate Motion Metrics ---
@@ -1673,16 +1694,25 @@ with tab_playback:
 
             with m_tab5:
                 st.markdown("#### Deviation Angle from Spine")
-                fig_deviation = px.scatter(
-                    df_track,
-                    x=x_col,
-                    y=y_col,
-                    color="deviation_deg_spine",
-                    color_continuous_scale="Turbo",
-                    range_color=[0, 90],
-                    labels={"deviation_deg_spine": "Deviation angle (°)"},
-                    title="Movement Deviation from Spine (0° = along either spine direction)",
+                fig_deviation = go.Figure()
+                deviation_grid = build_average_metric_grid(
+                    plot_x,
+                    plot_y,
+                    df_track["deviation_deg_spine"],
                 )
+                if deviation_grid is not None:
+                    fig_deviation.add_trace(
+                        go.Heatmap(
+                            x=deviation_grid["x"],
+                            y=deviation_grid["y"],
+                            z=deviation_grid["metric"],
+                            colorscale="Turbo",
+                            zmin=0,
+                            zmax=90,
+                            colorbar=dict(title="deviation angle (°)"),
+                            hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>average deviation=%{z:.2f}°<extra></extra>",
+                        )
+                    )
                 fig_deviation = add_cad_walls_to_fig(fig_deviation)
                 fig_deviation.update_layout(
                     template="plotly_dark",
@@ -1690,7 +1720,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 st.plotly_chart(fig_deviation, use_container_width=True)
-                st.caption("Deviation is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°.")
+                st.caption("Deviation is averaged per spatial bin and is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°.")
 
             with m_tab6:
                 st.markdown("#### Peak Pedestrian Density")
