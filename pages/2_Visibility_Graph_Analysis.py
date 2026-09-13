@@ -2,6 +2,7 @@ import json
 from io import BytesIO
 import tempfile
 import time
+import math
 
 import numpy as np
 import pandas as pd
@@ -9,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from supabase import Client, create_client
-from shapely.geometry import Point, LineString, Polygon
+from shapely.geometry import MultiPoint, Point, LineString, Polygon
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
@@ -405,34 +406,47 @@ def calculate_cluster_spine(cluster_df):
         [[x_lookup[x_key], y_lookup[y_key]] for x_key, y_key in largest_component],
         dtype=float,
     )
-    min_x, max_x = selected_points[:, 0].min(), selected_points[:, 0].max()
-    min_y, max_y = selected_points[:, 1].min(), selected_points[:, 1].max()
-    center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
-
-    if (max_x - min_x) >= (max_y - min_y):
-        spine_angle = 0.0
-        half_length = max(max_x - min_x, x_step) / 2
-        half_width = max(max_y - min_y, y_step) / 2
-        spine_start = (center_x - half_length, center_y)
-        spine_end = (center_x + half_length, center_y)
-        side_values = selected_points[:, 1] - center_y
-    else:
-        spine_angle = 90.0
-        half_length = max(max_y - min_y, y_step) / 2
-        half_width = max(max_x - min_x, x_step) / 2
-        spine_start = (center_x, center_y - half_length)
-        spine_end = (center_x, center_y + half_length)
-        side_values = selected_points[:, 0] - center_x
-
-    positive_count = int(np.sum(side_values > 0))
-    negative_count = int(np.sum(side_values < 0))
-    boundary_count = int(np.sum(side_values == 0))
+    point_geometry = MultiPoint(selected_points.tolist())
+    minimum_rectangle = point_geometry.minimum_rotated_rectangle
+    if minimum_rectangle.geom_type != "Polygon":
+        minimum_rectangle = point_geometry.buffer(max(x_step, y_step) / 2).minimum_rotated_rectangle
+    rectangle_coords = list(minimum_rectangle.exterior.coords)
+    rectangle_edges = [
+        (rectangle_coords[index], rectangle_coords[index + 1])
+        for index in range(len(rectangle_coords) - 1)
+    ]
+    longest_edge = max(
+        rectangle_edges,
+        key=lambda edge: math.hypot(
+            edge[1][0] - edge[0][0], edge[1][1] - edge[0][1]
+        ),
+    )
+    edge_start, edge_end = longest_edge
+    edge_dx = edge_end[0] - edge_start[0]
+    edge_dy = edge_end[1] - edge_start[1]
+    edge_length = math.hypot(edge_dx, edge_dy)
+    center_x, center_y = minimum_rectangle.centroid.x, minimum_rectangle.centroid.y
+    direction_x, direction_y = edge_dx / edge_length, edge_dy / edge_length
+    spine_start = (center_x - direction_x * edge_length / 2, center_y - direction_y * edge_length / 2)
+    spine_end = (center_x + direction_x * edge_length / 2, center_y + direction_y * edge_length / 2)
+    spine_angle = math.degrees(math.atan2(direction_y, direction_x)) % 180
+    side_values = direction_x * (selected_points[:, 1] - center_y) - direction_y * (selected_points[:, 0] - center_x)
+    side_tolerance = max(min(x_step, y_step) * 0.05, 1e-9)
+    side_labels = np.where(
+        side_values > side_tolerance,
+        "Side 1",
+        np.where(side_values < -side_tolerance, "Side 2", "On spine"),
+    )
+    positive_count = int(np.sum(side_labels == "Side 1"))
+    negative_count = int(np.sum(side_labels == "Side 2"))
+    boundary_count = int(np.sum(side_labels == "On spine"))
     return {
         "selected_points": selected_points,
-        "bbox": (min_x, min_y, max_x, max_y),
+        "rectangle_coords": rectangle_coords,
         "spine_start": spine_start,
         "spine_end": spine_end,
         "spine_angle": spine_angle,
+        "side_labels": side_labels,
         "positive_count": positive_count,
         "negative_count": negative_count,
         "boundary_count": boundary_count,
@@ -443,15 +457,18 @@ def calculate_cluster_spine(cluster_df):
 
 def add_cluster_spine_overlay(fig, spine_result):
     """Overlay the selected cluster bounding box, spine, and side counts."""
-    min_x, min_y, max_x, max_y = spine_result["bbox"]
-    fig.add_shape(
-        type="rect",
-        x0=min_x,
-        y0=min_y,
-        x1=max_x,
-        y1=max_y,
-        line=dict(color="#00E5FF", width=2, dash="dash"),
-        fillcolor="rgba(0, 229, 255, 0.08)",
+    rectangle_coords = spine_result["rectangle_coords"]
+    fig.add_trace(
+        go.Scatter(
+            x=[point[0] for point in rectangle_coords],
+            y=[point[1] for point in rectangle_coords],
+            mode="lines",
+            fill="toself",
+            fillcolor="rgba(0, 229, 255, 0.08)",
+            line=dict(color="#00E5FF", width=2, dash="dash"),
+            name="Minimum bounding box",
+            hoverinfo="skip",
+        )
     )
     spine_start = spine_result["spine_start"]
     spine_end = spine_result["spine_end"]
@@ -465,15 +482,32 @@ def add_cluster_spine_overlay(fig, spine_result):
             hovertemplate=f"Spine angle: {spine_result['spine_angle']:.1f}°<extra></extra>",
         )
     )
+    side_colors = {"Side 1": "#FF6B6B", "Side 2": "#4D96FF", "On spine": "#FFFFFF"}
+    selected_points = spine_result["selected_points"]
+    side_labels = spine_result["side_labels"]
+    for side_label in ("Side 1", "Side 2", "On spine"):
+        side_points = selected_points[side_labels == side_label]
+        if len(side_points) == 0:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=side_points[:, 0],
+                y=side_points[:, 1],
+                mode="markers",
+                marker=dict(size=12, color=side_colors[side_label], line=dict(color="#111111", width=1)),
+                name=side_label,
+                hovertemplate=f"{side_label}<br>x=%{{x}}<br>y=%{{y}}<extra></extra>",
+            )
+        )
     fig.add_annotation(
-        x=min_x,
-        y=max_y,
+        x=rectangle_coords[0][0],
+        y=rectangle_coords[0][1],
         xanchor="left",
         yanchor="top",
         text=(
             f"Spine angle: {spine_result['spine_angle']:.1f}°<br>"
-            f"Side 1: {spine_result['positive_count']} cells | "
-            f"Side 2: {spine_result['negative_count']} cells<br>"
+            f"Side 1 (red): {spine_result['positive_count']} cells | "
+            f"Side 2 (blue): {spine_result['negative_count']} cells<br>"
             f"On spine: {spine_result['boundary_count']} cells"
         ),
         showarrow=False,
