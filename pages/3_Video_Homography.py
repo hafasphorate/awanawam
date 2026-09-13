@@ -58,6 +58,8 @@ if "spine_angle_orientation" not in st.session_state:
     st.session_state.spine_angle_orientation = "Clockwise"
 if "spine_setup_confirmed" not in st.session_state:
     st.session_state.spine_setup_confirmed = False
+if "tracking_upload_signature" not in st.session_state:
+    st.session_state.tracking_upload_signature = None
 
 # Plot Range Axes State
 if "current_x_range" not in st.session_state:
@@ -1272,7 +1274,14 @@ with tab_playback:
                 raw_json = json.load(uploaded_tb_json)
                 df_loaded = parse_tracking_json(raw_json)
                 st.session_state.tracking_results_df = df_loaded
-                st.session_state.spine_setup_confirmed = False
+                upload_signature = (
+                    "json",
+                    uploaded_tb_json.name,
+                    getattr(uploaded_tb_json, "size", None),
+                )
+                if st.session_state.tracking_upload_signature != upload_signature:
+                    st.session_state.tracking_upload_signature = upload_signature
+                    st.session_state.spine_setup_confirmed = False
                 st.success(
                     f"✅ Successfully imported {len(df_loaded)} tracking records!"
                 )
@@ -1285,10 +1294,15 @@ with tab_playback:
         )
         if uploaded_tb_csv is not None:
             try:
-                st.session_state.tracking_results_df = pd.read_csv(
-                    uploaded_tb_csv
+                upload_signature = (
+                    "csv",
+                    uploaded_tb_csv.name,
+                    getattr(uploaded_tb_csv, "size", None),
                 )
-                st.session_state.spine_setup_confirmed = False
+                st.session_state.tracking_results_df = pd.read_csv(uploaded_tb_csv)
+                if st.session_state.tracking_upload_signature != upload_signature:
+                    st.session_state.tracking_upload_signature = upload_signature
+                    st.session_state.spine_setup_confirmed = False
                 st.success("✅ Successfully imported CSV tracking records!")
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
