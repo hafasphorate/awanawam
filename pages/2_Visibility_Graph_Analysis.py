@@ -368,7 +368,7 @@ def render_cluster_map(df, wall_lines, selected_group=None, spine_result=None):
     return fig
 
 
-def calculate_cluster_spine(cluster_df):
+def calculate_cluster_spine(cluster_df, count_df=None):
     """Calculate the long-axis spine and side counts for the largest cell region."""
     points = cluster_df[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
     if points.empty:
@@ -430,7 +430,10 @@ def calculate_cluster_spine(cluster_df):
     spine_start = (center_x - direction_x * edge_length / 2, center_y - direction_y * edge_length / 2)
     spine_end = (center_x + direction_x * edge_length / 2, center_y + direction_y * edge_length / 2)
     spine_angle = math.degrees(math.atan2(direction_y, direction_x)) % 180
-    side_values = direction_x * (selected_points[:, 1] - center_y) - direction_y * (selected_points[:, 0] - center_x)
+    count_points = (count_df if count_df is not None else cluster_df)[["x", "y"]].apply(
+        pd.to_numeric, errors="coerce"
+    ).dropna().to_numpy(dtype=float)
+    side_values = direction_x * (count_points[:, 1] - center_y) - direction_y * (count_points[:, 0] - center_x)
     side_tolerance = max(min(x_step, y_step) * 0.05, 1e-9)
     side_labels = np.where(
         side_values > side_tolerance,
@@ -446,6 +449,7 @@ def calculate_cluster_spine(cluster_df):
         "spine_start": spine_start,
         "spine_end": spine_end,
         "spine_angle": spine_angle,
+        "count_points": count_points,
         "side_labels": side_labels,
         "positive_count": positive_count,
         "negative_count": negative_count,
@@ -457,7 +461,11 @@ def calculate_cluster_spine(cluster_df):
 
 def add_cluster_spine_overlay(fig, spine_result):
     """Overlay the selected cluster bounding box, spine, and side counts."""
-    if not spine_result or "rectangle_coords" not in spine_result:
+    if not spine_result or not {
+        "rectangle_coords",
+        "count_points",
+        "side_labels",
+    }.issubset(spine_result):
         return fig
     rectangle_coords = spine_result["rectangle_coords"]
     fig.add_trace(
@@ -485,7 +493,7 @@ def add_cluster_spine_overlay(fig, spine_result):
         )
     )
     side_colors = {"Side 1": "#FF6B6B", "Side 2": "#4D96FF", "On spine": "#FFFFFF"}
-    selected_points = spine_result["selected_points"]
+    selected_points = spine_result["count_points"]
     side_labels = spine_result["side_labels"]
     for side_label in ("Side 1", "Side 2", "On spine"):
         side_points = selected_points[side_labels == side_label]
@@ -758,11 +766,18 @@ def render_clustering_tab():
             st.session_state["cluster_spine_group"] = selected_group
         if st.button("Calculate spine", type="primary", key="calculate_cluster_spine"):
             try:
-                st.session_state["cluster_spine_result"] = calculate_cluster_spine(selected_cluster_df)
+                st.session_state["cluster_spine_result"] = calculate_cluster_spine(
+                    selected_cluster_df,
+                    clustered_df,
+                )
             except ValueError as error:
                 st.warning(str(error))
         spine_result = st.session_state.get("cluster_spine_result")
-        if spine_result is not None and "rectangle_coords" not in spine_result:
+        if spine_result is not None and not {
+            "rectangle_coords",
+            "count_points",
+            "side_labels",
+        }.issubset(spine_result):
             st.session_state.pop("cluster_spine_result", None)
             spine_result = None
     else:
@@ -770,25 +785,7 @@ def render_clustering_tab():
         st.session_state.pop("cluster_spine_group", None)
         st.info("Select one group to calculate its largest-region spine.")
 
-    cluster_map_df = clustered_df
-    if spine_result is not None and selected_group is not None:
-        kept_points = {
-            (round(point[0], 10), round(point[1], 10))
-            for point in spine_result["selected_points"]
-        }
-        selected_mask = clustered_df["cluster"] == selected_group
-        selected_coordinates = list(zip(clustered_df.loc[selected_mask, "x"], clustered_df.loc[selected_mask, "y"]))
-        keep_selected = [
-            (round(x_value, 10), round(y_value, 10)) in kept_points
-            for x_value, y_value in selected_coordinates
-        ]
-        cluster_map_df = clustered_df.loc[~selected_mask].copy()
-        cluster_map_df = pd.concat(
-            [cluster_map_df, clustered_df.loc[selected_mask].loc[keep_selected]],
-            ignore_index=True,
-        )
-
-    cluster_fig = render_cluster_map(cluster_map_df, clustering_walls, selected_group, spine_result)
+    cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group, spine_result)
     st.plotly_chart(cluster_fig, use_container_width=True)
     render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
     st.download_button(
