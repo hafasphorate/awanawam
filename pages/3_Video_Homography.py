@@ -15,6 +15,7 @@ from utils.vga_engine import process_cad_file
 from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
 from utils.navigation import render_home_button
+from utils.density_visuals import DENSITY_COLORSCALE, DENSITY_SCALE_MAX
 
 import math
 from scipy.spatial import KDTree
@@ -1769,8 +1770,10 @@ with tab_playback:
                             x=density_grid["x"],
                             y=density_grid["y"],
                             z=density_grid.get("metric", density_grid.get("density")),
-                            colorscale="Hot",
-                            colorbar=dict(title=density_unit),
+                            colorscale=DENSITY_COLORSCALE,
+                            zmin=0,
+                            zmax=DENSITY_SCALE_MAX,
+                            colorbar=dict(title=density_unit, tick0=0, dtick=1),
                             hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>average density=%{{z:.3f}} {density_unit}<extra></extra>",
                         )
                     )
@@ -1894,18 +1897,10 @@ with tab_playback:
                             x=peak_density_grid["x"],
                             y=peak_density_grid["y"],
                             z=peak_density_grid.get("metric", peak_density_grid.get("density")),
-                            colorscale=[
-                                [0.0, "#22c55e"],
-                                [1 / 7, "#22c55e"],
-                                [2 / 7, "#facc15"],
-                                [3 / 7, "#facc15"],
-                                [4 / 7, "#f97316"],
-                                [5 / 7, "#ef4444"],
-                                [1.0, "#b91c1c"],
-                            ],
+                            colorscale=DENSITY_COLORSCALE,
                             zmin=0,
-                            zmax=7,
-                            colorbar=dict(title=density_unit),
+                            zmax=DENSITY_SCALE_MAX,
+                            colorbar=dict(title=density_unit, tick0=0, dtick=1),
                             hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>peak density=%{{z:.3f}} {density_unit}<extra></extra>",
                         )
                     )

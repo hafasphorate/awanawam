@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 from supabase import Client, create_client
 from shapely.geometry import MultiPoint, Point, LineString, Polygon
 from shapely.geometry.polygon import orient
@@ -20,6 +21,10 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 from utils.navigation import render_home_button
+from utils.density_visuals import (
+    DENSITY_COLORSCALE,
+    DENSITY_SCALE_MAX,
+)
 
 from utils.vga_engine import (
     compute_isovist_metrics,
@@ -943,8 +948,24 @@ def projection_png(projected_df, density_column, walls):
     for line in walls:
         x_values, y_values = line.xy
         axis.plot(x_values, y_values, color="#666666", linewidth=1.0)
-    scatter = axis.scatter(projected_df["x"], projected_df["y"], c=projected_df[density_column], cmap="YlOrRd", s=42)
-    figure.colorbar(scatter, ax=axis, label="Projected people / m²")
+    density_cmap = LinearSegmentedColormap.from_list(
+        "crowd_density",
+        [color for _, color in DENSITY_COLORSCALE],
+    )
+    scatter = axis.scatter(
+        projected_df["x"],
+        projected_df["y"],
+        c=projected_df[density_column],
+        cmap=density_cmap,
+        norm=Normalize(vmin=0, vmax=DENSITY_SCALE_MAX),
+        s=42,
+    )
+    figure.colorbar(
+        scatter,
+        ax=axis,
+        label="Projected people / m²",
+        ticks=range(DENSITY_SCALE_MAX + 1),
+    )
     axis.set_aspect("equal", adjustable="datalim")
     axis.set_title("Projected Crowd Density", color="white")
     axis.set_xlabel("X (mm)", color="white")
@@ -1070,7 +1091,7 @@ def render_projection_tab():
         for line in source_walls:
             x_values, y_values = line.xy
             map_fig.add_trace(go.Scatter(x=list(x_values), y=list(y_values), mode="lines", line=dict(color="#666"), showlegend=False))
-        map_fig.add_trace(go.Scatter(x=projected_df["x"].tolist(), y=projected_df["y"].tolist(), mode="markers", marker=dict(size=9, color=projected_df[projected_density].tolist(), colorscale="YlOrRd", showscale=True, colorbar=dict(title="people / m²")), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold").tolist(), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
+        map_fig.add_trace(go.Scatter(x=projected_df["x"].tolist(), y=projected_df["y"].tolist(), mode="markers", marker=dict(size=9, color=projected_df[projected_density].tolist(), colorscale=DENSITY_COLORSCALE, cmin=0, cmax=DENSITY_SCALE_MAX, showscale=True, colorbar=dict(title="people / m²", tick0=0, dtick=1)), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold").tolist(), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
         map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
         st.plotly_chart(map_fig, use_container_width=True)
         st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
