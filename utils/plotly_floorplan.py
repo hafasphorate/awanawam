@@ -25,9 +25,9 @@ def configure_floorplan_figure(fig):
 
     for trace in fig.data:
         marker = getattr(trace, "marker", None)
-        if marker is not None and marker.showscale:
+        if marker is not None and getattr(marker, "showscale", False):
             marker.colorbar.update(_COLORBAR_LAYOUT)
-        elif hasattr(trace, "showscale") and trace.showscale is not False:
+        elif getattr(trace, "showscale", False):
             trace.colorbar.update(_COLORBAR_LAYOUT)
 
     return fig
