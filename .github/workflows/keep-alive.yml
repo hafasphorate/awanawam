@@ -1,18 +1,31 @@
-name: Keep Supabase Active
+name: Supabase Keep-Alive Heartbeat
 
 on:
   schedule:
-    - cron: '0 0 */3 * *'
+    - cron: '0 0,12 * * *'
   workflow_dispatch:
 
 jobs:
-  ping-supabase:
+  keepalive:
     runs-on: ubuntu-latest
     steps:
-      - name: Debug Supabase Ping
+      - name: Ping Supabase DB with Upsert & Clean
         run: |
-          echo "Testing connection to Supabase..."
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
-          echo "$RESPONSE"
+          echo "Sending write operation to Supabase..."
+          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/_heartbeat" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates" \
+            -d '[{"id": 1, "last_ping": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}]' \
+            --fail --show-error
+
+          sleep 5
+
+          echo "Cleaning up heartbeat entry..."
+          curl -X DELETE "${{ secrets.SUPABASE_URL }}/rest/v1/_heartbeat?id=eq.1" \
+            -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            --fail --show-error
+
+          echo "Supabase heartbeat completed successfully."
