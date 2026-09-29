@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from utils.plotly_floorplan import configure_floorplan_figure
 from utils.homography_engine import compute_homography_matrix
 from utils.tracking_engine import extract_frame_from_video, process_video_frame
 
@@ -298,6 +299,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             margin=dict(l=10, r=10, t=30, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
+        configure_floorplan_figure(fig_2d)
 
         st.plotly_chart(fig_2d, use_container_width=True)
 

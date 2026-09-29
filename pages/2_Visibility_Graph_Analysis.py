@@ -21,6 +21,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 from utils.navigation import render_home_button
+from utils.plotly_floorplan import configure_floorplan_figure
 from utils.density_visuals import (
     DENSITY_COLORSCALE,
     DENSITY_SCALE_MAX,
@@ -252,6 +253,7 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         dragmode=False,
         hovermode="closest",
     )
+    configure_floorplan_figure(fig)
     return fig
 
 
@@ -313,6 +315,7 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
         margin=dict(l=20, r=20, t=50, b=20),
     )
 
+    configure_floorplan_figure(fig)
     return fig
 
 
@@ -368,6 +371,7 @@ def render_cluster_map(df, wall_lines, selected_group=None, spine_result=None):
         height=650,
         margin=dict(l=20, r=20, t=50, b=20),
     )
+    configure_floorplan_figure(fig)
     if spine_result is not None:
         add_cluster_spine_overlay(fig, spine_result)
     return fig
@@ -1093,6 +1097,7 @@ def render_projection_tab():
             map_fig.add_trace(go.Scatter(x=list(x_values), y=list(y_values), mode="lines", line=dict(color="#666"), showlegend=False))
         map_fig.add_trace(go.Scatter(x=projected_df["x"].tolist(), y=projected_df["y"].tolist(), mode="markers", marker=dict(size=9, color=projected_df[projected_density].tolist(), colorscale=DENSITY_COLORSCALE, cmin=0, cmax=DENSITY_SCALE_MAX, showscale=True, colorbar=dict(title="people / m²", tick0=0, dtick=1)), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold").tolist(), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
         map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
+        configure_floorplan_figure(map_fig)
         st.plotly_chart(map_fig, use_container_width=True)
         st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
     else:

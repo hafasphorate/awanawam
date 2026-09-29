@@ -16,6 +16,7 @@ from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
 from utils.navigation import render_home_button
 from utils.density_visuals import DENSITY_COLORSCALE, DENSITY_SCALE_MAX
+from utils.plotly_floorplan import configure_floorplan_figure
 
 import math
 from scipy.spatial import KDTree
@@ -1112,6 +1113,7 @@ with tab_region:
             hovermode="closest",
             uirevision="constant_lock",
         )
+        configure_floorplan_figure(fig)
 
         chart_events = st.plotly_chart(
             fig,
@@ -1517,6 +1519,7 @@ with tab_playback:
                     yaxis=dict(title="Y (m)"),
                     showlegend=False,
                 )
+                configure_floorplan_figure(preview_fig)
                 st.plotly_chart(preview_fig, use_container_width=True, key="spine_floorplan_preview")
 
             with vector_col:
@@ -1668,6 +1671,7 @@ with tab_playback:
                     margin=dict(l=10, r=10, t=20, b=10),
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_play)
                 st.plotly_chart(fig_play, use_container_width=True)
 
             with col_fb2:
@@ -1693,6 +1697,7 @@ with tab_playback:
                     margin=dict(l=10, r=10, t=20, b=10),
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_f_hm)
                 st.plotly_chart(fig_f_hm, use_container_width=True)
 
             st.markdown("---")
@@ -1738,6 +1743,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_vol)
                 st.plotly_chart(fig_vol, use_container_width=True)
                 st.caption(f"Volume is average people per 1 m x 1 m bin across {observed_frame_count} observed frames. Empty/skipped frame indices are not included. Cumulative person-frames remain available in the export.")
 
@@ -1782,6 +1788,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_dens)
                 st.plotly_chart(fig_dens, use_container_width=True)
                 if density_grid is not None:
                     bin_width = density_grid["x"][1] - density_grid["x"][0] if len(density_grid["x"]) > 1 else 0.0
@@ -1817,6 +1824,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_spd)
                 st.plotly_chart(fig_spd, use_container_width=True)
                 st.caption(f"Speed is averaged per spatial bin. Assuming tracking coordinates are in millimetres and the video is {VIDEO_FPS:.0f} FPS, speed is reported in {speed_unit} using the frame-number differences.")
 
@@ -1845,6 +1853,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_dir)
                 st.plotly_chart(fig_dir, use_container_width=True)
                 st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine is {float(st.session_state.spine_angle_from_horizontal_input):.1f}° from horizontal.")
 
@@ -1879,6 +1888,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_deviation)
                 st.plotly_chart(fig_deviation, use_container_width=True)
                 st.caption("Deviation is averaged per spatial bin and is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°.")
 
@@ -1909,6 +1919,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
+                configure_floorplan_figure(fig_peak_density)
                 st.plotly_chart(fig_peak_density, use_container_width=True)
                 st.caption(f"Peak density is the highest single-frame density observed in each 1 m x 1 m spatial bin ({density_unit}).")
 

@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import json
 import io
+from utils.plotly_floorplan import configure_floorplan_figure
 
 try:
     import ezdxf
@@ -486,6 +487,7 @@ def _configure_axes(fig, df, wall_lines):
         yaxis=dict(title="Y Position", showgrid=True),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    configure_floorplan_figure(fig)
 
 
 # =============================================================================
