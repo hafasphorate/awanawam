@@ -664,7 +664,7 @@ else:
         crowd_words = (
             "crowd", "pedestrian", "density", "people", "count", "volume",
             "person", "frame", "speed", "direction", "deviation", "occupancy",
-            "trajectory",
+            "trajectory", "spine",
         )
         crowd_metrics = [
             column for column in numeric_cols
@@ -672,8 +672,8 @@ else:
         ]
         vga_metrics = [column for column in numeric_cols if column not in crowd_metrics]
 
-        st.subheader("Global Analysis Filters")
-        with st.form("global_analysis_filters"):
+        st.sidebar.header("Global Analysis Filters")
+        with st.sidebar.form("global_analysis_filters"):
             crowd_selection = st.multiselect(
                 "Crowd metrics",
                 options=crowd_metrics,
