@@ -9,6 +9,7 @@ import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 from utils.navigation import render_home_button
+from utils.dataset_locks import is_locked, unlocked_records
 
 st.set_page_config(page_title="Module 5: Aggregated Insights", layout="wide")
 render_home_button()
@@ -18,6 +19,13 @@ st.write(
     "This page synthesizes all user-contributed node data stored in the central database "
     "to compute collective correlation trends."
 )
+
+DARK_THEME = st.get_option("theme.base") == "dark"
+PLOTLY_TEMPLATE = "plotly_dark" if DARK_THEME else "plotly_white"
+FIGURE_BACKGROUND = "#15191f" if DARK_THEME else "#ffffff"
+AXIS_BACKGROUND = "#1e242c" if DARK_THEME else "#ffffff"
+TEXT_COLOR = "#f3f4f6" if DARK_THEME else "#20242a"
+SPINE_COLOR = "#626b78" if DARK_THEME else "#a7adb5"
 
 
 # -----------------------------------------------------------------------------
@@ -83,6 +91,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     fig_size = cell_size * n_vars
 
     fig, axes = plt.subplots(n_vars, n_vars, figsize=(fig_size, fig_size), dpi=dpi_val)
+    fig.patch.set_facecolor(FIGURE_BACKGROUND)
     plt.subplots_adjust(wspace=0.15, hspace=0.15)
 
     clean_labels = [
@@ -175,6 +184,13 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                 ax.set_ylabel(clean_labels[i], fontsize=font_size, fontweight="bold")
                 ax.tick_params(axis="y", labelsize=font_size - 1)
 
+            ax.set_facecolor(AXIS_BACKGROUND)
+            ax.tick_params(colors=TEXT_COLOR)
+            ax.xaxis.label.set_color(TEXT_COLOR)
+            ax.yaxis.label.set_color(TEXT_COLOR)
+            for spine in ax.spines.values():
+                spine.set_color(SPINE_COLOR)
+
     plt.tight_layout()
     return fig
 
@@ -247,6 +263,7 @@ def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
 
         fig_scatter.update_layout(
             height=480,
+            template=PLOTLY_TEMPLATE,
             margin=dict(l=20, r=20, t=20, b=20),
             xaxis_title=clean_x,
             yaxis_title=clean_y,
@@ -455,6 +472,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
         )
         fig_bar.update_layout(
             height=380,
+            template=PLOTLY_TEMPLATE,
             yaxis=dict(autorange="reversed"),
             margin=dict(l=20, r=20, t=40, b=20),
         )
@@ -594,6 +612,7 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
         name="Variables",
     ))
     fig.update_layout(
+        template=PLOTLY_TEMPLATE,
         height=360, showlegend=False, xaxis=dict(visible=False, range=[-0.35, 2.35]),
         yaxis=dict(visible=False, range=[-0.3, 1.55]), margin=dict(l=20, r=20, t=20, b=20),
         annotations=[
@@ -610,26 +629,28 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
 # 5. Main Application Workflow
 # -----------------------------------------------------------------------------
 raw_db_df = fetch_aggregated_records()
+active_db_df = unlocked_records(raw_db_df)
+coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
 
-if raw_db_df.empty:
-    st.warning(
-        "No aggregated data found in the cloud repository yet. Upload records first."
-    )
+if active_db_df.empty:
+    if not raw_db_df.empty:
+        st.info("All uploaded datasets are temporarily locked. Unlock a dataset in the Admin Portal to include it in analysis.")
+    else:
+        st.warning("No aggregated data found in the cloud repository yet. Upload records first.")
 else:
-    metrics_list = raw_db_df["metrics_data"].tolist()
+    metrics_list = active_db_df["metrics_data"].tolist()
     df_global = pd.DataFrame(metrics_list)
     dataset_count = (
-        raw_db_df["upload_batch_id"].nunique()
-        if "upload_batch_id" in raw_db_df.columns
+        active_db_df["upload_batch_id"].nunique()
+        if "upload_batch_id" in active_db_df.columns
         else 0
     )
 
     st.success(
-        f"**Repository Active:** Loaded **{len(df_global)}** global node records "
+        f"**Repository Active:** Loaded **{len(df_global)}** unlocked node records "
         f"from **{dataset_count}** data sets."
     )
 
-    coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
     numeric_cols = [
         col
         for col in df_global.columns
@@ -640,11 +661,52 @@ else:
     if len(numeric_cols) < 2:
         st.error("Insufficient numeric metrics in the database to form a matrix.")
     else:
-        st.sidebar.header("Global Analysis Filters")
-        selected_metrics = st.sidebar.multiselect(
-            "Select Metrics for Correlation Analysis:",
-            options=numeric_cols,
-            default=numeric_cols,
+        crowd_words = (
+            "crowd", "pedestrian", "density", "people", "count", "volume",
+            "person", "frame", "speed", "direction", "deviation", "occupancy",
+            "trajectory",
+        )
+        crowd_metrics = [
+            column for column in numeric_cols
+            if any(word in column.lower() for word in crowd_words)
+        ]
+        vga_metrics = [column for column in numeric_cols if column not in crowd_metrics]
+
+        st.subheader("Global Analysis Filters")
+        with st.form("global_analysis_filters"):
+            crowd_selection = st.multiselect(
+                "Crowd metrics",
+                options=crowd_metrics,
+                default=st.session_state.get("global_crowd_selection", crowd_metrics),
+                key="global_crowd_filter",
+            )
+            vga_selection = st.multiselect(
+                "VGA metrics",
+                options=vga_metrics,
+                default=st.session_state.get("global_vga_selection", vga_metrics),
+                key="global_vga_filter",
+            )
+            generate_analysis = st.form_submit_button("Generate Analysis", type="primary")
+
+        active_batches = (
+            tuple(sorted(active_db_df["upload_batch_id"].dropna().astype(str).unique()))
+            if "upload_batch_id" in active_db_df.columns
+            else (str(len(active_db_df)),)
+        )
+        if generate_analysis:
+            st.session_state.global_crowd_selection = crowd_selection
+            st.session_state.global_vga_selection = vga_selection
+            st.session_state.global_analysis_batches = active_batches
+            st.session_state.global_analysis_generated = len(set(crowd_selection + vga_selection)) >= 2
+
+        if st.session_state.get("global_analysis_batches") != active_batches:
+            st.session_state.global_analysis_generated = False
+
+        selected_metrics = (
+            st.session_state.get("global_crowd_selection", [])
+            + st.session_state.get("global_vga_selection", [])
+            if st.session_state.get("global_analysis_generated", False)
+            else []
         )
 
         if len(selected_metrics) >= 2:
@@ -654,7 +716,7 @@ else:
 
             # Matplotlib Grid Display
             fig = plot_vga_pairs_matrix(df_global, selected_metrics, dpi_val=100)
-            st.pyplot(fig)
+            st.pyplot(fig, use_container_width=True)
 
             # High-Res Export Buffer
             buffer = io.BytesIO()
@@ -721,7 +783,7 @@ else:
                     use_container_width=True,
                 )
         else:
-            st.warning("Please select at least **2 metrics** to plot.")
+            st.info("Select at least two metrics across the Crowd and VGA filters, then press **Generate Analysis**.")
 
         st.markdown("---")
         if st.button("Refresh Global Repository Cache"):
@@ -759,6 +821,11 @@ if input_pass == admin_password:
             .size()
             .reset_index(name="node_count")
         )
+        if "is_locked" in raw_db_df.columns:
+            locked_by_batch = raw_db_df.groupby("upload_batch_id")["is_locked"].agg(
+                lambda values: any(is_locked(value) for value in values)
+            )
+            batch_summary["temporarily_locked"] = batch_summary["upload_batch_id"].map(locked_by_batch).fillna(False)
 
         st.subheader("Uploaded Datasets Overview")
         st.dataframe(batch_summary, use_container_width=True)
@@ -773,7 +840,7 @@ if input_pass == admin_password:
             batch_options[label] = b_id
 
         selected_label = st.selectbox(
-            "Select Dataset Batch to Inspect or Remove:",
+            "Select Dataset Batch to Inspect, Lock, or Remove:",
             options=list(batch_options.keys()),
         )
 
@@ -803,6 +870,29 @@ if input_pass == admin_password:
                     st.info(
                         "Not enough numeric variables in this dataset to generate a plot."
                     )
+
+            batch_locked = (
+                "is_locked" in batch_records.columns
+                and any(is_locked(value) for value in batch_records["is_locked"])
+            )
+            lock_label = "Unlock Dataset Batch" if batch_locked else "Temporarily Lock Dataset Batch"
+            if "is_locked" not in raw_db_df.columns:
+                st.warning("Dataset locking requires applying `database/lock_datasets.sql` to Supabase first.")
+            elif st.button(lock_label, key=f"toggle_dataset_lock_{selected_batch_id}"):
+                try:
+                    lock_res = (
+                        supabase.table("vga_crowd_records")
+                        .update({"is_locked": not batch_locked})
+                        .eq("upload_batch_id", selected_batch_id)
+                        .select("upload_batch_id")
+                        .execute()
+                    )
+                    if lock_res.data:
+                        st.cache_data.clear()
+                        st.rerun()
+                    st.error("No dataset rows were updated. Check Supabase update permissions.")
+                except Exception as error:
+                    st.error(f"Could not update dataset lock: {error}")
 
             if st.button("❌ Delete Selected Dataset Batch", type="primary"):
                 del_res = (

@@ -404,11 +404,13 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         export_payload = {
             "metadata": {
                 "four_corners_roi": st.session_state.get("four_corners", []),
+                "camera_corners": st.session_state.get("four_corners", []),
                 "total_detections": int(len(full_df)),
                 "total_frames_processed": int(full_df["frame_idx"].max()) if "frame_idx" in full_df.columns else 0,
                 "model_used": model_name,
                 "detect_target": detect_target,
             },
+            "camera_corners": st.session_state.get("four_corners", []),
             "vga_floorplan_nodes": vga_dict,
             "tracking_points": full_df.to_dict(orient="records"),
         }

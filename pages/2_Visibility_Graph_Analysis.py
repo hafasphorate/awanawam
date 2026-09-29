@@ -22,6 +22,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 from utils.navigation import render_home_button
 from utils.plotly_floorplan import configure_floorplan_figure
+from utils.dataset_locks import unlocked_records
 from utils.density_visuals import (
     DENSITY_COLORSCALE,
     DENSITY_SCALE_MAX,
@@ -920,16 +921,18 @@ def fetch_historical_crowd_metrics(_supabase):
     while True:
         response = (
             _supabase.table("vga_crowd_records")
-            .select("metrics_data")
+            .select("*")
             .range(offset, offset + page_size - 1)
             .execute()
         )
         page = response.data or []
-        records.extend(row.get("metrics_data", {}) for row in page)
+        records.extend(page)
         if len(page) < page_size:
             break
         offset += page_size
-    return pd.json_normalize(records) if records else pd.DataFrame()
+    active_records = unlocked_records(pd.DataFrame(records)) if records else pd.DataFrame()
+    metrics = [row.get("metrics_data", {}) for row in active_records.to_dict(orient="records")]
+    return pd.json_normalize(metrics) if metrics else pd.DataFrame()
 
 
 def extract_vga_rows(data):
@@ -1337,7 +1340,8 @@ def render_analysis_tab():
         complete_vga_export = {
             "metadata": {
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "file_name": uploaded_file.name if uploaded_file else "imported_session"
+                "file_name": uploaded_file.name if uploaded_file else "imported_session",
+                "camera_corners": st.session_state.get("four_corners", []),
             },
             "analysis_settings": {
                 "grid_size_mm": grid_size,
@@ -1348,8 +1352,10 @@ def render_analysis_tab():
             "floorplan": {
                 "bounds": floorplan_bounds if 'floorplan_bounds' in locals() else None,
                 "wall_lines": wall_lines_serialized,
-                "selected_rooms": selected_rooms_serialized
+                "selected_rooms": selected_rooms_serialized,
+                "camera_corners": st.session_state.get("four_corners", []),
             },
+            "camera_corners": st.session_state.get("four_corners", []),
             "vga_results": df.to_dict(orient="records")
         }
 

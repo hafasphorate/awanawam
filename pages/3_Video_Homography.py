@@ -568,21 +568,38 @@ with tab_import:
                     st.session_state.vga_grid_df = st.session_state["vga_df"]
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
-                # 3. Extract ROI Polygon / Corners
-                if "polygon_points" in data and data["polygon_points"]:
-                    raw_pts = data["polygon_points"]
-                    formatted_pts = []
-                    for pt in raw_pts:
-                        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                            formatted_pts.append({"X (m)": float(pt[0]), "Y (m)": float(pt[1])})
-                        elif isinstance(pt, dict):
-                            x_val = pt.get("X (m)", pt.get("x", pt.get("X", 0.0)))
-                            y_val = pt.get("Y (m)", pt.get("y", pt.get("Y", 0.0)))
-                            formatted_pts.append({"X (m)": float(x_val), "Y (m)": float(y_val)})
+                # 3. Extract camera corners, supporting older ROI export fields.
+                imported_metadata = data.get("metadata", {}) or {}
+                imported_floorplan = data.get("floorplan", {}) or {}
+                camera_pts = (
+                    data.get("camera_corners")
+                    or imported_floorplan.get("camera_corners")
+                    or imported_metadata.get("camera_corners")
+                    or imported_metadata.get("four_corners_roi")
+                )
+                polygon_pts = data.get("polygon_points")
+                raw_corner_pts = camera_pts or polygon_pts
 
-                    if formatted_pts:
-                        st.session_state.selected_polygon_pts = formatted_pts
-                        st.session_state.four_corners = [[p["X (m)"], p["Y (m)"]] for p in formatted_pts]
+                def normalize_export_points(points):
+                    formatted = []
+                    for point in points or []:
+                        if isinstance(point, (list, tuple)) and len(point) >= 2:
+                            formatted.append({"X (m)": float(point[0]), "Y (m)": float(point[1])})
+                        elif isinstance(point, dict):
+                            x_value = point.get("X (m)", point.get("x", point.get("X", 0.0)))
+                            y_value = point.get("Y (m)", point.get("y", point.get("Y", 0.0)))
+                            formatted.append({"X (m)": float(x_value), "Y (m)": float(y_value)})
+                    return formatted
+
+                formatted_corners = normalize_export_points(raw_corner_pts)
+                if formatted_corners:
+                    st.session_state.four_corners = [
+                        [point["X (m)"], point["Y (m)"]]
+                        for point in formatted_corners
+                    ]
+                formatted_polygon = normalize_export_points(polygon_pts)
+                if formatted_polygon:
+                    st.session_state.selected_polygon_pts = formatted_polygon
 
                 if "homography_matrix" in data and data["homography_matrix"]:
                     st.session_state.homography_matrix = np.array(data["homography_matrix"])
@@ -1953,6 +1970,7 @@ with tab_playback:
                 "metadata": {
                     "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "four_corners_roi": st.session_state.get("four_corners", []),
+                    "camera_corners": st.session_state.get("four_corners", []),
                     "selected_polygon_pts": st.session_state.get("selected_polygon_pts", []),
                     "frame_column": frame_col,
                     "track_id_column": id_col,
@@ -1983,8 +2001,10 @@ with tab_playback:
                     "wall_lines": wall_lines_serialized,
                     "cad_walls": wall_lines_serialized,
                     "polygon_points": st.session_state.get("selected_polygon_pts", []),
+                    "camera_corners": st.session_state.get("four_corners", []),
                     "homography_matrix": export_homography,
                 },
+                "camera_corners": st.session_state.get("four_corners", []),
                 "wall_lines": wall_lines_serialized,
                 "cad_walls": wall_lines_serialized,
                 "nodes": integrated_correlation_nodes,
