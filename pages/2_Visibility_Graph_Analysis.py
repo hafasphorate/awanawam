@@ -914,7 +914,7 @@ def init_supabase() -> Client:
 
 @st.cache_data(ttl=600)
 def fetch_historical_crowd_metrics(_supabase):
-    """Fetch and flatten the historical metric payload used by Module 4."""
+    """Fetch unlocked prediction metrics and their record and dataset counts."""
     page_size = 1000
     offset = 0
     records = []
@@ -932,7 +932,13 @@ def fetch_historical_crowd_metrics(_supabase):
         offset += page_size
     active_records = unlocked_records(pd.DataFrame(records)) if records else pd.DataFrame()
     metrics = [row.get("metrics_data", {}) for row in active_records.to_dict(orient="records")]
-    return pd.json_normalize(metrics) if metrics else pd.DataFrame()
+    historical_df = pd.json_normalize(metrics) if metrics else pd.DataFrame()
+    dataset_count = (
+        active_records["upload_batch_id"].nunique()
+        if "upload_batch_id" in active_records.columns
+        else 0
+    )
+    return historical_df, len(active_records), dataset_count
 
 
 def extract_vga_rows(data):
@@ -1040,13 +1046,19 @@ def render_projection_tab():
         st.info("Upload a VGA JSON session or run VGA analysis above to begin.")
         return
     try:
-        historical_df = fetch_historical_crowd_metrics(init_supabase())
+        historical_df, historical_node_count, historical_dataset_count = (
+            fetch_historical_crowd_metrics(init_supabase())
+        )
     except Exception:
         st.warning("Supabase credentials or the `vga_crowd_records` table are unavailable.")
         return
     if historical_df.empty:
         st.info("No historical VGA and crowd records are available in Supabase yet.")
         return
+    st.caption(
+        f"Prediction history: {historical_node_count:,} unlocked node records "
+        f"from {historical_dataset_count:,} data sets."
+    )
 
     vga_columns = [column for column in source_df.select_dtypes(include=np.number).columns if column not in {"x", "y"}]
     shared_vga_columns = [
