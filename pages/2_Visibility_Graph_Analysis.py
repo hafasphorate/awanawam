@@ -1117,7 +1117,35 @@ def render_projection_tab():
         st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
     else:
         st.info("No historical density column was found, so the >3 people / m² map cannot be calculated.")
-    st.download_button("Download projected metrics as CSV", projected_df.to_csv(index=False), "projected_crowd_metrics.csv", "text/csv", key="projection_csv")
+    serialized_walls = [list(line.coords) for line in source_walls]
+    crowd_projection_export = {
+        "metadata": {
+            "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "prediction_method": "Inverse-distance weighted average",
+            "vga_dimensions": feature_columns,
+            "historical_neighbor_count_per_node": neighbor_count,
+            "historical_node_count": len(historical_df),
+            "projected_crowd_metrics": list(projections),
+        },
+        "summary": {
+            "total_grid_node_count": len(projected_df),
+            "projected_metric_count": len(projections),
+        },
+        "floorplan": {
+            "wall_lines": serialized_walls,
+            "cad_walls": serialized_walls,
+        },
+        "wall_lines": serialized_walls,
+        "cad_walls": serialized_walls,
+        "nodes": json.loads(projected_df.to_json(orient="records")),
+    }
+    st.download_button(
+        "Download projected metrics as JSON",
+        json.dumps(crowd_projection_export, indent=2),
+        "projected_crowd_metrics.json",
+        "application/json",
+        key="projection_json",
+    )
 
 
 analysis_tab, clustering_tab, projection_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering", "2.3 Crowd Projection"])
