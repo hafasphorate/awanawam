@@ -1,4 +1,5 @@
 import json
+import hashlib
 from io import BytesIO
 import tempfile
 import time
@@ -78,20 +79,29 @@ uploaded_file = None
 def extract_enclosed_rooms(_wall_lines, snap_distance=1200):
     """Reconstructs enclosed room polygons and corridor spaces with automatic interior hole detection."""
     lines = list(_wall_lines)
-    
-    endpoints = []
-    for l in lines:
-        coords = list(l.coords)
-        endpoints.append(Point(coords[0]))
-        endpoints.append(Point(coords[-1]))
 
-    closing_lines = []
-    for i in range(len(endpoints)):
+    endpoints = sorted(
+        {
+            tuple(coords)
+            for line in lines
+            for coords in (line.coords[0], line.coords[-1])
+        }
+    )
+    endpoint_gaps = []
+    for i, (x1, y1) in enumerate(endpoints):
         for j in range(i + 1, len(endpoints)):
-            p1, p2 = endpoints[i], endpoints[j]
-            dist = p1.distance(p2)
-            if 10.0 < dist <= snap_distance:
-                closing_lines.append(LineString([p1, p2]))
+            x2, y2 = endpoints[j]
+            distance = math.hypot(x2 - x1, y2 - y1)
+            if 10.0 < distance <= snap_distance:
+                endpoint_gaps.append((distance, i, j))
+
+    endpoint_gaps.sort()
+    matched_endpoints = set()
+    closing_lines = []
+    for _, i, j in endpoint_gaps:
+        if i not in matched_endpoints and j not in matched_endpoints:
+            matched_endpoints.update((i, j))
+            closing_lines.append(LineString([endpoints[i], endpoints[j]]))
 
     merged_walls = unary_union(lines + closing_lines)
     raw_polygons = list(polygonize(merged_walls))
@@ -188,7 +198,9 @@ def poly_to_svg_path(poly):
     return path
 
 
-def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
+def render_interactive_floorplan(
+    wall_lines, bounds, selected_polys=None, selectable_zones=None
+):
     """Builds interactive Plotly figure configured with custom crosshair cursor."""
     fig = go.Figure()
     minx, miny, maxx, maxy = bounds
@@ -221,7 +233,8 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
         )
     )
 
-    grid_step = max(200, (maxx - minx) / 60)
+    plan_area = (maxx - minx) * (maxy - miny)
+    grid_step = max(200, math.sqrt(plan_area / 25000))
     gx = np.arange(minx, maxx, grid_step)
     gy = np.arange(miny, maxy, grid_step)
     g_xx, g_yy = np.meshgrid(gx, gy)
@@ -237,6 +250,25 @@ def render_interactive_floorplan(wall_lines, bounds, selected_polys=None):
             name="sensor_grid",
         )
     )
+
+    if selectable_zones:
+        zone_points = [zone.representative_point() for zone in selectable_zones]
+        fig.add_trace(
+            go.Scatter(
+                x=[point.x for point in zone_points],
+                y=[point.y for point in zone_points],
+                customdata=list(range(len(selectable_zones))),
+                mode="markers",
+                marker=dict(
+                    size=10,
+                    color="rgba(255, 193, 7, 0.7)",
+                    line=dict(color="white", width=1),
+                ),
+                hovertemplate="Zone target<extra></extra>",
+                showlegend=False,
+                name="zone_targets",
+            )
+        )
 
     fig.update_layout(
         template="plotly_dark",
@@ -1166,6 +1198,10 @@ def render_analysis_tab():
         return
 
     file_ext = "." + uploaded_file.name.split(".")[-1].lower()
+    upload_signature = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+    if st.session_state.get("selected_rooms_source") != upload_signature:
+        st.session_state["selected_rooms"] = []
+        st.session_state["selected_rooms_source"] = upload_signature
 
     if file_ext == ".json":
         # Process imported pre-computed session
@@ -1218,7 +1254,7 @@ def render_analysis_tab():
 
         st.subheader("Interactive Public Space Selection")
         st.info(
-            " **Single Click Selection Active:** Target your selection using the **`+` crosshair**. Clicking a corridor selects strictly the corridor space without selecting enclosed interior rooms!"
+            " **Single Click Selection Active:** Click inside a room or corridor using the **`+` crosshair**. For narrow zones, click an amber target marker. If zones overlap, the smallest containing zone is selected."
         )
 
         selection_mode_option = st.radio(
@@ -1240,7 +1276,10 @@ def render_analysis_tab():
 
         if selection_mode_option == "Click Inside Rooms to Select Zones":
             fig_plan = render_interactive_floorplan(
-                wall_lines, floorplan_bounds, selected_polys=selected_polygons
+                wall_lines,
+                floorplan_bounds,
+                selected_polys=selected_polygons,
+                selectable_zones=enclosed_rooms,
             )
 
             chart_events = st.plotly_chart(
@@ -1255,17 +1294,30 @@ def render_analysis_tab():
             if chart_events and "selection" in chart_events:
                 pts = chart_events["selection"].get("points", [])
                 if pts:
-                    click_x = pts[0]["x"]
-                    click_y = pts[0]["y"]
-                    click_point = Point(click_x, click_y)
+                    matched_room = None
+                    for point in pts:
+                        zone_index = point.get("customdata")
+                        if isinstance(zone_index, (list, tuple, np.ndarray)):
+                            zone_index = zone_index[0] if len(zone_index) else None
+                        if isinstance(zone_index, (int, np.integer)):
+                            if 0 <= zone_index < len(enclosed_rooms):
+                                matched_room = enclosed_rooms[zone_index]
+                                break
 
-                    candidate_rooms = [r for r in enclosed_rooms if r.contains(click_point)]
-                    if candidate_rooms:
-                        matched_room = candidate_rooms[0]
+                    if matched_room is None:
+                        click_point = Point(pts[0]["x"], pts[0]["y"])
+                        candidate_rooms = [
+                            room for room in enclosed_rooms if room.contains(click_point)
+                        ]
+                        if candidate_rooms:
+                            matched_room = min(candidate_rooms, key=lambda room: room.area)
 
-                        if not any(r.equals(matched_room) for r in st.session_state["selected_rooms"]):
-                            st.session_state["selected_rooms"].append(matched_room)
-                            st.rerun()
+                    if matched_room is not None and not any(
+                        room.equals(matched_room)
+                        for room in st.session_state["selected_rooms"]
+                    ):
+                        st.session_state["selected_rooms"].append(matched_room)
+                        st.rerun()
 
             if selected_polygons:
                 total_area = sum(p.area for p in selected_polygons) / 1e6
@@ -1422,4 +1474,3 @@ with clustering_tab:
 
 with projection_tab:
     render_projection_tab()
-
