@@ -1049,8 +1049,13 @@ def render_projection_tab():
         historical_df, historical_node_count, historical_dataset_count = (
             fetch_historical_crowd_metrics(init_supabase())
         )
-    except Exception:
-        st.warning("Supabase credentials or the `vga_crowd_records` table are unavailable.")
+    except Exception as error:
+        st.warning(
+            "Could not load historical crowd records. Verify that `SUPABASE_URL` "
+            "and `SUPABASE_KEY` are configured and that the `vga_crowd_records` "
+            "table exists and is accessible. Supabase error: "
+            f"{error}"
+        )
         return
     if historical_df.empty:
         st.info("No historical VGA and crowd records are available in Supabase yet.")
@@ -1417,5 +1422,4 @@ with clustering_tab:
 
 with projection_tab:
     render_projection_tab()
-
 
