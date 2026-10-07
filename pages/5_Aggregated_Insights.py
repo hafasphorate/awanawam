@@ -79,24 +79,43 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
         str(column).strip().lower().replace(" ", "_"): column
         for column in df.columns
     }
-    crowd_density_col = next(
-        (
-            column
-            for normalized_name, column in normalized_columns.items()
-            if "density" in normalized_name
-            and "crowd" in normalized_name
-            and "peak" not in normalized_name
-        ),
-        normalized_columns.get("density"),
-    )
-    peak_density_col = next(
-        (
-            column
-            for normalized_name, column in normalized_columns.items()
-            if "density" in normalized_name and "peak" in normalized_name
-        ),
-        None,
-    )
+    density_sources = [
+        (normalized_name, column)
+        for normalized_name, column in normalized_columns.items()
+        if "density" in normalized_name and not normalized_name.startswith("log_")
+    ]
+    crowd_density_col = None
+    for preferred_name in ("crowd_density", "density"):
+        crowd_density_col = normalized_columns.get(preferred_name)
+        if crowd_density_col is not None:
+            break
+    if crowd_density_col is None:
+        crowd_density_col = next(
+            (
+                column
+                for normalized_name, column in density_sources
+                if "crowd" in normalized_name and "peak" not in normalized_name
+            ),
+            next(
+                (
+                    column
+                    for normalized_name, column in density_sources
+                    if "peak" not in normalized_name
+                ),
+                None,
+            ),
+        )
+
+    peak_density_col = normalized_columns.get("peak_density")
+    if peak_density_col is None:
+        peak_density_col = next(
+            (
+                column
+                for normalized_name, column in density_sources
+                if "peak" in normalized_name
+            ),
+            None,
+        )
 
     if crowd_density_col is not None:
         df["log_crowd_density"] = np.log1p(
@@ -799,6 +818,16 @@ else:
             if metric in df_global.columns
         ]
         crowd_metrics = list(dict.fromkeys(crowd_metrics + log_density_metrics))
+        if log_density_metrics:
+            st.caption(
+                "Log-transformed metrics use ln(1 + density): "
+                + ", ".join(log_density_metrics)
+            )
+        else:
+            st.warning(
+                "Log density metrics could not be created because no crowd-density or peak-density columns were found. "
+                f"Available columns: {', '.join(map(str, df_global.columns))}"
+            )
         default_crowd_selection = list(
             st.session_state.get("global_crowd_selection", crowd_metrics)
         )
