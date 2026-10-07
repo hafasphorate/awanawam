@@ -138,7 +138,7 @@ def load_and_parse_json(file):
 
     # pd.json_normalize flattens nested dicts into dot-notation columns
     df = pd.json_normalize(raw_nodes)
-    analysis_area, _ = extract_analysis_area(data)
+    analysis_area, _ = extract_analysis_area(data, node_count=len(df))
     return add_comparison_metrics(df, analysis_area)
 
 
@@ -447,13 +447,20 @@ if uploaded_file is not None:
             if "relative_isovist_area_pct" not in df_nodes.columns:
                 st.warning(
                     "Relative isovist area was not added because the uploaded JSON "
-                    "does not include analysis-area geometry or an analysis_area value."
+                    "does not include analysis-area geometry, an analysis_area value, "
+                    "or a usable grid size for estimating area from VGA nodes."
                 )
             else:
                 _, analysis_area_source = extract_analysis_area(
-                    json.loads(uploaded_file.getvalue())
+                    json.loads(uploaded_file.getvalue()), node_count=len(df_nodes)
                 )
-                if analysis_area_source == "floorplan bounding box":
+                if analysis_area_source == "estimated from VGA node count and grid spacing":
+                    st.caption(
+                        "Relative isovist area uses an estimate based on VGA node "
+                        "count × grid cell area. This treats every node as one full "
+                        "grid cell, including cells along the analysis boundary."
+                    )
+                elif analysis_area_source == "floorplan bounding box":
                     st.caption(
                         "Relative isovist area uses the floorplan bounding box as "
                         "the analysis-area estimate because selected room geometry "

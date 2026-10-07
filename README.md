@@ -303,7 +303,7 @@ This enables:
 ### Correlation Analysis
 - **Sample Size:** More nodes = more robust correlations
 - **Data Quality:** Ensure both spatial and crowd metrics are complete and accurate
-- **Comparable VGA metrics:** Module 4 derives normalized integration and z-score mean depth from uploaded node data; relative isovist area requires analysis-area geometry or an `analysis_area` value in the JSON. NAIN normalizes the uploaded integration values; angle-weighted paths cannot be reconstructed if they are not present in the JSON.
+- **Comparable VGA metrics:** Module 4 derives normalized integration and z-score mean depth from uploaded node data. Relative isovist area uses supplied analysis-area geometry or an `analysis_area` value when available; otherwise, it estimates area as VGA node count × recorded grid-cell area. This estimate assumes each node represents one full cell. NAIN normalizes the uploaded integration values; angle-weighted paths cannot be reconstructed if they are not present in the JSON.
 - **Repository filters:** Module 5 supports filtering aggregated analysis by location. Its bulk data is cached until **Refresh Global Repository Cache** is selected or an in-app upload/administrative change invalidates the cache.
 - **Outliers:** Review extreme values; they may indicate data collection issues
 - **Statistical Significance:** Review p-values; Pearson/Spearman methods assume certain distributions

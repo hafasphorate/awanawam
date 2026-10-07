@@ -30,7 +30,9 @@ def _polygon_area(coordinates: Any) -> float:
     ) / 2.0
 
 
-def extract_analysis_area(data: Any) -> Tuple[Optional[float], Optional[str]]:
+def extract_analysis_area(
+    data: Any, node_count: Optional[int] = None
+) -> Tuple[Optional[float], Optional[str]]:
     """Return the uploaded analysis footprint area and the source used."""
     if not isinstance(data, dict):
         return None, None
@@ -73,6 +75,14 @@ def extract_analysis_area(data: Any) -> Tuple[Optional[float], Optional[str]]:
         bounds_area = (max_x - min_x) * (max_y - min_y)
         if math.isfinite(bounds_area) and bounds_area > 0:
             return bounds_area, "floorplan bounding box"
+
+    analysis_settings = data.get("analysis_settings")
+    analysis_settings = (
+        analysis_settings if isinstance(analysis_settings, dict) else {}
+    )
+    grid_size = _positive_number(analysis_settings.get("grid_size_mm"))
+    if node_count is not None and node_count > 0 and grid_size is not None:
+        return node_count * grid_size**2, "estimated from VGA node count and grid spacing"
 
     return None, None
 

@@ -22,6 +22,23 @@ class DerivedVgaMetricsTests(unittest.TestCase):
             (200.0, "floorplan bounding box"),
         )
 
+    def test_analysis_area_estimates_from_node_count_and_grid_size(self):
+        data = {
+            "analysis_settings": {"grid_size_mm": 1000},
+            "vga_results": [{"x": 0}, {"x": 1000}, {"x": 2000}],
+        }
+
+        self.assertEqual(
+            extract_analysis_area(data, node_count=3),
+            (3_000_000.0, "estimated from VGA node count and grid spacing"),
+        )
+
+    def test_analysis_area_does_not_estimate_without_grid_size(self):
+        self.assertEqual(
+            extract_analysis_area({"vga_results": [{"x": 0}]}, node_count=1),
+            (None, None),
+        )
+
     def test_adds_relative_area_z_score_and_normalized_integration(self):
         source = pd.DataFrame(
             {
