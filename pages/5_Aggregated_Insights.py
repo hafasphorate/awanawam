@@ -649,18 +649,46 @@ location_values = (
     else []
 )
 selected_location = st.sidebar.selectbox(
-    "Filter by location",
+    "Filter by mall/location",
     options=["All locations", *location_values],
 )
-active_db_df = (
-    unlocked_db_df
-    if selected_location == "All locations"
-    else unlocked_db_df[unlocked_db_df["location"] == selected_location]
+dataset_labels = {}
+dataset_ids = []
+if "upload_batch_id" in unlocked_db_df.columns:
+    for _, record in unlocked_db_df.dropna(subset=["upload_batch_id"]).drop_duplicates(
+        "upload_batch_id"
+    ).iterrows():
+        batch_id = str(record["upload_batch_id"])
+        dataset_ids.append(batch_id)
+        dataset_labels[batch_id] = (
+            f"{batch_id[:8]}... | "
+            f"{record.get('location', 'N/A')} | "
+            f"{record.get('date', 'N/A')} | "
+            f"{record.get('time', 'N/A')}"
+        )
+
+selected_dataset_ids = st.sidebar.multiselect(
+    "Or select specific datasets",
+    options=dataset_ids,
+    format_func=lambda batch_id: dataset_labels[batch_id],
+    help="Selecting one or more datasets takes precedence over the mall/location filter above.",
 )
+if selected_dataset_ids:
+    active_db_df = unlocked_db_df[
+        unlocked_db_df["upload_batch_id"].astype(str).isin(selected_dataset_ids)
+    ]
+else:
+    active_db_df = (
+        unlocked_db_df
+        if selected_location == "All locations"
+        else unlocked_db_df[unlocked_db_df["location"] == selected_location]
+    )
 coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
 
 if active_db_df.empty:
-    if not unlocked_db_df.empty and selected_location != "All locations":
+    if selected_dataset_ids:
+        st.info("No unlocked records found for the selected datasets.")
+    elif not unlocked_db_df.empty and selected_location != "All locations":
         st.info(f"No unlocked records found for **{selected_location}**.")
     elif not raw_db_df.empty:
         st.info("All uploaded datasets are temporarily locked. Unlock a dataset in the Admin Portal to include it in analysis.")
