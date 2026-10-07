@@ -74,7 +74,7 @@ def fetch_aggregated_records():
 # 2. Matplotlib Precision Pairs Matrix Engine (High-Res Ready)
 # -----------------------------------------------------------------------------
 def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Add log1p-transformed crowd and peak density metrics when available."""
+    """Add base-10 log-transformed crowd and peak density metrics when available."""
     normalized_columns = {
         str(column).strip().lower().replace(" ", "_"): column
         for column in df.columns
@@ -118,11 +118,11 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     if crowd_density_col is not None:
-        df["log_crowd_density"] = np.log1p(
+        df["log10_crowd_density"] = np.log10(
             pd.to_numeric(df[crowd_density_col], errors="coerce")
         )
     if peak_density_col is not None:
-        df["log_peak_density"] = np.log1p(
+        df["log10_peak_density"] = np.log10(
             pd.to_numeric(df[peak_density_col], errors="coerce")
         )
 
@@ -814,15 +814,26 @@ else:
         ]
         log_density_metrics = [
             metric
-            for metric in ("log_crowd_density", "log_peak_density")
+            for metric in ("log10_crowd_density", "log10_peak_density")
             if metric in df_global.columns
         ]
         crowd_metrics = list(dict.fromkeys(crowd_metrics + log_density_metrics))
         if log_density_metrics:
             st.caption(
-                "Log-transformed metrics use ln(1 + density): "
+                "Log-transformed metrics use log10(density); values below 1 become negative: "
                 + ", ".join(log_density_metrics)
             )
+            with st.expander("Preview log10-transformed density values"):
+                density_preview_columns = [
+                    column
+                    for column in df_global.columns
+                    if "density" in str(column).lower()
+                    and not str(column).lower().startswith("log10_")
+                ]
+                st.dataframe(
+                    df_global[density_preview_columns + log_density_metrics].head(10),
+                    use_container_width=True,
+                )
         else:
             st.warning(
                 "Log density metrics could not be created because no crowd-density or peak-density columns were found. "
@@ -844,7 +855,7 @@ else:
                 "Crowd metrics",
                 options=crowd_metrics,
                 default=default_crowd_selection,
-                key="global_crowd_filter_v2",
+                key="global_crowd_filter_v3",
             )
             vga_selection = st.multiselect(
                 "VGA metrics",
