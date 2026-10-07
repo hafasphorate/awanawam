@@ -82,9 +82,10 @@ except Exception:
 uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 
 
-def load_and_parse_json(file):
+@st.cache_data(show_spinner=False, max_entries=2)
+def load_and_parse_json(json_bytes):
     """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present."""
-    data = json.load(file)
+    data = json.loads(json_bytes)
     raw_nodes = data
 
     if isinstance(data, dict):
@@ -108,21 +109,31 @@ def load_and_parse_json(file):
                 raw_nodes = value["nodes"]
                 break
 
+    df = pd.json_normalize(raw_nodes)
+
+    if isinstance(data, dict):
         has_crowd_metrics = any(
             any(
                 metric in str(column).lower()
                 for metric in ("volume", "density", "crowd", "pedestrian")
             )
-            for column in pd.json_normalize(raw_nodes).columns
+            for column in df.columns
         )
         trajectories = data.get("trajectories")
-        if not has_crowd_metrics and isinstance(raw_nodes, list) and isinstance(trajectories, list):
-            node_df = pd.json_normalize(raw_nodes)
+        if (
+            not has_crowd_metrics
+            and isinstance(raw_nodes, list)
+            and isinstance(trajectories, list)
+        ):
             trajectory_df = pd.json_normalize(trajectories)
             grid_column = "grid_node_idx"
-            if grid_column in node_df.columns and grid_column in trajectory_df.columns:
+            if grid_column in df.columns and grid_column in trajectory_df.columns:
                 id_column = next(
-                    (column for column in ("track_id", "id") if column in trajectory_df.columns),
+                    (
+                        column
+                        for column in ("track_id", "id")
+                        if column in trajectory_df.columns
+                    ),
                     None,
                 )
                 if id_column:
@@ -132,26 +143,45 @@ def load_and_parse_json(file):
                         pedestrian_count=(id_column, "count"),
                         unique_pedestrians=(id_column, "nunique"),
                     ).reset_index()
-                    raw_nodes = node_df.merge(crowd_df, on=grid_column, how="left").fillna(0).to_dict(
-                        orient="records"
-                    )
+                    df = df.merge(crowd_df, on=grid_column, how="left").fillna(0)
 
-    # pd.json_normalize flattens nested dicts into dot-notation columns
-    df = pd.json_normalize(raw_nodes)
-    analysis_area, _ = extract_analysis_area(
+    analysis_area, analysis_area_source = extract_analysis_area(
         data, node_count=len(df), node_data=df
     )
-    return add_comparison_metrics(df, analysis_area)
+    return add_comparison_metrics(df, analysis_area), analysis_area_source
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def prepare_valid_upload_data(json_bytes, selected_metrics):
+    """Prepare selected numeric metrics and rows eligible for upload."""
+    df_nodes, _ = load_and_parse_json(json_bytes)
+    numeric_df = df_nodes[list(selected_metrics)].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    valid_df = numeric_df.dropna(subset=list(selected_metrics))
+
+    crowd_cols = [
+        col
+        for col in selected_metrics
+        if any(
+            keyword in col.lower()
+            for keyword in ("crowd", "pedestrian", "count", "density", "people")
+        )
+    ]
+    if crowd_cols:
+        valid_df = valid_df[(valid_df[crowd_cols] > 0).all(axis=1)]
+    else:
+        valid_df = valid_df[~(valid_df == 0).all(axis=1)]
+
+    return valid_df, len(df_nodes) - len(valid_df)
 
 
 # -----------------------------------------------------------------------------
 # 2. Pairs Plot Matrix Rendering Engine
 # -----------------------------------------------------------------------------
-def plot_vga_pairs_matrix(df, selected_cols):
-    sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
+def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
     n_vars = len(selected_cols)
 
-    corr_matrix = sub_df.corr(method="pearson")
     cmap = mcolors.LinearSegmentedColormap.from_list(
         "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
     )
@@ -257,7 +287,8 @@ def plot_vga_pairs_matrix(df, selected_cols):
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
-        df_nodes = load_and_parse_json(uploaded_file)
+        json_bytes = uploaded_file.getvalue()
+        df_nodes, analysis_area_source = load_and_parse_json(json_bytes)
 
         coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
         all_numeric_cols = [
@@ -374,30 +405,32 @@ if uploaded_file is not None:
             )
         else:
             if run_matrix:
+                numeric_metrics = df_nodes[selected_metrics].apply(
+                    pd.to_numeric, errors="coerce"
+                )
+                corr_df = numeric_metrics.corr(method="pearson")
+                complete_metrics = numeric_metrics.dropna()
+                plot_corr_matrix = complete_metrics.corr(method="pearson")
                 st.subheader(
                     f"Correlation Matrix ({len(selected_metrics)} Metrics Analyzed)"
                 )
-                fig = plot_vga_pairs_matrix(df_nodes, selected_metrics)
+                fig = plot_vga_pairs_matrix(
+                    complete_metrics, selected_metrics, plot_corr_matrix
+                )
                 st.pyplot(fig)
+
+                with st.expander("View Numerical Pearson Correlation Matrix Table"):
+                    st.dataframe(
+                        corr_df.style.background_gradient(
+                            cmap="coolwarm", vmin=-1, vmax=1
+                        ).format("{:.3f}")
+                    )
             elif selected_metrics:
                 st.info(
                     "Selected metrics are ready. Press the button above to calculate the matrix."
                 )
 
-            corr_df = (
-                df_nodes[selected_metrics]
-                .apply(pd.to_numeric, errors="coerce")
-                .corr(method="pearson")
-            )
-
-            with st.expander("View Numerical Pearson Correlation Matrix Table"):
-                st.dataframe(
-                    corr_df.style.background_gradient(
-                        cmap="coolwarm", vmin=-1, vmax=1
-                    ).format("{:.3f}")
-                )
-
-            with st.expander("View Full Dataset Table"):
+            if st.checkbox("Show full dataset table"):
                 st.dataframe(df_nodes)
 
             # -----------------------------------------------------------------
@@ -419,32 +452,9 @@ if uploaded_file is not None:
                 - **Data Cleanliness:** Ensure crowd numbers match node timestamps accurately.
                 """)
 
-            # Convert selected columns to numeric (forces non-numeric strings/invalid types to NaN)
-            numeric_df = df_nodes[selected_metrics].apply(
-                pd.to_numeric, errors="coerce"
+            valid_df, omitted_count = prepare_valid_upload_data(
+                json_bytes, tuple(selected_metrics)
             )
-
-            # 1. Drop rows containing NaNs across any selected metrics
-            valid_df = numeric_df.dropna(subset=selected_metrics)
-
-            # 2. Identify crowd metrics specifically
-            crowd_cols = [
-                col
-                for col in selected_metrics
-                if any(
-                    k in col.lower()
-                    for k in ["crowd", "pedestrian", "count", "density", "people"]
-                )
-            ]
-
-            # 3. Target crowd metrics for zero checks (allows VGA = 0 to pass through)
-            if crowd_cols:
-                valid_df = valid_df[(valid_df[crowd_cols] > 0).all(axis=1)]
-            else:
-                # Fallback if no specific crowd column name matched: drop rows where ALL metrics are 0
-                valid_df = valid_df[~(valid_df == 0).all(axis=1)]
-
-            omitted_count = len(df_nodes) - len(valid_df)
 
             if "relative_isovist_area_pct" not in df_nodes.columns:
                 st.warning(
@@ -453,11 +463,6 @@ if uploaded_file is not None:
                     "or a usable grid size for estimating area from VGA nodes."
                 )
             else:
-                _, analysis_area_source = extract_analysis_area(
-                    json.loads(uploaded_file.getvalue()),
-                    node_count=len(df_nodes),
-                    node_data=df_nodes,
-                )
                 if analysis_area_source and analysis_area_source.startswith(
                     "estimated from VGA node count and"
                 ):
