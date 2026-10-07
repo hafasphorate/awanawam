@@ -79,10 +79,24 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
         str(column).strip().lower().replace(" ", "_"): column
         for column in df.columns
     }
-    crowd_density_col = normalized_columns.get(
-        "crowd_density", normalized_columns.get("density")
+    crowd_density_col = next(
+        (
+            column
+            for normalized_name, column in normalized_columns.items()
+            if "density" in normalized_name
+            and "crowd" in normalized_name
+            and "peak" not in normalized_name
+        ),
+        normalized_columns.get("density"),
     )
-    peak_density_col = normalized_columns.get("peak_density")
+    peak_density_col = next(
+        (
+            column
+            for normalized_name, column in normalized_columns.items()
+            if "density" in normalized_name and "peak" in normalized_name
+        ),
+        None,
+    )
 
     if crowd_density_col is not None:
         df["log_crowd_density"] = np.log1p(
@@ -779,13 +793,19 @@ else:
             column for column in numeric_cols
             if any(word in column.lower() for word in crowd_words)
         ]
+        log_density_metrics = [
+            metric
+            for metric in ("log_crowd_density", "log_peak_density")
+            if metric in df_global.columns
+        ]
+        crowd_metrics = list(dict.fromkeys(crowd_metrics + log_density_metrics))
         default_crowd_selection = list(
             st.session_state.get("global_crowd_selection", crowd_metrics)
         )
         default_crowd_selection.extend(
             metric
-            for metric in ("log_crowd_density", "log_peak_density")
-            if metric in crowd_metrics and metric not in default_crowd_selection
+            for metric in log_density_metrics
+            if metric not in default_crowd_selection
         )
         vga_metrics = [column for column in numeric_cols if column not in crowd_metrics]
 
@@ -795,7 +815,7 @@ else:
                 "Crowd metrics",
                 options=crowd_metrics,
                 default=default_crowd_selection,
-                key="global_crowd_filter",
+                key="global_crowd_filter_v2",
             )
             vga_selection = st.multiselect(
                 "VGA metrics",
