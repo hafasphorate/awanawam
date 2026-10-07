@@ -73,6 +73,29 @@ def fetch_aggregated_records():
 # -----------------------------------------------------------------------------
 # 2. Matplotlib Precision Pairs Matrix Engine (High-Res Ready)
 # -----------------------------------------------------------------------------
+def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Add log1p-transformed crowd and peak density metrics when available."""
+    normalized_columns = {
+        str(column).strip().lower().replace(" ", "_"): column
+        for column in df.columns
+    }
+    crowd_density_col = normalized_columns.get(
+        "crowd_density", normalized_columns.get("density")
+    )
+    peak_density_col = normalized_columns.get("peak_density")
+
+    if crowd_density_col is not None:
+        df["log_crowd_density"] = np.log1p(
+            pd.to_numeric(df[crowd_density_col], errors="coerce")
+        )
+    if peak_density_col is not None:
+        df["log_peak_density"] = np.log1p(
+            pd.to_numeric(df[peak_density_col], errors="coerce")
+        )
+
+    return df
+
+
 def exclude_zero_analysis_rows(df: pd.DataFrame) -> pd.DataFrame:
     zero_filter_metrics = {"crowd_density", "density", "peak_density", "speed"}
     zero_filter_cols = [
@@ -717,6 +740,7 @@ else:
     metrics_list = active_db_df["metrics_data"].tolist()
     df_global = pd.DataFrame(metrics_list)
     df_global = exclude_zero_analysis_rows(df_global)
+    df_global = add_log_density_metrics(df_global)
     analysis_db_df = active_db_df.iloc[df_global.index].reset_index(drop=True)
     df_global = df_global.reset_index(drop=True)
     dataset_count = (
@@ -755,6 +779,14 @@ else:
             column for column in numeric_cols
             if any(word in column.lower() for word in crowd_words)
         ]
+        default_crowd_selection = list(
+            st.session_state.get("global_crowd_selection", crowd_metrics)
+        )
+        default_crowd_selection.extend(
+            metric
+            for metric in ("log_crowd_density", "log_peak_density")
+            if metric in crowd_metrics and metric not in default_crowd_selection
+        )
         vga_metrics = [column for column in numeric_cols if column not in crowd_metrics]
 
         st.sidebar.header("Global Analysis Filters")
@@ -762,7 +794,7 @@ else:
             crowd_selection = st.multiselect(
                 "Crowd metrics",
                 options=crowd_metrics,
-                default=st.session_state.get("global_crowd_selection", crowd_metrics),
+                default=default_crowd_selection,
                 key="global_crowd_filter",
             )
             vga_selection = st.multiselect(
@@ -958,6 +990,8 @@ if input_pass == admin_password:
             single_ds_metrics = pd.DataFrame(
                 batch_records["metrics_data"].tolist()
             )
+            single_ds_metrics = exclude_zero_analysis_rows(single_ds_metrics)
+            single_ds_metrics = add_log_density_metrics(single_ds_metrics)
             single_numeric_cols = [
                 col
                 for col in single_ds_metrics.columns
