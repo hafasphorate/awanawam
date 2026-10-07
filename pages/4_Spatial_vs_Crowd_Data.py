@@ -396,7 +396,7 @@ if uploaded_file is not None:
         run_matrix = st.sidebar.button(
             "Calculate Correlation Matrix",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
         if len(selected_metrics) < 2:
