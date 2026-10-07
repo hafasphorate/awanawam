@@ -83,7 +83,15 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
 
-    corr_matrix = sub_df.corr(method="pearson")
+    correlation_df = sub_df
+    density_col = next(
+        (column for column in df.columns if column.lower() == "density"), None
+    )
+    if density_col is not None:
+        zero_density = pd.to_numeric(df[density_col], errors="coerce").eq(0)
+        correlation_df = sub_df.loc[~zero_density]
+
+    corr_matrix = correlation_df.corr(method="pearson")
     cmap = mcolors.LinearSegmentedColormap.from_list(
         "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
     )
