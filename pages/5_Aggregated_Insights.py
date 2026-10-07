@@ -8,8 +8,9 @@ import plotly.graph_objects as go
 import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
-from utils.navigation import render_home_button
+from utils.correlation_metrics import fisher_average_batch_correlations
 from utils.dataset_locks import is_locked, unlocked_records
+from utils.navigation import render_home_button
 
 st.set_page_config(page_title="Module 5: Aggregated Insights", layout="wide")
 render_home_button()
@@ -801,15 +802,38 @@ else:
             # Mediation Analysis Section
             render_mediation_analysis(df_global, selected_metrics)
 
-            # Numerical Table Expander
-            with st.expander("View Numerical Pearson Correlation Matrix Table"):
-                agg_corr = df_global[selected_metrics].corr(method="pearson")
-                st.dataframe(
-                    agg_corr.style.background_gradient(
-                        cmap="coolwarm", vmin=-1, vmax=1
-                    ).format("{:.3f}"),
-                    use_container_width=True,
-                )
+            # Batch-level Pearson correlations avoid treating every node as an
+            # independent experimental run when combining uploaded datasets.
+            with st.expander("View Batch-Averaged Pearson Correlations"):
+                if "upload_batch_id" in active_db_df.columns:
+                    correlation_data = df_global.copy()
+                    correlation_data["upload_batch_id"] = (
+                        active_db_df["upload_batch_id"].reset_index(drop=True)
+                    )
+                    agg_corr = fisher_average_batch_correlations(
+                        correlation_data, selected_metrics
+                    )
+                    triangle_corr = agg_corr.copy()
+                    for metric_index, metric in enumerate(selected_metrics):
+                        triangle_corr.loc[
+                            metric, selected_metrics[metric_index:]
+                        ] = np.nan
+
+                    st.caption(
+                        "Each upload batch contributes one within-batch Pearson correlation per pair. "
+                        "Coefficients are averaged equally across batches using Fisher z-transformation; "
+                        "pairs with fewer than 3 complete observations or no variation in a batch are excluded."
+                    )
+                    st.dataframe(
+                        triangle_corr.style.background_gradient(
+                            cmap="coolwarm", vmin=-1, vmax=1
+                        ).format("{:.3f}", na_rep=""),
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(
+                        "Batch-averaged correlations are unavailable because these records have no upload batch identifiers."
+                    )
         else:
             st.info("Select at least two metrics across the Crowd and VGA filters, then press **Generate Analysis**.")
 
