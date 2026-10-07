@@ -5,12 +5,14 @@ import pandas as pd
 def fisher_average_batch_correlations(
     data: pd.DataFrame,
     metric_columns: list[str],
-    batch_column: str = "upload_batch_id",
+    batch_column: str | list[str] = "upload_batch_id",
     min_observations: int = 3,
 ) -> pd.DataFrame:
-    """Average within-batch Pearson correlations equally using Fisher z values."""
-    if batch_column not in data.columns:
-        raise ValueError(f"Missing batch identifier column: {batch_column}")
+    """Average within-group Pearson correlations equally using Fisher z values."""
+    batch_columns = [batch_column] if isinstance(batch_column, str) else batch_column
+    missing_columns = [column for column in batch_columns if column not in data.columns]
+    if missing_columns:
+        raise ValueError(f"Missing batch identifier columns: {missing_columns}")
 
     correlations = pd.DataFrame(
         np.nan, index=metric_columns, columns=metric_columns, dtype=float
@@ -21,7 +23,7 @@ def fisher_average_batch_correlations(
     batch_groups = [
         numeric_data.iloc[positions]
         for positions in data.groupby(
-            batch_column, sort=False, dropna=True
+            batch_columns, sort=False, dropna=True
         ).indices.values()
     ]
 

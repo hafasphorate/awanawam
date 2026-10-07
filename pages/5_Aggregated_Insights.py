@@ -858,16 +858,17 @@ else:
             # Mediation Analysis Section
             render_mediation_analysis(df_global, selected_metrics)
 
-            # Batch-level Pearson correlations avoid treating every node as an
-            # independent experimental run when combining uploaded datasets.
-            with st.expander("View Batch-Averaged Pearson Correlations"):
-                if "upload_batch_id" in analysis_db_df.columns:
+            # Treat each mall/date combination as one independent correlation group.
+            with st.expander("View Mall-and-Date-Averaged Pearson Correlations"):
+                group_columns = ["location", "date"]
+                if all(column in analysis_db_df.columns for column in group_columns):
                     correlation_data = df_global.copy()
-                    correlation_data["upload_batch_id"] = (
-                        analysis_db_df["upload_batch_id"]
-                    )
+                    for column in group_columns:
+                        correlation_data[column] = analysis_db_df[column].to_numpy()
                     agg_corr = fisher_average_batch_correlations(
-                        correlation_data, selected_metrics
+                        correlation_data,
+                        selected_metrics,
+                        batch_column=group_columns,
                     )
                     triangle_corr = agg_corr.copy()
                     for metric_index, metric in enumerate(selected_metrics):
@@ -876,8 +877,9 @@ else:
                         ] = np.nan
 
                     st.caption(
-                        "Each upload batch contributes one within-batch Pearson correlation per pair. "
-                        "Coefficients are averaged equally across batches using Fisher z-transformation; "
+                        "Each mall-and-date combination contributes one within-group Pearson correlation per pair, "
+                        "regardless of how many upload batches contain that combination. "
+                        "Coefficients are averaged equally across mall/date groups using Fisher z-transformation; "
                         "pairs with fewer than 3 complete observations or no variation in a batch are excluded."
                     )
                     st.dataframe(
@@ -888,7 +890,7 @@ else:
                     )
                 else:
                     st.info(
-                        "Batch-averaged correlations are unavailable because these records have no upload batch identifiers."
+                        "Mall-and-date-averaged correlations are unavailable because location or date metadata is missing."
                     )
         else:
             st.info("Select at least two metrics across the Crowd and VGA filters, then press **Generate Analysis**.")
