@@ -142,6 +142,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                 r_val = corr_matrix.loc[col_y, col_x]
 
                 if not np.isnan(r_val):
+                    r_val = np.clip(r_val, -1.0, 1.0)
                     norm_val = (r_val + 1) / 2
                     sq_color = cmap(norm_val)
 
