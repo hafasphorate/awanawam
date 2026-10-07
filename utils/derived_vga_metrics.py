@@ -30,12 +30,28 @@ def _polygon_area(coordinates: Any) -> float:
     ) / 2.0
 
 
+def _infer_grid_size(node_data: Optional[pd.DataFrame]) -> Optional[float]:
+    if node_data is None:
+        return None
+
+    spacings = []
+    for column in ("x", "y"):
+        if column not in node_data.columns:
+            continue
+        coordinates = pd.to_numeric(node_data[column], errors="coerce").dropna()
+        differences = np.diff(np.sort(coordinates.unique()))
+        spacings.extend(differences[np.isfinite(differences) & (differences > 0)])
+
+    return _positive_number(min(spacings)) if spacings else None
+
+
 def extract_analysis_area(
-    data: Any, node_count: Optional[int] = None
+    data: Any,
+    node_count: Optional[int] = None,
+    node_data: Optional[pd.DataFrame] = None,
 ) -> Tuple[Optional[float], Optional[str]]:
     """Return the uploaded analysis footprint area and the source used."""
-    if not isinstance(data, dict):
-        return None, None
+    data = data if isinstance(data, dict) else {}
 
     floorplan = data.get("floorplan")
     floorplan = floorplan if isinstance(floorplan, dict) else {}
@@ -81,8 +97,15 @@ def extract_analysis_area(
         analysis_settings if isinstance(analysis_settings, dict) else {}
     )
     grid_size = _positive_number(analysis_settings.get("grid_size_mm"))
+    grid_size_source = "recorded grid spacing"
+    if grid_size is None:
+        grid_size = _infer_grid_size(node_data)
+        grid_size_source = "grid spacing inferred from VGA node coordinates"
     if node_count is not None and node_count > 0 and grid_size is not None:
-        return node_count * grid_size**2, "estimated from VGA node count and grid spacing"
+        return (
+            node_count * grid_size**2,
+            f"estimated from VGA node count and {grid_size_source}",
+        )
 
     return None, None
 

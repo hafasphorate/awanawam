@@ -30,8 +30,35 @@ class DerivedVgaMetricsTests(unittest.TestCase):
 
         self.assertEqual(
             extract_analysis_area(data, node_count=3),
-            (3_000_000.0, "estimated from VGA node count and grid spacing"),
+            (
+                3_000_000.0,
+                "estimated from VGA node count and recorded grid spacing",
+            ),
         )
+
+    def test_analysis_area_infers_grid_size_from_legacy_node_coordinates(self):
+        node_data = pd.DataFrame(
+            {
+                "x": [0, 1000, 2000, 0],
+                "y": [0, 0, 0, 1000],
+                "isovist_area": [100_000, 120_000, 140_000, 110_000],
+            }
+        )
+
+        analysis_area, source = extract_analysis_area(
+            node_data.to_dict(orient="records"),
+            node_count=len(node_data),
+            node_data=node_data,
+        )
+        self.assertEqual(
+            (analysis_area, source),
+            (
+                4_000_000.0,
+                "estimated from VGA node count and grid spacing inferred from VGA node coordinates",
+            ),
+        )
+        result = add_comparison_metrics(node_data, analysis_area)
+        self.assertIn("relative_isovist_area_pct", result.columns)
 
     def test_analysis_area_does_not_estimate_without_grid_size(self):
         self.assertEqual(
