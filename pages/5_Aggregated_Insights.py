@@ -85,10 +85,7 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
         if "density" in normalized_name and not normalized_name.startswith("log_")
     ]
     crowd_density_col = None
-    for preferred_name in ("crowd_density", "density"):
-        crowd_density_col = normalized_columns.get(preferred_name)
-        if crowd_density_col is not None:
-            break
+    crowd_density_col = normalized_columns.get("crowd_density")
     if crowd_density_col is None:
         crowd_density_col = next(
             (
@@ -96,14 +93,16 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
                 for normalized_name, column in density_sources
                 if "crowd" in normalized_name and "peak" not in normalized_name
             ),
-            next(
-                (
-                    column
-                    for normalized_name, column in density_sources
-                    if "peak" not in normalized_name
-                ),
-                None,
+            normalized_columns.get("density"),
+        )
+    if crowd_density_col is None:
+        crowd_density_col = next(
+            (
+                column
+                for normalized_name, column in density_sources
+                if "peak" not in normalized_name
             ),
+            None,
         )
 
     peak_density_col = normalized_columns.get("peak_density")
@@ -117,14 +116,16 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
             None,
         )
 
-    if crowd_density_col is not None:
-        df["log10_crowd_density"] = np.log10(
-            pd.to_numeric(df[crowd_density_col], errors="coerce")
-        )
-    if peak_density_col is not None:
-        df["log10_peak_density"] = np.log10(
-            pd.to_numeric(df[peak_density_col], errors="coerce")
-        )
+    for output_column, source_column in (
+        ("log10_crowd_density", crowd_density_col),
+        ("log10_peak_density", peak_density_col),
+    ):
+        if source_column is None:
+            df[output_column] = np.nan
+            continue
+
+        density_values = pd.to_numeric(df[source_column], errors="coerce")
+        df[output_column] = np.log10(density_values.where(density_values > 0))
 
     return df
 
@@ -812,16 +813,23 @@ else:
             column for column in numeric_cols
             if any(word in column.lower() for word in crowd_words)
         ]
-        log_density_metrics = [
-            metric
-            for metric in ("log10_crowd_density", "log10_peak_density")
-            if metric in df_global.columns
-        ]
+        log_density_metrics = ["log10_crowd_density", "log10_peak_density"]
         crowd_metrics = list(dict.fromkeys(crowd_metrics + log_density_metrics))
-        if log_density_metrics:
+        available_log_density_metrics = [
+            metric
+            for metric in log_density_metrics
+            if df_global[metric].notna().any()
+        ]
+        missing_log_density_metrics = [
+            metric
+            for metric in log_density_metrics
+            if metric not in available_log_density_metrics
+        ]
+        if available_log_density_metrics:
             st.caption(
-                "Log-transformed metrics use log10(density); values below 1 become negative: "
-                + ", ".join(log_density_metrics)
+                "Log-transformed metrics use log10(density); non-positive or missing values are blank. "
+                "Available: "
+                + ", ".join(available_log_density_metrics)
             )
             with st.expander("Preview log10-transformed density values"):
                 density_preview_columns = [
@@ -834,17 +842,23 @@ else:
                     df_global[density_preview_columns + log_density_metrics].head(10),
                     use_container_width=True,
                 )
-        else:
+        if missing_log_density_metrics:
             st.warning(
-                "Log density metrics could not be created because no crowd-density or peak-density columns were found. "
-                f"Available columns: {', '.join(map(str, df_global.columns))}"
+                "These log metrics are listed in Crowd metrics but have no matching source values: "
+                + ", ".join(missing_log_density_metrics)
+                + f". Available columns: {', '.join(map(str, df_global.columns))}"
             )
-        default_crowd_selection = list(
-            st.session_state.get("global_crowd_selection", crowd_metrics)
-        )
+        default_crowd_selection = [
+            metric
+            for metric in st.session_state.get(
+                "global_crowd_selection", crowd_metrics
+            )
+            if metric not in log_density_metrics
+            or metric in available_log_density_metrics
+        ]
         default_crowd_selection.extend(
             metric
-            for metric in log_density_metrics
+            for metric in available_log_density_metrics
             if metric not in default_crowd_selection
         )
         vga_metrics = [column for column in numeric_cols if column not in crowd_metrics]
@@ -855,7 +869,7 @@ else:
                 "Crowd metrics",
                 options=crowd_metrics,
                 default=default_crowd_selection,
-                key="global_crowd_filter_v3",
+                key="global_crowd_filter_v4",
             )
             vga_selection = st.multiselect(
                 "VGA metrics",
