@@ -777,6 +777,35 @@ else:
     df_global = add_log_density_metrics(df_global)
     analysis_db_df = active_db_df.iloc[df_global.index].reset_index(drop=True)
     df_global = df_global.reset_index(drop=True)
+    log_density_metrics = ["log10_crowd_density", "log10_peak_density"]
+    log_density_preview_columns = [
+        column
+        for column in df_global.columns
+        if "density" in str(column).lower()
+        and not str(column).lower().startswith("log10_")
+    ]
+    available_log_density_metrics = [
+        metric
+        for metric in log_density_metrics
+        if df_global[metric].notna().any()
+    ]
+    if available_log_density_metrics:
+        st.subheader("Log-Transformed Density Values")
+        st.caption(
+            "Values shown are log10 of each positive density after the zero-value row filter."
+        )
+        st.dataframe(
+            df_global[
+                list(dict.fromkeys(log_density_preview_columns + log_density_metrics))
+            ].head(20),
+            use_container_width=True,
+        )
+    else:
+        st.warning(
+            "Log-density values could not be calculated. "
+            f"Available metric columns: {', '.join(map(str, df_global.columns))}"
+        )
+
     dataset_count = (
         active_db_df["upload_batch_id"].nunique()
         if "upload_batch_id" in active_db_df.columns
@@ -813,13 +842,7 @@ else:
             column for column in numeric_cols
             if any(word in column.lower() for word in crowd_words)
         ]
-        log_density_metrics = ["log10_crowd_density", "log10_peak_density"]
         crowd_metrics = list(dict.fromkeys(crowd_metrics + log_density_metrics))
-        available_log_density_metrics = [
-            metric
-            for metric in log_density_metrics
-            if df_global[metric].notna().any()
-        ]
         missing_log_density_metrics = [
             metric
             for metric in log_density_metrics
@@ -831,17 +854,6 @@ else:
                 "Available: "
                 + ", ".join(available_log_density_metrics)
             )
-            with st.expander("Preview log10-transformed density values"):
-                density_preview_columns = [
-                    column
-                    for column in df_global.columns
-                    if "density" in str(column).lower()
-                    and not str(column).lower().startswith("log10_")
-                ]
-                st.dataframe(
-                    df_global[density_preview_columns + log_density_metrics].head(10),
-                    use_container_width=True,
-                )
         if missing_log_density_metrics:
             st.warning(
                 "These log metrics are listed in Crowd metrics but have no matching source values: "
