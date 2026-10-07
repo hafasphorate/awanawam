@@ -73,6 +73,24 @@ def fetch_aggregated_records():
 # -----------------------------------------------------------------------------
 # 2. Matplotlib Precision Pairs Matrix Engine (High-Res Ready)
 # -----------------------------------------------------------------------------
+def exclude_zero_analysis_rows(df: pd.DataFrame) -> pd.DataFrame:
+    zero_filter_metrics = {"crowd_density", "density", "peak_density", "speed"}
+    zero_filter_cols = [
+        column
+        for column in df.columns
+        if str(column).strip().lower().replace(" ", "_") in zero_filter_metrics
+    ]
+
+    if not zero_filter_cols:
+        return df
+
+    has_zero_metric = pd.Series(False, index=df.index)
+    for column in zero_filter_cols:
+        has_zero_metric |= pd.to_numeric(df[column], errors="coerce").eq(0)
+
+    return df.loc[~has_zero_metric]
+
+
 def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 100):
     """
     Recreates the exact visual matrix:
@@ -80,20 +98,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     - Lower Triangle: Scatter Plots
     - Upper Triangle: Dynamically Scaled Correlation Squares
     """
-    density_col = next(
-        (column for column in df.columns if column.lower() == "density"), None
-    )
-    if density_col is None:
-        density_col = next(
-            (column for column in df.columns if column.lower() == "crowd_density"),
-            None,
-        )
-
-    matrix_data = df
-    if density_col is not None:
-        density_values = pd.to_numeric(df[density_col], errors="coerce")
-        matrix_data = df.loc[density_values.ne(0)]
-
+    matrix_data = exclude_zero_analysis_rows(df)
     sub_df = matrix_data[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
 
@@ -711,6 +716,9 @@ if active_db_df.empty:
 else:
     metrics_list = active_db_df["metrics_data"].tolist()
     df_global = pd.DataFrame(metrics_list)
+    df_global = exclude_zero_analysis_rows(df_global)
+    analysis_db_df = active_db_df.iloc[df_global.index].reset_index(drop=True)
+    df_global = df_global.reset_index(drop=True)
     dataset_count = (
         active_db_df["upload_batch_id"].nunique()
         if "upload_batch_id" in active_db_df.columns
@@ -718,7 +726,9 @@ else:
     )
 
     st.success(
-        f"**Repository Active:** Loaded **{len(df_global)}** unlocked node records "
+        f"**Repository Active:** Loaded **{len(df_global)}** analysis records after excluding rows "
+        f"with zero crowd density, peak density, or speed "
+        f"(from **{len(metrics_list)}** unlocked node records) "
         f"from **{dataset_count}** data sets."
     )
 
@@ -729,7 +739,11 @@ else:
         and col.lower() not in coord_or_id_cols
     ]
 
-    if len(numeric_cols) < 2:
+    if df_global.empty:
+        st.warning(
+            "No rows remain after excluding records with zero crowd density, peak density, or speed."
+        )
+    elif len(numeric_cols) < 2:
         st.error("Insufficient numeric metrics in the database to form a matrix.")
     else:
         crowd_words = (
@@ -847,10 +861,10 @@ else:
             # Batch-level Pearson correlations avoid treating every node as an
             # independent experimental run when combining uploaded datasets.
             with st.expander("View Batch-Averaged Pearson Correlations"):
-                if "upload_batch_id" in active_db_df.columns:
+                if "upload_batch_id" in analysis_db_df.columns:
                     correlation_data = df_global.copy()
                     correlation_data["upload_batch_id"] = (
-                        active_db_df["upload_batch_id"].reset_index(drop=True)
+                        analysis_db_df["upload_batch_id"]
                     )
                     agg_corr = fisher_average_batch_correlations(
                         correlation_data, selected_metrics
