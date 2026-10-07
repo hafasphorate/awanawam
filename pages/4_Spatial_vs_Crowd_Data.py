@@ -11,6 +11,7 @@ import pandas as pd
 import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
+from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
 from utils.navigation import render_home_button
 
 # Page Configuration
@@ -22,7 +23,13 @@ render_home_button()
 st.title("Module 4: Spatial vs. Crowd Data Correlation")
 st.write(
     "Upload your combined dataset (JSON) to compute pairwise correlations and "
-    "analyze relationships across all spatial, visibility, and crowd metrics."
+    "analyze relationships across all spatial, visibility, and crowd metrics. "
+    "Comparable VGA metrics are derived from the uploaded file where possible."
+)
+st.caption(
+    "NAIN normalizes the uploaded integration metric by graph size. If the source "
+    "contains only topological VGA integration, angular path weights cannot be "
+    "reconstructed from that JSON."
 )
 
 
@@ -32,6 +39,35 @@ def init_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
+
+
+@st.cache_data
+def fetch_existing_locations():
+    """Fetch location labels only, paginating beyond the Supabase row limit."""
+    if supabase is None:
+        return []
+
+    page_size = 1000
+    offset = 0
+    locations = set()
+    while True:
+        response = (
+            supabase.table("vga_crowd_records")
+            .select("location")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        page = response.data or []
+        locations.update(
+            str(row["location"]).strip()
+            for row in page
+            if row.get("location") and str(row["location"]).strip()
+        )
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    return sorted(locations, key=str.casefold)
 
 
 try:
@@ -102,7 +138,8 @@ def load_and_parse_json(file):
 
     # pd.json_normalize flattens nested dicts into dot-notation columns
     df = pd.json_normalize(raw_nodes)
-    return df
+    analysis_area, _ = extract_analysis_area(data)
+    return add_comparison_metrics(df, analysis_area)
 
 
 # -----------------------------------------------------------------------------
@@ -259,9 +296,37 @@ if uploaded_file is not None:
         # Metadata Labeling Form (Sidebar)
         # ---------------------------------------------------------------------
         st.sidebar.header(" Dataset Labeling Metadata")
-        meta_location = st.sidebar.text_input(
-            "Location", placeholder="e.g., Main Concourse Floor 1"
-        )
+        existing_locations = []
+        location_load_error = None
+        if supabase is not None:
+            try:
+                existing_locations = fetch_existing_locations()
+            except Exception as error:
+                location_load_error = error
+
+        if location_load_error:
+            st.sidebar.warning(
+                f"Could not load existing locations from Supabase: {location_load_error}"
+            )
+
+        if existing_locations:
+            location_mode = st.sidebar.radio(
+                "Location",
+                options=("Choose existing", "Enter new"),
+                horizontal=True,
+            )
+            if location_mode == "Choose existing":
+                meta_location = st.sidebar.selectbox(
+                    "Existing location", options=existing_locations
+                )
+            else:
+                meta_location = st.sidebar.text_input(
+                    "New location", placeholder="e.g., Main Concourse Floor 1"
+                )
+        else:
+            meta_location = st.sidebar.text_input(
+                "Location", placeholder="e.g., Main Concourse Floor 1"
+            )
 
         # Get local Singapore time by default for inputs
         sgt_now = datetime.now(ZoneInfo("Asia/Singapore"))
@@ -379,6 +444,22 @@ if uploaded_file is not None:
 
             omitted_count = len(df_nodes) - len(valid_df)
 
+            if "relative_isovist_area_pct" not in df_nodes.columns:
+                st.warning(
+                    "Relative isovist area was not added because the uploaded JSON "
+                    "does not include analysis-area geometry or an analysis_area value."
+                )
+            else:
+                _, analysis_area_source = extract_analysis_area(
+                    json.loads(uploaded_file.getvalue())
+                )
+                if analysis_area_source == "floorplan bounding box":
+                    st.caption(
+                        "Relative isovist area uses the floorplan bounding box as "
+                        "the analysis-area estimate because selected room geometry "
+                        "was not included."
+                    )
+
             st.info(
                 f"**Data Audit:** {len(valid_df)} nodes contain full spatial and crowd data across "
                 f"selected metrics. ({omitted_count} incomplete nodes will be omitted)."
@@ -389,6 +470,8 @@ if uploaded_file is not None:
                     st.error(
                         "Cannot upload: Please correct the time format (HH:MM) in the sidebar."
                     )
+                elif not meta_location.strip():
+                    st.error("Cannot upload: Please select or enter a location.")
                 elif supabase is None:
                     st.error(
                         "Database connection not available. Please configure your secrets.toml."
@@ -420,6 +503,7 @@ if uploaded_file is not None:
                     )
 
                     if res.data:
+                        st.cache_data.clear()
                         st.success(
                             f"Successfully uploaded {len(records)} data points with metadata to global repository!"
                         )

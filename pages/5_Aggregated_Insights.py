@@ -45,7 +45,7 @@ except Exception:
     st.stop()
 
 
-@st.cache_data(ttl=600)  # Refresh cache every 10 mins
+@st.cache_data  # The full table is refreshed explicitly to avoid repeated bulk reads.
 def fetch_aggregated_records():
     """Fetch all raw records including metadata from Supabase."""
     page_size = 1000
@@ -629,11 +629,38 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
 # 5. Main Application Workflow
 # -----------------------------------------------------------------------------
 raw_db_df = fetch_aggregated_records()
-active_db_df = unlocked_records(raw_db_df)
+if st.sidebar.button("Refresh Global Repository Cache"):
+    st.cache_data.clear()
+    st.rerun()
+
+unlocked_db_df = unlocked_records(raw_db_df)
+location_values = (
+    sorted(
+        {
+            str(location).strip()
+            for location in unlocked_db_df.get("location", pd.Series(dtype=object)).dropna()
+            if str(location).strip()
+        },
+        key=str.casefold,
+    )
+    if not unlocked_db_df.empty
+    else []
+)
+selected_location = st.sidebar.selectbox(
+    "Filter by location",
+    options=["All locations", *location_values],
+)
+active_db_df = (
+    unlocked_db_df
+    if selected_location == "All locations"
+    else unlocked_db_df[unlocked_db_df["location"] == selected_location]
+)
 coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
 
 if active_db_df.empty:
-    if not raw_db_df.empty:
+    if not unlocked_db_df.empty and selected_location != "All locations":
+        st.info(f"No unlocked records found for **{selected_location}**.")
+    elif not raw_db_df.empty:
         st.info("All uploaded datasets are temporarily locked. Unlock a dataset in the Admin Portal to include it in analysis.")
     else:
         st.warning("No aggregated data found in the cloud repository yet. Upload records first.")
@@ -784,11 +811,6 @@ else:
                 )
         else:
             st.info("Select at least two metrics across the Crowd and VGA filters, then press **Generate Analysis**.")
-
-        st.markdown("---")
-        if st.button("Refresh Global Repository Cache"):
-            st.cache_data.clear()
-            st.rerun()
 
 # -----------------------------------------------------------------------------
 # 6. Admin Management Section
