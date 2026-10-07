@@ -80,18 +80,24 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     - Lower Triangle: Scatter Plots
     - Upper Triangle: Dynamically Scaled Correlation Squares
     """
-    sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
-    n_vars = len(selected_cols)
-
-    correlation_df = sub_df
     density_col = next(
         (column for column in df.columns if column.lower() == "density"), None
     )
-    if density_col is not None:
-        zero_density = pd.to_numeric(df[density_col], errors="coerce").eq(0)
-        correlation_df = sub_df.loc[~zero_density]
+    if density_col is None:
+        density_col = next(
+            (column for column in df.columns if column.lower() == "crowd_density"),
+            None,
+        )
 
-    corr_matrix = correlation_df.corr(method="pearson")
+    matrix_data = df
+    if density_col is not None:
+        density_values = pd.to_numeric(df[density_col], errors="coerce")
+        matrix_data = df.loc[density_values.ne(0)]
+
+    sub_df = matrix_data[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
+    n_vars = len(selected_cols)
+
+    corr_matrix = sub_df.corr(method="pearson")
     cmap = mcolors.LinearSegmentedColormap.from_list(
         "custom_bwr", ["#2b5c8f", "#f7f7f7", "#d73027"]
     )
