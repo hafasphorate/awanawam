@@ -195,7 +195,7 @@ def plot_vga_pairs_matrix(df, selected_cols):
                     color="#2c3e50",
                 )
             else:
-                r_val = corr_matrix.loc[col_y, col_x]
+                r_val = np.clip(corr_matrix.loc[col_y, col_x], -1.0, 1.0)
                 norm_val = (r_val + 1) / 2 if not np.isnan(r_val) else 0.5
                 sq_color = cmap(norm_val)
 
