@@ -1024,7 +1024,7 @@ def projection_png(projected_df, density_column, walls):
 
 
 def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_columns, neighbor_fraction=0.05):
-    """Project crowd metrics using inverse-distance weighted neighbors in VGA feature space."""
+    """Project crowd metrics and weighted standard deviations from nearest VGA neighbors."""
     historical_features = historical_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     source_features = source_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     imputer = SimpleImputer(strategy="median")
@@ -1035,6 +1035,7 @@ def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_
     neighbor_count = max(1, int(np.ceil(len(historical_df) * neighbor_fraction)))
     neighbor_count = min(neighbor_count, len(historical_df))
     projections = {target: np.full(len(source_df), np.nan) for target in target_columns}
+    standard_deviations = {target: np.full(len(source_df), np.nan) for target in target_columns}
     for source_index, source_point in enumerate(source_space):
         distances = np.linalg.norm(historical_space - source_point, axis=1)
         nearest_indices = np.argsort(distances)[:neighbor_count]
@@ -1048,16 +1049,21 @@ def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_
             selected_distances = nearest_distances[valid]
             if np.any(selected_distances == 0):
                 projections[target][source_index] = float(values[selected_distances == 0][0])
+                standard_deviations[target][source_index] = 0.0
                 continue
             weights = 1.0 / selected_distances
-            projections[target][source_index] = float(np.average(values, weights=weights))
+            mean = np.average(values, weights=weights)
+            projections[target][source_index] = float(mean)
+            standard_deviations[target][source_index] = float(
+                np.sqrt(np.average((values - mean) ** 2, weights=weights))
+            )
 
-    return projections, neighbor_count
+    return projections, standard_deviations, neighbor_count
 
 
 def render_projection_tab():
     st.subheader("Projected Crowd Metrics")
-    st.caption("Each VGA node is mapped into a standardized 10D VGA space. Its closest 5% of historical nodes estimate crowd metrics using inverse-distance weighting.")
+    st.caption("Each VGA node is mapped into a standardized 10D VGA space. Its closest 5% of historical nodes estimate crowd metrics using inverse-distance weighting; the reported range is the weighted mean ± one weighted standard deviation.")
     projection_upload = st.file_uploader("Upload previous VGA results (JSON)", type=["json"], key="projection_json_uploader")
     source_df = st.session_state.get("vga_df")
     source_walls = st.session_state.get("wall_lines", [])
@@ -1113,26 +1119,42 @@ def render_projection_tab():
         return
 
     feature_columns = shared_vga_columns[:10]
-    projections, neighbor_count = project_crowd_metrics_knn(
+    projections, standard_deviations, neighbor_count = project_crowd_metrics_knn(
         source_df,
         historical_df,
         feature_columns,
         selected_targets,
     )
-    projections = {
-        target: pd.Series(values, index=source_df.index).clip(lower=0)
-        for target, values in projections.items()
-        if pd.notna(values).any()
-    }
+    usable_projections = {}
+    usable_standard_deviations = {}
+    for target, values in projections.items():
+        mean_values = pd.Series(values, index=source_df.index).clip(lower=0)
+        if pd.notna(mean_values).any():
+            usable_projections[target] = mean_values
+            usable_standard_deviations[target] = pd.Series(
+                standard_deviations[target], index=source_df.index
+            )
+    projections = usable_projections
+    standard_deviations = usable_standard_deviations
     if not projections:
         st.warning("No selected crowd metrics have usable historical values in the closest VGA neighbors.")
         return
     projected_df = source_df[["x", "y"]].copy()
     for target, values in projections.items():
-        projected_df[f"projected_{target}"] = values
+        base_field = f"projected_{target}"
+        deviation = standard_deviations[target]
+        projected_df[base_field] = values
+        projected_df[f"{base_field}_std"] = deviation
+        projected_df[f"{base_field}_lowest"] = (values - deviation).clip(lower=0)
+        projected_df[f"{base_field}_highest"] = values + deviation
     st.caption(f"VGA dimensions: {', '.join(feature_columns)} | Historical neighbors per node: {neighbor_count} of {len(historical_df)}")
     st.dataframe(
-        pd.DataFrame({"Crowd metric": list(projections), "Method": "Inverse-distance weighted average"}),
+        pd.DataFrame(
+            {
+                "Crowd metric": list(projections),
+                "Method": "Inverse-distance weighted mean ± 1 standard deviation",
+            }
+        ),
         use_container_width=True,
         hide_index=True,
     )
@@ -1147,7 +1169,42 @@ def render_projection_tab():
         for line in source_walls:
             x_values, y_values = line.xy
             map_fig.add_trace(go.Scatter(x=list(x_values), y=list(y_values), mode="lines", line=dict(color="#666"), showlegend=False))
-        map_fig.add_trace(go.Scatter(x=projected_df["x"].tolist(), y=projected_df["y"].tolist(), mode="markers", marker=dict(size=9, color=projected_df[projected_density].tolist(), colorscale=DENSITY_COLORSCALE, cmin=0, cmax=DENSITY_SCALE_MAX, showscale=True, colorbar=dict(title="people / m²", tick0=0, dtick=1)), text=np.where(high_density, "MID-HIGH DENSITY (>3 people/m²)", "Below threshold").tolist(), hovertemplate="x=%{x}<br>y=%{y}<br>projected density=%{marker.color:.2f}<br>%{text}<extra></extra>", name="Projected density"))
+        map_fig.add_trace(
+            go.Scatter(
+                x=projected_df["x"].tolist(),
+                y=projected_df["y"].tolist(),
+                mode="markers",
+                marker=dict(
+                    size=9,
+                    color=projected_df[projected_density].tolist(),
+                    colorscale=DENSITY_COLORSCALE,
+                    cmin=0,
+                    cmax=DENSITY_SCALE_MAX,
+                    showscale=True,
+                    colorbar=dict(title="people / m²", tick0=0, dtick=1),
+                ),
+                customdata=projected_df[
+                    [
+                        f"{projected_density}_std",
+                        f"{projected_density}_lowest",
+                        f"{projected_density}_highest",
+                    ]
+                ].to_numpy(),
+                text=np.where(
+                    high_density,
+                    "MID-HIGH DENSITY (>3 people/m²)",
+                    "Below threshold",
+                ).tolist(),
+                hovertemplate=(
+                    "x=%{x}<br>y=%{y}"
+                    "<br>mean density=%{marker.color:.2f}"
+                    "<br>weighted standard deviation=%{customdata[0]:.2f}"
+                    "<br>predicted range=%{customdata[1]:.2f}–%{customdata[2]:.2f} people/m²"
+                    "<br>%{text}<extra></extra>"
+                ),
+                name="Projected density",
+            )
+        )
         map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
         configure_floorplan_figure(map_fig)
         st.plotly_chart(map_fig, use_container_width=True)
@@ -1158,7 +1215,7 @@ def render_projection_tab():
     crowd_projection_export = {
         "metadata": {
             "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "prediction_method": "Inverse-distance weighted average",
+            "prediction_method": "Inverse-distance weighted mean ± 1 standard deviation",
             "vga_dimensions": feature_columns,
             "historical_neighbor_count_per_node": neighbor_count,
             "historical_node_count": len(historical_df),
