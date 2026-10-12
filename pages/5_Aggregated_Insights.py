@@ -130,24 +130,6 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def exclude_zero_analysis_rows(df: pd.DataFrame) -> pd.DataFrame:
-    zero_filter_metrics = {"crowd_density", "density", "peak_density", "speed"}
-    zero_filter_cols = [
-        column
-        for column in df.columns
-        if str(column).strip().lower().replace(" ", "_") in zero_filter_metrics
-    ]
-
-    if not zero_filter_cols:
-        return df
-
-    has_zero_metric = pd.Series(False, index=df.index)
-    for column in zero_filter_cols:
-        has_zero_metric |= pd.to_numeric(df[column], errors="coerce").eq(0)
-
-    return df.loc[~has_zero_metric]
-
-
 def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 100):
     """
     Recreates the exact visual matrix:
@@ -155,8 +137,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     - Lower Triangle: Scatter Plots
     - Upper Triangle: Dynamically Scaled Correlation Squares
     """
-    matrix_data = exclude_zero_analysis_rows(df)
-    sub_df = matrix_data[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
+    sub_df = df[selected_cols].apply(pd.to_numeric, errors="coerce").dropna()
     n_vars = len(selected_cols)
 
     corr_matrix = sub_df.corr(method="pearson")
@@ -773,7 +754,6 @@ if active_db_df.empty:
 else:
     metrics_list = active_db_df["metrics_data"].tolist()
     df_global = pd.DataFrame(metrics_list)
-    df_global = exclude_zero_analysis_rows(df_global)
     df_global = add_log_density_metrics(df_global)
     analysis_db_df = active_db_df.iloc[df_global.index].reset_index(drop=True)
     df_global = df_global.reset_index(drop=True)
@@ -792,7 +772,8 @@ else:
     if available_log_density_metrics:
         st.subheader("Log-Transformed Density Values")
         st.caption(
-            "Values shown are log10 of each positive density after the zero-value row filter."
+            "Values shown are log10 of each positive density. Zero, negative, or missing "
+            "density values are blank for the log metrics; the original rows remain in other analyses."
         )
         st.dataframe(
             df_global[
@@ -813,9 +794,8 @@ else:
     )
 
     st.success(
-        f"**Repository Active:** Loaded **{len(df_global)}** analysis records after excluding rows "
-        f"with zero crowd density, peak density, or speed "
-        f"(from **{len(metrics_list)}** unlocked node records) "
+        f"**Repository Active:** Loaded **{len(df_global)}** analysis records "
+        f"(including zero values; from **{len(metrics_list)}** unlocked node records) "
         f"from **{dataset_count}** data sets."
     )
 
@@ -827,9 +807,7 @@ else:
     ]
 
     if df_global.empty:
-        st.warning(
-            "No rows remain after excluding records with zero crowd density, peak density, or speed."
-        )
+        st.warning("No analysis records are available.")
     elif len(numeric_cols) < 2:
         st.error("Insufficient numeric metrics in the database to form a matrix.")
     else:
@@ -1076,7 +1054,6 @@ if input_pass == admin_password:
             single_ds_metrics = pd.DataFrame(
                 batch_records["metrics_data"].tolist()
             )
-            single_ds_metrics = exclude_zero_analysis_rows(single_ds_metrics)
             single_ds_metrics = add_log_density_metrics(single_ds_metrics)
             single_numeric_cols = [
                 col
