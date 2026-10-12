@@ -148,6 +148,19 @@ def serialize_vga_nodes(vga_nodes):
     return []
 
 
+def update_vga_grid_spacing(data):
+    """Store the configured grid interval when an uploaded payload provides it."""
+    metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    analysis_settings = data.get("analysis_settings", {}) if isinstance(data, dict) else {}
+    analysis_settings = analysis_settings or metadata.get("analysis_settings", {})
+    analysis_settings = analysis_settings if isinstance(analysis_settings, dict) else {}
+    grid_spacing = analysis_settings.get("grid_size_mm")
+    st.session_state.pop("vga_grid_spacing", None)
+    if grid_spacing is not None:
+        st.session_state["vga_grid_spacing"] = grid_spacing
+
+
 def infer_cell_area_m2(node):
     """Return the effective cell area in m², defaulting to 1 m² for VGA grids."""
     if not isinstance(node, dict):
@@ -566,9 +579,13 @@ with tab_import:
                 if vga_raw:
                     st.session_state["vga_df"] = pd.DataFrame(vga_raw)
                     st.session_state.vga_grid_df = st.session_state["vga_df"]
+                    st.session_state["vga_floorplan_nodes"] = st.session_state["vga_grid_df"].to_dict(orient="records")
+                    st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
                     st.success(f"✅ Loaded VGA Grid ({len(st.session_state.vga_grid_df)} nodes)")
 
                 # 3. Extract camera corners, supporting older ROI export fields.
+                if vga_raw:
+                    update_vga_grid_spacing(data)
                 imported_metadata = data.get("metadata", {}) or {}
                 imported_floorplan = data.get("floorplan", {}) or {}
                 camera_pts = (
@@ -1285,32 +1302,103 @@ def circular_mean_degrees(values):
     return float(np.degrees(np.arctan2(np.sin(radians).mean(), np.cos(radians).mean())) % 360)
 
 
-def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col):
-    """Maps continuous trajectory points to the nearest VGA grid node."""
+def infer_vga_grid_interval(grid_nodes, configured_spacing=None):
+    """Get the VGA grid interval from saved settings or the node coordinates."""
+    if configured_spacing is not None:
+        try:
+            spacing = float(configured_spacing)
+            if np.isfinite(spacing) and spacing > 0:
+                return spacing
+        except (TypeError, ValueError):
+            pass
+
+    grid_nodes = serialize_vga_nodes(grid_nodes)
+    spacings = []
+    for node in grid_nodes:
+        if not isinstance(node, dict):
+            continue
+        for key in ("grid_size_mm",):
+            if node.get(key) is not None:
+                try:
+                    spacing = float(node[key])
+                    if np.isfinite(spacing) and spacing > 0:
+                        spacings.append(spacing)
+                except (TypeError, ValueError):
+                    pass
+
+    if spacings:
+        return min(spacings)
+
+    x_coords = []
+    y_coords = []
+    for node in grid_nodes:
+        if not isinstance(node, dict):
+            continue
+        x_value = node.get("x", node.get("world_x", node.get("pos_x")))
+        y_value = node.get("y", node.get("world_y", node.get("pos_y")))
+        try:
+            x_value = float(x_value)
+            y_value = float(y_value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(x_value) and np.isfinite(y_value):
+            x_coords.append(x_value)
+            y_coords.append(y_value)
+
+    for coordinates in (x_coords, y_coords):
+        differences = np.diff(np.unique(coordinates))
+        spacings.extend(differences[np.isfinite(differences) & (differences > 0)])
+
+    if spacings:
+        return float(min(spacings))
+    raise ValueError("The VGA grid interval is unavailable; load a grid with spacing metadata or multiple node coordinates.")
+
+
+def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col, configured_spacing=None):
+    """Map detections to nearby VGA nodes and discard points outside their cells."""
     grid_nodes = serialize_vga_nodes(grid_nodes)
     if not grid_nodes or df_track.empty:
         return df_track
 
-    # Extract node positions (handles both list of dicts or DataFrame-like dicts)
+    grid_interval = infer_vga_grid_interval(grid_nodes, configured_spacing)
+    max_distance = grid_interval / np.sqrt(2)
+
+    # Keep original indices so mapped rows continue to align with the exported node list.
+    node_indices = []
     node_coords = []
-    for n in grid_nodes:
-        if not isinstance(n, dict):
+    for node_index, node in enumerate(grid_nodes):
+        if not isinstance(node, dict):
             continue
-        nx = n.get("x", n.get("world_x", n.get("pos_x")))
-        ny = n.get("y", n.get("world_y", n.get("pos_y")))
-        if nx is not None and ny is not None:
-            node_coords.append([nx, ny])
+        x_value = node.get("x", node.get("world_x", node.get("pos_x")))
+        y_value = node.get("y", node.get("world_y", node.get("pos_y")))
+        try:
+            x_value = float(x_value)
+            y_value = float(y_value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(x_value) and np.isfinite(y_value):
+            node_indices.append(node_index)
+            node_coords.append([x_value, y_value])
 
     if not node_coords:
-        return df_track
+        raise ValueError("The VGA grid contains no nodes with valid x/y coordinates.")
 
     node_coords_arr = np.array(node_coords)
     tree = cKDTree(node_coords_arr)
 
-    track_coords = df_track[[x_col, y_col]].values
-    distances, indices = tree.query(track_coords)
+    track_coords = df_track[[x_col, y_col]].to_numpy(dtype=float)
+    valid_track_mask = np.isfinite(track_coords).all(axis=1)
+    df_track = df_track.loc[valid_track_mask].copy()
+    track_coords = track_coords[valid_track_mask]
+    if df_track.empty:
+        return df_track
 
-    df_track["grid_node_idx"] = indices
+    distances, indices = tree.query(track_coords)
+    within_grid = distances <= np.nextafter(max_distance, np.inf)
+    df_track = df_track.loc[within_grid].copy()
+    indices = indices[within_grid]
+
+    df_track["grid_node_idx"] = np.asarray(node_indices)[indices]
     df_track["grid_node_x"] = node_coords_arr[indices, 0]
     df_track["grid_node_y"] = node_coords_arr[indices, 1]
 
@@ -1329,6 +1417,7 @@ with tab_playback:
     def parse_tracking_json(raw_json):
         # Extract VGA Grid Nodes if included in JSON upload
         if isinstance(raw_json, dict):
+            contains_vga_nodes = False
             for key in [
                 "vga_floorplan_nodes",
                 "vga_results",
@@ -1339,8 +1428,11 @@ with tab_playback:
                 "nodes",
             ]:
                 if key in raw_json:
+                    contains_vga_nodes = True
                     st.session_state["vga_floorplan_nodes"] = raw_json[key]
                     st.session_state["vga_results"] = raw_json[key]
+            if contains_vga_nodes:
+                update_vga_grid_spacing(raw_json)
             if "wall_lines" in raw_json:
                 st.session_state.wall_lines = raw_json["wall_lines"]
 
@@ -1490,6 +1582,46 @@ with tab_playback:
             if id_col not in df_track.columns:
                 df_track[id_col] = 1
 
+            # --- Grid Alignment (VGA Node Mapping) ---
+            vga_nodes = st.session_state.get("vga_floorplan_nodes", [])
+            if not vga_nodes and "vga_results" in st.session_state:
+                vga_res = st.session_state.vga_results
+                if isinstance(vga_res, list):
+                    vga_nodes = vga_res
+                elif isinstance(vga_res, dict) and "nodes" in vga_res:
+                    vga_nodes = vga_res["nodes"]
+            if not vga_nodes:
+                vga_grid_df = st.session_state.get("vga_grid_df")
+                if vga_grid_df is None:
+                    vga_grid_df = st.session_state.get("vga_df")
+                if isinstance(vga_grid_df, pd.DataFrame):
+                    vga_nodes = vga_grid_df
+            vga_nodes = serialize_vga_nodes(vga_nodes)
+
+            if vga_nodes:
+                original_point_count = len(df_track)
+                configured_spacing = st.session_state.get("vga_grid_spacing")
+                try:
+                    grid_interval = infer_vga_grid_interval(vga_nodes, configured_spacing)
+                    df_track = map_points_to_grid_nodes(
+                        df_track,
+                        vga_nodes,
+                        x_col,
+                        y_col,
+                        configured_spacing,
+                    )
+                except ValueError as error:
+                    st.error(f"Unable to filter tracking points against the VGA grid: {error}")
+                    st.stop()
+                st.info(
+                    f"Matched tracking points to VGA nodes; retained {len(df_track)} of "
+                    f"{original_point_count} points within the grid-cell boundary "
+                    f"(maximum distance {grid_interval / np.sqrt(2):.2f} in floorplan coordinate units)."
+                )
+                if df_track.empty:
+                    st.error("No tracking points fall within the VGA grid.")
+                    st.stop()
+
             # --- Spine Reference Placement ---
             st.markdown("### 2. Define Spine Reference")
             st.caption("Enter the spine angle from the horizontal axis. Horizontal right is 0° and upward is 90°.")
@@ -1628,25 +1760,6 @@ with tab_playback:
                 df_track["dir_deg_spine"] = df_track["dir_deg_north"]
                 df_track["deviation_deg_spine"] = df_track["dir_deg_north"].apply(
                     lambda angle: abs(((angle + 90) % 180) - 90)
-                )
-
-            # --- Grid Alignment (VGA Node Mapping) ---
-            vga_nodes = st.session_state.get("vga_floorplan_nodes", [])
-            if not vga_nodes and "vga_results" in st.session_state:
-                # Fallback to extracting nodes from vga_results if available
-                vga_res = st.session_state.vga_results
-                if isinstance(vga_res, list):
-                    vga_nodes = vga_res
-                elif isinstance(vga_res, dict) and "nodes" in vga_res:
-                    vga_nodes = vga_res["nodes"]
-            vga_nodes = serialize_vga_nodes(vga_nodes)
-
-            if vga_nodes:
-                df_track = map_points_to_grid_nodes(
-                    df_track, vga_nodes, x_col, y_col
-                )
-                st.info(
-                    f" Matched movement tracking data to {len(vga_nodes)} floorplan grid nodes."
                 )
 
             # --- 2. Motion Playback ---

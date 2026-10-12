@@ -1208,6 +1208,15 @@ def render_analysis_tab():
         try:
             session_data = json.load(uploaded_file)
             st.session_state["vga_df"] = pd.DataFrame(session_data["vga_results"])
+            st.session_state["vga_floorplan_nodes"] = st.session_state["vga_df"].to_dict(orient="records")
+            st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
+            session_metadata = session_data.get("metadata")
+            session_metadata = session_metadata if isinstance(session_metadata, dict) else {}
+            analysis_settings = session_metadata.get("analysis_settings", {})
+            if isinstance(analysis_settings, dict) and analysis_settings.get("grid_size_mm") is not None:
+                st.session_state["vga_grid_spacing"] = analysis_settings["grid_size_mm"]
+            else:
+                st.session_state.pop("vga_grid_spacing", None)
             st.session_state["clustering_source_df"] = st.session_state["vga_df"]
             
             restored_walls = [
@@ -1399,8 +1408,11 @@ def render_analysis_tab():
 
                     df_results = pd.DataFrame(final_vga_results)
                     st.session_state["vga_df"] = df_results
+                    st.session_state["vga_floorplan_nodes"] = df_results.to_dict(orient="records")
+                    st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
                     st.session_state["clustering_source_df"] = df_results
                     st.session_state["clustering_walls"] = wall_lines
+                    st.session_state["vga_grid_spacing"] = float(grid_size)
                 else:
                     progress_bar.empty()
                     st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")
