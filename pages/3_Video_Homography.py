@@ -16,6 +16,7 @@ from utils.tracking_engine import extract_frame_from_video
 from views.tracking_view import render_tracking_view
 from utils.navigation import render_home_button
 from utils.density_visuals import DENSITY_COLORSCALE, DENSITY_SCALE_MAX
+from utils.crowd_visuals import add_deviation_rays, add_direction_arrows
 from utils.plotly_floorplan import configure_floorplan_figure
 
 import math
@@ -1842,7 +1843,7 @@ with tab_playback:
                     " Speed Distribution",
                     " Directional Flow",
                     " Deviation from Spine",
-                    " Peak Density",
+                    " Highest Density",
                 ]
             )
 
@@ -1977,6 +1978,27 @@ with tab_playback:
                             hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>circular mean direction=%{z:.2f}°<extra></extra>",
                         )
                     )
+                    direction_x, direction_y = np.meshgrid(
+                        direction_grid["x"], direction_grid["y"]
+                    )
+                    direction_values = np.asarray(direction_grid["metric"])
+                    direction_valid = np.isfinite(direction_values)
+                    grid_spacings = [
+                        float(np.median(np.diff(axis_values)))
+                        for axis_values in (direction_grid["x"], direction_grid["y"])
+                        if len(axis_values) > 1
+                    ]
+                    vector_length = min(grid_spacings) * 0.35 if grid_spacings else 0.35
+                    add_direction_arrows(
+                        fig_dir,
+                        direction_x[direction_valid],
+                        direction_y[direction_valid],
+                        direction_values[direction_valid],
+                        spine_angle_deg,
+                        clockwise=st.session_state.spine_angle_orientation
+                        == "Clockwise",
+                        base_length=vector_length,
+                    )
                 fig_dir = add_cad_walls_to_fig(fig_dir)
                 fig_dir.update_layout(
                     template="plotly_dark",
@@ -2012,6 +2034,25 @@ with tab_playback:
                             hovertemplate="x=%{x:.2f}<br>y=%{y:.2f}<br>average deviation=%{z:.2f}°<extra></extra>",
                         )
                     )
+                    deviation_x, deviation_y = np.meshgrid(
+                        deviation_grid["x"], deviation_grid["y"]
+                    )
+                    deviation_values = np.asarray(deviation_grid["metric"])
+                    deviation_valid = np.isfinite(deviation_values)
+                    grid_spacings = [
+                        float(np.median(np.diff(axis_values)))
+                        for axis_values in (deviation_grid["x"], deviation_grid["y"])
+                        if len(axis_values) > 1
+                    ]
+                    ray_length = min(grid_spacings) * 0.35 if grid_spacings else 0.35
+                    add_deviation_rays(
+                        fig_deviation,
+                        deviation_x[deviation_valid],
+                        deviation_y[deviation_valid],
+                        deviation_values[deviation_valid],
+                        spine_angle_deg,
+                        length=ray_length,
+                    )
                 fig_deviation = add_cad_walls_to_fig(fig_deviation)
                 fig_deviation.update_layout(
                     template="plotly_dark",
@@ -2020,10 +2061,10 @@ with tab_playback:
                 )
                 configure_floorplan_figure(fig_deviation)
                 st.plotly_chart(fig_deviation, use_container_width=True)
-                st.caption("Deviation is averaged per spatial bin and is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°.")
+                st.caption("Deviation is averaged per spatial bin and is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°. Four rays show both directions along the spine and both deviations from it.")
 
             with m_tab6:
-                st.markdown("#### Peak Pedestrian Density")
+                st.markdown("#### Highest Pedestrian Density")
                 fig_peak_density = go.Figure()
                 fig_peak_density = add_cad_walls_to_fig(
                     fig_peak_density, line_color="#FFFFFF", line_width=1.5
@@ -2041,7 +2082,7 @@ with tab_playback:
                             zmin=0,
                             zmax=DENSITY_SCALE_MAX,
                             colorbar=dict(title=density_unit, tick0=0, dtick=1),
-                            hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>peak density=%{{z:.3f}} {density_unit}<extra></extra>",
+                            hovertemplate=f"x=%{{x:.2f}}<br>y=%{{y:.2f}}<br>highest density=%{{z:.3f}} {density_unit}<extra></extra>",
                         )
                     )
                 fig_peak_density.update_layout(
@@ -2051,7 +2092,7 @@ with tab_playback:
                 )
                 configure_floorplan_figure(fig_peak_density)
                 st.plotly_chart(fig_peak_density, use_container_width=True)
-                st.caption(f"Peak density is the highest single-frame density observed in each 1 m x 1 m spatial bin ({density_unit}).")
+                st.caption(f"Highest density is the maximum single-frame density observed in each 1 m x 1 m spatial bin ({density_unit}).")
 
             st.markdown("---")
             st.markdown(

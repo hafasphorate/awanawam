@@ -9,6 +9,7 @@ import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 from utils.correlation_metrics import fisher_average_batch_correlations
+from utils.crowd_visuals import crowd_metric_label
 from utils.dataset_locks import is_locked, unlocked_records
 from utils.navigation import render_home_button
 
@@ -74,7 +75,7 @@ def fetch_aggregated_records():
 # 2. Matplotlib Precision Pairs Matrix Engine (High-Res Ready)
 # -----------------------------------------------------------------------------
 def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Add base-10 log-transformed crowd and peak density metrics when available."""
+    """Add base-10 log-transformed crowd and highest density metrics when available."""
     normalized_columns = {
         str(column).strip().lower().replace(" ", "_"): column
         for column in df.columns
@@ -153,7 +154,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
     plt.subplots_adjust(wspace=0.15, hspace=0.15)
 
     clean_labels = [
-        col.replace("isovist_", "").replace("_", " ").title()
+        crowd_metric_label(col.replace("isovist_", ""))
         for col in selected_cols
     ]
 
@@ -778,13 +779,16 @@ else:
         st.dataframe(
             df_global[
                 list(dict.fromkeys(log_density_preview_columns + log_density_metrics))
-            ].head(20),
+            ]
+            .head(20)
+            .rename(columns={column: crowd_metric_label(column) for column in df_global.columns}),
             use_container_width=True,
         )
     else:
         st.warning(
             "Log-density values could not be calculated. "
-            f"Available metric columns: {', '.join(map(str, df_global.columns))}"
+            "Available metric columns: "
+            + ", ".join(crowd_metric_label(column) for column in df_global.columns)
         )
 
     dataset_count = (
@@ -830,13 +834,22 @@ else:
             st.caption(
                 "Log-transformed metrics use log10(density); non-positive or missing values are blank. "
                 "Available: "
-                + ", ".join(available_log_density_metrics)
+                + ", ".join(
+                    crowd_metric_label(metric)
+                    for metric in available_log_density_metrics
+                )
             )
         if missing_log_density_metrics:
             st.warning(
                 "These log metrics are listed in Crowd metrics but have no matching source values: "
-                + ", ".join(missing_log_density_metrics)
-                + f". Available columns: {', '.join(map(str, df_global.columns))}"
+                + ", ".join(
+                    crowd_metric_label(metric)
+                    for metric in missing_log_density_metrics
+                )
+                + ". Available columns: "
+                + ", ".join(
+                    crowd_metric_label(column) for column in df_global.columns
+                )
             )
         default_crowd_selection = [
             metric
@@ -860,6 +873,7 @@ else:
                 options=crowd_metrics,
                 default=default_crowd_selection,
                 key="global_crowd_filter_v4",
+                format_func=crowd_metric_label,
             )
             vga_selection = st.multiselect(
                 "VGA metrics",
@@ -922,7 +936,7 @@ else:
             )
 
             clean_options = {
-                col.replace("isovist_", "").replace("_", " ").title(): col
+                crowd_metric_label(col.replace("isovist_", "")): col
                 for col in selected_metrics
             }
 
@@ -972,6 +986,10 @@ else:
                             metric, selected_metrics[metric_index:]
                         ] = np.nan
 
+                    triangle_corr_display = triangle_corr.rename(
+                        index=crowd_metric_label,
+                        columns=crowd_metric_label,
+                    )
                     st.caption(
                         "Each mall-and-date combination contributes one within-group Pearson correlation per pair, "
                         "regardless of how many upload batches contain that combination. "
@@ -979,7 +997,7 @@ else:
                         "pairs with fewer than 3 complete observations or no variation in a batch are excluded."
                     )
                     st.dataframe(
-                        triangle_corr.style.background_gradient(
+                        triangle_corr_display.style.background_gradient(
                             cmap="coolwarm", vmin=-1, vmax=1
                         ).format("{:.3f}", na_rep=""),
                         use_container_width=True,

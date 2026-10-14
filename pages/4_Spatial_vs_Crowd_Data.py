@@ -12,6 +12,7 @@ import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
+from utils.crowd_visuals import crowd_metric_label
 from utils.navigation import render_home_button
 
 # Page Configuration
@@ -196,7 +197,7 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
     plt.subplots_adjust(wspace=0.18, hspace=0.18)
 
     clean_labels = [
-        col.replace("isovist_", "").replace("_", " ").title()
+        crowd_metric_label(col.replace("isovist_", ""))
         for col in selected_cols
     ]
 
@@ -321,6 +322,7 @@ if uploaded_file is not None:
             options=all_numeric_cols,
             default=st.session_state["selected_metrics"],
             key="metric_selector",
+            format_func=crowd_metric_label,
         )
 
         st.sidebar.markdown("---")
@@ -420,8 +422,12 @@ if uploaded_file is not None:
                 st.pyplot(fig)
 
                 with st.expander("View Numerical Pearson Correlation Matrix Table"):
+                    display_corr_df = corr_df.rename(
+                        index=crowd_metric_label,
+                        columns=crowd_metric_label,
+                    )
                     st.dataframe(
-                        corr_df.style.background_gradient(
+                        display_corr_df.style.background_gradient(
                             cmap="coolwarm", vmin=-1, vmax=1
                         ).format("{:.3f}")
                     )
@@ -431,7 +437,10 @@ if uploaded_file is not None:
                 )
 
             if st.checkbox("Show full dataset table"):
-                st.dataframe(df_nodes)
+                display_columns = {
+                    column: crowd_metric_label(column) for column in df_nodes.columns
+                }
+                st.dataframe(df_nodes.rename(columns=display_columns))
 
             # -----------------------------------------------------------------
             # 4. Cloud Upload Section (Targeted Omission & Metadata Packaging)

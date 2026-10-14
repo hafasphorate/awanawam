@@ -24,6 +24,11 @@ from sklearn.preprocessing import StandardScaler
 from utils.navigation import render_home_button
 from utils.plotly_floorplan import configure_floorplan_figure
 from utils.dataset_locks import unlocked_records
+from utils.crowd_visuals import (
+    add_deviation_rays,
+    add_direction_arrows,
+    crowd_metric_label,
+)
 from utils.density_visuals import (
     DENSITY_COLORSCALE,
     DENSITY_SCALE_MAX,
@@ -293,6 +298,7 @@ def render_interactive_floorplan(
 def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
     """Renders VGA metric heatmap with original CAD floorplan wall lines underlaid."""
     fig = go.Figure()
+    metric_label = crowd_metric_label(metric_column)
 
     # 1. Underlay Wall Lines
     wall_x, wall_y = [], []
@@ -324,17 +330,17 @@ def render_vga_heatmap_with_underlay(df, metric_column, wall_lines):
                 color=df[metric_column],
                 colorscale="Viridis",
                 showscale=True,
-                colorbar=dict(title=metric_column),
+                colorbar=dict(title=metric_label),
                 opacity=0.9,
             ),
-            text=[f"{metric_column}: {v}" for v in df[metric_column]],
+            text=[f"{metric_label}: {v}" for v in df[metric_column]],
             hoverinfo="x+y+text",
             name="VGA Data",
         )
     )
 
     fig.update_layout(
-        title=dict(text=f"Spatial Map: {metric_column}", x=0.01),
+        title=dict(text=f"Spatial Map: {metric_label}", x=0.01),
         template="plotly_dark",
         xaxis=dict(
             title="X (mm)",
@@ -986,6 +992,33 @@ def extract_vga_rows(data):
     return rows, [LineString(coords) for coords in walls]
 
 
+def spine_settings_from_metadata(metadata):
+    """Read spine settings while accepting both current and legacy session metadata."""
+    if not isinstance(metadata, dict):
+        metadata = {}
+    try:
+        bearing = metadata.get("spine_bearing_from_north")
+        if bearing is None and metadata.get("spine_angle_from_horizontal") is not None:
+            bearing = (
+                90.0 - float(metadata["spine_angle_from_horizontal"])
+            ) % 360
+        bearing = float(bearing)
+        if not np.isfinite(bearing):
+            raise ValueError("Spine bearing must be finite.")
+        bearing %= 360
+    except (TypeError, ValueError):
+        bearing = 0.0
+    metric_units = metadata.get("metric_units", {})
+    if not isinstance(metric_units, dict):
+        metric_units = {}
+    orientation = metadata.get(
+        "direction_orientation", metric_units.get("direction_orientation")
+    )
+    if orientation not in ("Clockwise", "Anti-clockwise"):
+        orientation = "Clockwise"
+    return bearing, orientation
+
+
 def projection_png(projected_df, density_column, walls):
     """Render the projected density map without requiring Plotly's image engine."""
     figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
@@ -1047,15 +1080,38 @@ def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_
                 continue
             values = target_values[nearest_indices][valid]
             selected_distances = nearest_distances[valid]
+            target_name = target.lower()
+            is_angular_metric = any(
+                word in target_name for word in ("direction", "heading", "bearing")
+            ) or "degrees_from_spine" in target_name
             if np.any(selected_distances == 0):
-                projections[target][source_index] = float(values[selected_distances == 0][0])
+                exact_value = float(values[selected_distances == 0][0])
+                projections[target][source_index] = (
+                    exact_value % 360 if is_angular_metric else exact_value
+                )
                 standard_deviations[target][source_index] = 0.0
                 continue
             weights = 1.0 / selected_distances
-            mean = np.average(values, weights=weights)
+            if is_angular_metric:
+                radians = np.radians(values)
+                mean = float(
+                    np.degrees(
+                        np.arctan2(
+                            np.average(np.sin(radians), weights=weights),
+                            np.average(np.cos(radians), weights=weights),
+                        )
+                    )
+                    % 360
+                )
+                if np.isclose(mean, 360.0):
+                    mean = 0.0
+                deviations = (values - mean + 180) % 360 - 180
+            else:
+                mean = np.average(values, weights=weights)
+                deviations = values - mean
             projections[target][source_index] = float(mean)
             standard_deviations[target][source_index] = float(
-                np.sqrt(np.average((values - mean) ** 2, weights=weights))
+                np.sqrt(np.average(deviations ** 2, weights=weights))
             )
 
     return projections, standard_deviations, neighbor_count
@@ -1067,12 +1123,17 @@ def render_projection_tab():
     projection_upload = st.file_uploader("Upload previous VGA results (JSON)", type=["json"], key="projection_json_uploader")
     source_df = st.session_state.get("vga_df")
     source_walls = st.session_state.get("wall_lines", [])
+    source_metadata = st.session_state.get("vga_source_metadata", {})
 
     if projection_upload is not None:
         try:
             imported = json.load(projection_upload)
             rows, imported_walls = extract_vga_rows(imported)
             source_df = pd.DataFrame(rows)
+            if isinstance(imported, dict):
+                source_metadata = imported.get("metadata", {})
+                if not isinstance(source_metadata, dict):
+                    source_metadata = {}
             if imported_walls:
                 source_walls = imported_walls
             st.success(f"Loaded {len(source_df)} VGA points from `{projection_upload.name}`.")
@@ -1109,14 +1170,81 @@ def render_projection_tab():
         for column in vga_columns
         if column in historical_df.columns and pd.to_numeric(historical_df[column], errors="coerce").notna().any()
     ]
-    crowd_columns = [column for column in historical_df.select_dtypes(include=np.number).columns if any(word in column.lower() for word in ("crowd", "density", "people", "pedestrian", "count", "volume"))]
+    crowd_metric_words = (
+        "crowd",
+        "density",
+        "people",
+        "person",
+        "pedestrian",
+        "count",
+        "volume",
+        "speed",
+        "velocity",
+        "direction",
+        "heading",
+        "bearing",
+        "deviation",
+        "occupancy",
+        "flow",
+        "spine",
+    )
+    crowd_columns = [
+        column
+        for column in historical_df.select_dtypes(include=np.number).columns
+        if column not in shared_vga_columns
+        and any(word in column.lower() for word in crowd_metric_words)
+    ]
     if len(shared_vga_columns) < 10 or not crowd_columns:
         st.warning("The uploaded VGA data and Supabase data must share at least 10 numeric VGA metrics and contain crowd metrics.")
         return
 
-    selected_targets = st.multiselect("Crowd metrics to project", crowd_columns, default=[column for column in crowd_columns if "density" in column.lower()] or crowd_columns[:1], key="projection_targets")
+    selected_targets = st.multiselect(
+        "Crowd and movement metrics to predict",
+        crowd_columns,
+        default=crowd_columns,
+        key="projection_targets",
+    )
     if not selected_targets:
         return
+
+    direction_targets = [
+        target
+        for target in selected_targets
+        if any(word in target.lower() for word in ("direction", "heading", "bearing"))
+        or "degrees_from_spine" in target.lower()
+    ]
+    deviation_targets = [
+        target
+        for target in selected_targets
+        if "deviation" in target.lower() and "spine" in target.lower()
+    ]
+    spine_bearing_from_north, stored_orientation = spine_settings_from_metadata(
+        source_metadata
+    )
+    if direction_targets or deviation_targets:
+        st.markdown("#### Spine reference for direction previews")
+        spine_col, orientation_col = st.columns(2)
+        with spine_col:
+            spine_bearing_from_north = st.number_input(
+                "Spine bearing from north (degrees)",
+                min_value=0.0,
+                max_value=359.999,
+                value=float(spine_bearing_from_north),
+                step=1.0,
+                key="projection_spine_bearing",
+                help="Prefilled from uploaded session metadata when available.",
+            )
+        with orientation_col:
+            direction_orientation = st.radio(
+                "Direction angle convention",
+                options=["Clockwise", "Anti-clockwise"],
+                index=0 if stored_orientation == "Clockwise" else 1,
+                horizontal=True,
+                key="projection_direction_orientation",
+                help="These settings convert spine-relative values back to floorplan arrows.",
+            )
+    else:
+        direction_orientation = stored_orientation
 
     feature_columns = shared_vga_columns[:10]
     projections, standard_deviations, neighbor_count = project_crowd_metrics_knn(
@@ -1151,7 +1279,9 @@ def render_projection_tab():
     st.dataframe(
         pd.DataFrame(
             {
-                "Crowd metric": list(projections),
+                "Crowd metric": [
+                    crowd_metric_label(metric) for metric in projections
+                ],
                 "Method": "Inverse-distance weighted mean ± 1 standard deviation",
             }
         ),
@@ -1211,6 +1341,145 @@ def render_projection_tab():
         st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
     else:
         st.info("No historical density column was found, so the >3 people / m² map cannot be calculated.")
+
+    x_differences = np.diff(np.sort(projected_df["x"].dropna().unique()))
+    y_differences = np.diff(np.sort(projected_df["y"].dropna().unique()))
+    spacing_candidates = [
+        float(np.median(differences[differences > 0]))
+        for differences in (x_differences, y_differences)
+        if np.any(differences > 0)
+    ]
+    vector_length = min(spacing_candidates) * 0.35 if spacing_candidates else 1.0
+
+    for target in direction_targets:
+        projected_direction = f"projected_{target}"
+        fig_direction = go.Figure()
+        for line in source_walls:
+            x_values, y_values = line.xy
+            fig_direction.add_trace(
+                go.Scatter(
+                    x=list(x_values),
+                    y=list(y_values),
+                    mode="lines",
+                    line=dict(color="#666"),
+                    showlegend=False,
+                )
+            )
+        fig_direction.add_trace(
+            go.Scatter(
+                x=projected_df["x"],
+                y=projected_df["y"],
+                mode="markers",
+                marker=dict(
+                    size=9,
+                    color=projected_df[projected_direction],
+                    colorscale="twilight",
+                    cmin=0,
+                    cmax=360,
+                    showscale=True,
+                    colorbar=dict(title="degrees from spine"),
+                ),
+                customdata=projected_df[
+                    [f"{projected_direction}_std"]
+                ].to_numpy(),
+                hovertemplate=(
+                    "x=%{x}<br>y=%{y}<br>predicted direction=%{marker.color:.2f}°"
+                    "<br>weighted standard deviation=%{customdata[0]:.2f}°"
+                    "<extra></extra>"
+                ),
+                name="Predicted direction",
+            )
+        )
+        add_direction_arrows(
+            fig_direction,
+            projected_df["x"],
+            projected_df["y"],
+            projected_df[projected_direction],
+            spine_bearing_from_north,
+            clockwise=direction_orientation == "Clockwise",
+            standard_deviations=projected_df[f"{projected_direction}_std"],
+            base_length=vector_length,
+        )
+        fig_direction.update_layout(
+            title=f"Predicted {crowd_metric_label(target)} with uncertainty-scaled arrows",
+            template="plotly_dark",
+            height=620,
+            xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
+            yaxis=dict(title="Y (mm)"),
+        )
+        configure_floorplan_figure(fig_direction)
+        st.plotly_chart(fig_direction, use_container_width=True)
+        st.caption(
+            "Arrow direction uses the spine bearing and selected clockwise/anti-clockwise convention. "
+            "Higher direction standard deviation produces shorter, more transparent arrows."
+        )
+
+    for target in deviation_targets:
+        projected_deviation = f"projected_{target}"
+        fig_deviation = go.Figure()
+        for line in source_walls:
+            x_values, y_values = line.xy
+            fig_deviation.add_trace(
+                go.Scatter(
+                    x=list(x_values),
+                    y=list(y_values),
+                    mode="lines",
+                    line=dict(color="#666"),
+                    showlegend=False,
+                )
+            )
+        fig_deviation.add_trace(
+            go.Scatter(
+                x=projected_df["x"],
+                y=projected_df["y"],
+                mode="markers",
+                marker=dict(
+                    size=9,
+                    color=projected_df[projected_deviation],
+                    colorscale=[
+                        [0.0, "#ffffff"],
+                        [0.25, "#fff7bc"],
+                        [0.5, "#fec44f"],
+                        [0.75, "#d95f0e"],
+                        [1.0, "#8c2d04"],
+                    ],
+                    cmin=0,
+                    cmax=90,
+                    showscale=True,
+                    colorbar=dict(title="deviation angle (°)"),
+                ),
+                customdata=projected_df[
+                    [f"{projected_deviation}_std"]
+                ].to_numpy(),
+                hovertemplate=(
+                    "x=%{x}<br>y=%{y}<br>predicted deviation=%{marker.color:.2f}°"
+                    "<br>weighted standard deviation=%{customdata[0]:.2f}°"
+                    "<extra></extra>"
+                ),
+                name="Predicted deviation",
+            )
+        )
+        add_deviation_rays(
+            fig_deviation,
+            projected_df["x"],
+            projected_df["y"],
+            projected_df[projected_deviation],
+            spine_bearing_from_north,
+            length=vector_length,
+        )
+        fig_deviation.update_layout(
+            title=f"Predicted {crowd_metric_label(target)} with four rays per node",
+            template="plotly_dark",
+            height=620,
+            xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
+            yaxis=dict(title="Y (mm)"),
+        )
+        configure_floorplan_figure(fig_deviation)
+        st.plotly_chart(fig_deviation, use_container_width=True)
+        st.caption(
+            "Four rays show both directions along the undirected spine and both "
+            "deviation angles (0–90°) from it."
+        )
     serialized_walls = [list(line.coords) for line in source_walls]
     crowd_projection_export = {
         "metadata": {
@@ -1220,6 +1489,8 @@ def render_projection_tab():
             "historical_neighbor_count_per_node": neighbor_count,
             "historical_node_count": len(historical_df),
             "projected_crowd_metrics": list(projections),
+            "spine_bearing_from_north": float(spine_bearing_from_north),
+            "direction_orientation": direction_orientation,
         },
         "summary": {
             "total_grid_node_count": len(projected_df),
@@ -1269,6 +1540,7 @@ def render_analysis_tab():
             st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
             session_metadata = session_data.get("metadata")
             session_metadata = session_metadata if isinstance(session_metadata, dict) else {}
+            st.session_state["vga_source_metadata"] = session_metadata
             analysis_settings = session_metadata.get("analysis_settings", {})
             if isinstance(analysis_settings, dict) and analysis_settings.get("grid_size_mm") is not None:
                 st.session_state["vga_grid_spacing"] = analysis_settings["grid_size_mm"]
@@ -1293,6 +1565,7 @@ def render_analysis_tab():
             st.stop()
     else:
         # Process raw CAD files (DXF or DWG)
+        st.session_state.pop("vga_source_metadata", None)
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
@@ -1481,12 +1754,78 @@ def render_analysis_tab():
         available_metrics = [c for c in df.columns if c not in ["x", "y"]]
 
         if available_metrics:
-            selected_metric = st.selectbox("Select Metric to Render:", available_metrics)
+            selected_metric = st.selectbox(
+                "Select Metric to Render:",
+                available_metrics,
+                format_func=crowd_metric_label,
+            )
+            metric_name = selected_metric.lower()
+            is_direction_metric = (
+                any(
+                    word in metric_name
+                    for word in ("direction", "heading", "bearing")
+                )
+                or "degrees_from_spine" in metric_name
+            ) and "deviation" not in metric_name
+            is_deviation_metric = (
+                "deviation" in metric_name and "spine" in metric_name
+            )
+            if is_direction_metric or is_deviation_metric:
+                map_bearing, map_orientation = spine_settings_from_metadata(
+                    st.session_state.get("vga_source_metadata", {})
+                )
+                bearing_col, orientation_col = st.columns(2)
+                with bearing_col:
+                    map_bearing = st.number_input(
+                        "Spine bearing from north (degrees)",
+                        min_value=0.0,
+                        max_value=359.999,
+                        value=float(map_bearing),
+                        step=1.0,
+                        key="vga_map_spine_bearing",
+                    )
+                with orientation_col:
+                    map_orientation = st.radio(
+                        "Direction angle convention",
+                        ["Clockwise", "Anti-clockwise"],
+                        index=0 if map_orientation == "Clockwise" else 1,
+                        horizontal=True,
+                        key="vga_map_direction_orientation",
+                    )
 
             if selected_metric in df.columns and "wall_lines" in st.session_state:
                 fig_heatmap = render_vga_heatmap_with_underlay(
                     df, selected_metric, st.session_state["wall_lines"]
                 )
+                x_differences = np.diff(np.sort(df["x"].dropna().unique()))
+                y_differences = np.diff(np.sort(df["y"].dropna().unique()))
+                spacing_candidates = [
+                    float(np.median(differences[differences > 0]))
+                    for differences in (x_differences, y_differences)
+                    if np.any(differences > 0)
+                ]
+                vector_length = (
+                    min(spacing_candidates) * 0.35 if spacing_candidates else 1.0
+                )
+                if is_direction_metric:
+                    add_direction_arrows(
+                        fig_heatmap,
+                        df["x"],
+                        df["y"],
+                        pd.to_numeric(df[selected_metric], errors="coerce"),
+                        map_bearing,
+                        clockwise=map_orientation == "Clockwise",
+                        base_length=vector_length,
+                    )
+                elif is_deviation_metric:
+                    add_deviation_rays(
+                        fig_heatmap,
+                        df["x"],
+                        df["y"],
+                        pd.to_numeric(df[selected_metric], errors="coerce"),
+                        map_bearing,
+                        length=vector_length,
+                    )
                 st.plotly_chart(fig_heatmap, use_container_width=True)
                 render_png_download(fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png")
 
