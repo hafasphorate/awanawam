@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
-from utils.correlation_metrics import fisher_average_batch_correlations
 from utils.crowd_visuals import crowd_metric_label
 from utils.dataset_locks import is_locked, unlocked_records
 from utils.navigation import render_home_button
@@ -148,6 +147,58 @@ def collapse_metrics_by_mall(
         mall_means = values.groupby(mall_groups, sort=False).transform("mean")
         collapsed[column] = values - mall_means
     return collapsed
+
+
+def collapse_outcome_by_mall(
+    df: pd.DataFrame,
+    predictor_column: str,
+    outcome_column: str,
+    mall_column: str = "location",
+) -> pd.DataFrame:
+    """Center only the outcome within each mall, leaving the predictor unchanged."""
+    if mall_column not in df.columns:
+        raise ValueError(f"Mall metadata column `{mall_column}` is unavailable.")
+
+    collapsed = df[[predictor_column, outcome_column, mall_column]].copy()
+    collapsed[predictor_column] = pd.to_numeric(
+        collapsed[predictor_column], errors="coerce"
+    )
+    collapsed[outcome_column] = pd.to_numeric(
+        collapsed[outcome_column], errors="coerce"
+    )
+    collapsed = collapsed.loc[collapsed[mall_column].notna()].copy()
+    if collapsed.empty:
+        raise ValueError("No records have mall metadata for data collapse.")
+
+    outcome_values = collapsed[outcome_column]
+    outcome_means = outcome_values.groupby(
+        collapsed[mall_column], sort=False
+    ).transform("mean")
+    collapsed[outcome_column] = outcome_values - outcome_means
+    return collapsed
+
+
+def directional_mall_collapsed_pearson(
+    df: pd.DataFrame,
+    metric_columns: list[str],
+    mall_column: str = "location",
+) -> pd.DataFrame:
+    """Calculate pooled directional Pearson values with each outcome mall-centered."""
+    correlations = pd.DataFrame(
+        np.nan, index=metric_columns, columns=metric_columns, dtype=float
+    )
+    for outcome in metric_columns:
+        correlations.loc[outcome, outcome] = 1.0
+        for predictor in metric_columns:
+            if predictor == outcome:
+                continue
+            collapsed_pair = collapse_outcome_by_mall(
+                df, predictor, outcome, mall_column
+            )
+            correlations.loc[outcome, predictor] = collapsed_pair[
+                predictor
+            ].corr(collapsed_pair[outcome], method="pearson")
+    return correlations
 
 
 def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 100):
@@ -389,9 +440,9 @@ def _render_pair_statistics(p_r: float, s_rho: float, k_tau: float):
 def render_pair_focused_inspector(
     df: pd.DataFrame, col_x: str, col_y: str, mall_col: str = "location"
 ):
-    """Compare the mall-colored raw pair with its within-mall collapsed relationship."""
-    clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
-    clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
+    """Compare raw and directional mall-collapsed pair relationships."""
+    clean_x = crowd_metric_label(col_x.replace("isovist_", ""))
+    clean_y = crowd_metric_label(col_y.replace("isovist_", ""))
     if mall_col not in df.columns:
         st.warning("Mall labels are unavailable; the focused pair cannot be collapsed by mall.")
         return
@@ -420,7 +471,9 @@ def render_pair_focused_inspector(
                 """
             )
 
-    collapsed_source = collapse_metrics_by_mall(df, [col_x, col_y], mall_col)
+    collapsed_source = collapse_outcome_by_mall(
+        df, col_x, col_y, mall_col
+    )
     collapsed_df, collapsed_p, collapsed_s, collapsed_k = _pair_correlation_values(
         collapsed_source, col_x, col_y
     )
@@ -430,9 +483,10 @@ def render_pair_focused_inspector(
     st.markdown("---")
     collapsed_plot, collapsed_stats = st.columns([1.6, 1])
     with collapsed_plot:
-        st.markdown("##### Mall-Collapsed Pair Scatter Analysis")
+        st.markdown("##### Directional Mall-Collapsed Pair Analysis")
         st.caption(
-            "Each point is centered by subtracting its mall’s mean for each metric."
+            f"X ({clean_x}) remains raw; Y ({clean_y}) is centered by subtracting "
+            "its mall’s mean. Swapping X and Y gives a separately calculated association."
         )
         st.plotly_chart(
             _pair_scatter_figure(
@@ -441,12 +495,12 @@ def render_pair_focused_inspector(
                 col_y,
                 clean_x,
                 clean_y,
-                "Within-mall centered data",
+                "Mall-centered outcome vs raw predictor",
             ),
             use_container_width=True,
         )
     with collapsed_stats:
-        st.markdown("##### Statistical Relationship Comparison (collapsed)")
+        st.markdown("##### Statistical Relationship Comparison (directional)")
         _render_pair_statistics(collapsed_p, collapsed_s, collapsed_k)
 
 
@@ -463,7 +517,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
     )
 
     clean_options = {
-        col.replace("isovist_", "").replace("_", " ").title(): col
+        crowd_metric_label(col.replace("isovist_", "")): col
         for col in numeric_cols
     }
 
@@ -646,7 +700,7 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
     )
 
     clean_options = {
-        col.replace("isovist_", "").replace("_", " ").title(): col
+        crowd_metric_label(col.replace("isovist_", "")): col
         for col in numeric_cols
     }
     labels = list(clean_options.keys())
@@ -1042,9 +1096,9 @@ else:
 
                 if collapsed_analysis_df is not None:
                     st.caption(
-                        "Drivers, mediation, and all-date Pearson analyses use mall-collapsed metrics "
-                        "(each metric minus its mean within that mall). Global spatial analysis remains "
-                        "on original values; the focused inspector shows both raw and collapsed views."
+                        "Drivers and mediation use metrics centered within each mall. Global spatial "
+                        "analysis remains on original values; the focused inspector and directional "
+                        "Pearson table center the outcome within mall while leaving the predictor raw."
                     )
                     render_multivariate_regression(
                         collapsed_analysis_df, selected_metrics
@@ -1053,44 +1107,28 @@ else:
                         collapsed_analysis_df, selected_metrics
                     )
 
-                    with st.expander("View Mall-and-Date-Averaged Pearson Correlations"):
-                        group_columns = ["location", "date"]
-                        if all(column in analysis_db_df.columns for column in group_columns):
-                            correlation_data = collapsed_analysis_df.copy()
-                            correlation_data["date"] = analysis_db_df.loc[
-                                collapsed_analysis_df.index, "date"
-                            ].to_numpy()
-                            agg_corr = fisher_average_batch_correlations(
-                                correlation_data,
-                                selected_metrics,
-                                batch_column=group_columns,
-                            )
-                            triangle_corr = agg_corr.copy()
-                            for metric_index, metric in enumerate(selected_metrics):
-                                triangle_corr.loc[
-                                    metric, selected_metrics[metric_index:]
-                                ] = np.nan
-
-                            triangle_corr_display = triangle_corr.rename(
-                                index=crowd_metric_label,
-                                columns=crowd_metric_label,
-                            )
-                            st.caption(
-                                "Metrics are first centered within each mall to remove between-mall offsets. "
-                                "Each mall-and-date group then contributes one within-group Pearson correlation "
-                                "per pair; coefficients are averaged equally using Fisher z-transformation. "
-                                "Pairs with fewer than 3 complete observations or no variation in a group are excluded."
-                            )
-                            st.dataframe(
-                                triangle_corr_display.style.background_gradient(
-                                    cmap="coolwarm", vmin=-1, vmax=1
-                                ).format("{:.3f}", na_rep=""),
-                                use_container_width=True,
-                            )
-                        else:
-                            st.info(
-                                "Mall-and-date-averaged correlations are unavailable because date metadata is missing."
-                            )
+                    with st.expander("View All-Date Directional Pearson Associations"):
+                        directional_corr = directional_mall_collapsed_pearson(
+                            analysis_with_mall,
+                            selected_metrics,
+                        )
+                        directional_corr_display = directional_corr.rename(
+                            index=crowd_metric_label,
+                            columns=crowd_metric_label,
+                        )
+                        st.caption(
+                            "Uses all selected dates pooled together. For each cell, the row metric is treated "
+                            "as the outcome and centered by its mall mean; the column metric remains the raw "
+                            "predictor. The opposite cell recalculates the reversed direction, so the matrix "
+                            "is intentionally directional and need not be symmetric. Values match the "
+                            "focused inspector’s mall-collapsed Pearson result for the same ordered pair."
+                        )
+                        st.dataframe(
+                            directional_corr_display.style.background_gradient(
+                                cmap="coolwarm", vmin=-1, vmax=1
+                            ).format("{:.3f}", na_rep="—"),
+                            use_container_width=True,
+                        )
             else:
                 st.info(
                     "Drivers analysis, mediation analysis, and mall-collapsed Pearson correlations require mall/location metadata."
