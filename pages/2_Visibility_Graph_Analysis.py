@@ -416,21 +416,36 @@ def render_cluster_map(df, wall_lines, selected_group=None, spine_result=None):
     return fig
 
 
-def calculate_cluster_spine(cluster_df, count_df=None):
-    """Calculate the long-axis spine and side counts for the largest cell region."""
-    points = cluster_df[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
+def connected_grid_zones(points, grid_df=None):
+    """Return edge-connected grid zones ranked by size and cell-based compactness."""
+    points = points[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
     if points.empty:
         raise ValueError("The selected group has no usable x/y cells.")
 
-    x_values = np.sort(points["x"].unique())
-    y_values = np.sort(points["y"].unique())
-    x_steps = np.diff(x_values)
-    y_steps = np.diff(y_values)
-    x_step = float(np.min(x_steps[x_steps > 0])) if np.any(x_steps > 0) else 1.0
-    y_step = float(np.min(y_steps[y_steps > 0])) if np.any(y_steps > 0) else 1.0
-    x_lookup = {round(value / x_step): value for value in x_values}
-    y_lookup = {round(value / y_step): value for value in y_values}
-    point_keys = {(round(row.x / x_step), round(row.y / y_step)) for row in points.itertuples()}
+    grid_points = (grid_df if grid_df is not None else points)[["x", "y"]].apply(
+        pd.to_numeric, errors="coerce"
+    ).dropna().drop_duplicates()
+    if grid_points.empty:
+        grid_points = points
+    grid_x_steps = np.diff(np.sort(grid_points["x"].unique()))
+    grid_y_steps = np.diff(np.sort(grid_points["y"].unique()))
+    usable_x_steps = grid_x_steps[grid_x_steps > 0]
+    usable_y_steps = grid_y_steps[grid_y_steps > 0]
+    fallback_step = min(
+        [float(np.min(steps)) for steps in (usable_x_steps, usable_y_steps) if len(steps)]
+        or [1.0]
+    )
+    x_step = float(np.min(usable_x_steps)) if len(usable_x_steps) else fallback_step
+    y_step = float(np.min(usable_y_steps)) if len(usable_y_steps) else fallback_step
+    x_origin, y_origin = float(grid_points["x"].min()), float(grid_points["y"].min())
+    point_lookup = {
+        (
+            round((float(row.x) - x_origin) / x_step),
+            round((float(row.y) - y_origin) / y_step),
+        ): (float(row.x), float(row.y))
+        for row in points.itertuples()
+    }
+    point_keys = set(point_lookup)
 
     components = []
     remaining = set(point_keys)
@@ -440,20 +455,71 @@ def calculate_cluster_spine(cluster_df, count_df=None):
         stack = [seed]
         while stack:
             current_x, current_y = stack.pop()
-            for offset_x in (-1, 0, 1):
-                for offset_y in (-1, 0, 1):
-                    neighbor = (current_x + offset_x, current_y + offset_y)
-                    if neighbor in remaining:
-                        remaining.remove(neighbor)
-                        component.add(neighbor)
-                        stack.append(neighbor)
+            for neighbor in (
+                (current_x - 1, current_y),
+                (current_x + 1, current_y),
+                (current_x, current_y - 1),
+                (current_x, current_y + 1),
+            ):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    component.add(neighbor)
+                    stack.append(neighbor)
         components.append(component)
 
-    largest_component = max(components, key=len)
-    selected_points = np.array(
-        [[x_lookup[x_key], y_lookup[y_key]] for x_key, y_key in largest_component],
-        dtype=float,
+    zones = []
+    cluster_center = points[["x", "y"]].mean().to_numpy(dtype=float)
+    for component in components:
+        exposed_edges = sum(
+            (y_step if offset_x else x_step)
+            for x_key, y_key in component
+            for offset_x, offset_y in (
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+            )
+            if (x_key + offset_x, y_key + offset_y) not in component
+        )
+        area = len(component) * x_step * y_step
+        compactness = 4 * math.pi * area / (exposed_edges**2)
+        selected_points = np.array([point_lookup[key] for key in sorted(component)], dtype=float)
+        zone_center = selected_points.mean(axis=0)
+        center_distance = float(np.linalg.norm(zone_center - cluster_center))
+        zones.append(
+            {
+                "component": component,
+                "selected_points": selected_points,
+                "size": len(component),
+                "compactness": compactness,
+                "score": len(component) * compactness,
+                "center_distance": center_distance,
+                "tie_break": min(component),
+            }
+        )
+
+    selected_zone = max(
+        zones,
+        key=lambda zone: (
+            zone["score"],
+            zone["size"],
+            zone["compactness"],
+            -zone["center_distance"],
+            tuple(-value for value in zone["tie_break"]),
+        ),
     )
+    return zones, selected_zone, x_step, y_step
+
+
+def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None):
+    """Calculate a spine through the most substantial, compact connected zone."""
+    points = cluster_df[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
+    if points.empty:
+        raise ValueError("The selected group has no usable x/y cells.")
+
+    zones, selected_zone, x_step, y_step = connected_grid_zones(points, grid_df)
+    selected_points = selected_zone["selected_points"]
+    largest_component_size = max(zone["size"] for zone in zones)
     point_geometry = MultiPoint(selected_points.tolist())
     minimum_rectangle = point_geometry.minimum_rotated_rectangle
     if minimum_rectangle.geom_type != "Polygon":
@@ -521,12 +587,15 @@ def calculate_cluster_spine(cluster_df, count_df=None):
         "end_boundary_count": end_boundary_count,
         "point_zero_count": point_zero_count,
         "point_one_count": point_one_count,
-        "component_count": len(components),
-        "largest_component_size": len(largest_component),
+        "component_count": len(zones),
+        "largest_component_size": largest_component_size,
+        "selected_zone_size": selected_zone["size"],
+        "selected_zone_compactness": selected_zone["compactness"],
+        "selected_zone_score": selected_zone["score"],
     }
 
 
-def add_cluster_spine_overlay(fig, spine_result):
+def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="#FFD166"):
     """Overlay the selected cluster bounding box, spine, and side counts."""
     if not spine_result or not {
         "rectangle_coords",
@@ -559,8 +628,11 @@ def add_cluster_spine_overlay(fig, spine_result):
                 y=side_points[:, 1],
                 mode="markers",
                 marker=dict(size=12, color=side_colors[side_label], line=dict(color="#111111", width=1)),
-                name=side_label,
-                hovertemplate=f"{side_label}<br>x=%{{x}}<br>y=%{{y}}<extra></extra>",
+                name=f"{group_label} {side_label}" if group_label else side_label,
+                hovertemplate=(
+                    f"{group_label + ' ' if group_label else ''}{side_label}"
+                    "<br>x=%{x}<br>y=%{y}<extra></extra>"
+                ),
             )
         )
     point_zero = spine_result.get("point_zero", spine_result["spine_start"])
@@ -570,11 +642,11 @@ def add_cluster_spine_overlay(fig, spine_result):
             x=[point_zero[0], point_one[0]],
             y=[point_zero[1], point_one[1]],
             mode="lines+markers+text",
-            line=dict(color="#FFD166", width=6),
-            marker=dict(size=12, color="#FFD166"),
+            line=dict(color=spine_color, width=6),
+            marker=dict(size=12, color=spine_color),
             text=["Point 0", "Point 1"],
             textposition="top center",
-            name="Calculated spine",
+            name=f"{group_label} spine" if group_label else "Calculated spine",
             hovertemplate=f"Spine angle: {spine_result['spine_angle']:.1f}°<extra></extra>",
         )
     )
@@ -584,7 +656,11 @@ def add_cluster_spine_overlay(fig, spine_result):
         xanchor="left",
         yanchor="top",
         text=(
+            f"{group_label + '<br>' if group_label else ''}"
             f"Spine angle: {spine_result['spine_angle']:.1f}°<br>"
+            f"Selected zone: {spine_result['selected_zone_size']} cells | "
+            f"Compactness: {spine_result['selected_zone_compactness']:.3f} | "
+            f"Score: {spine_result['selected_zone_score']:.3f}<br>"
             f"Side 1 (red): {spine_result['positive_count']} cells | "
             f"Side 2 (blue): {spine_result['negative_count']} cells<br>"
             f"On spine: {spine_result['boundary_count']} cells<br>"
@@ -597,6 +673,28 @@ def add_cluster_spine_overlay(fig, spine_result):
         borderwidth=1,
         font=dict(color="#FFFFFF"),
     )
+    return fig
+
+
+def render_cluster_spine_map(df, wall_lines, selected_group, spine_results):
+    """Render the cluster map with the automatically selected zone and spine(s)."""
+    fig = render_cluster_map(df, wall_lines, selected_group)
+    palette = px.colors.qualitative.Safe
+    for group, spine_result in sorted(spine_results.items()):
+        group_label = f"Group {group}"
+        spine_color = (
+            palette[(group - 1) % len(palette)]
+            if selected_group is None
+            else "#FFD166"
+        )
+        add_cluster_spine_overlay(
+            fig,
+            spine_result,
+            group_label=group_label,
+            spine_color=spine_color,
+        )
+    group_title = "All Groups" if selected_group is None else f"Group {selected_group}"
+    fig.update_layout(title=f"Automatic Spine Calculation — {group_title}")
     return fig
 
 
@@ -895,46 +993,60 @@ def render_clustering_tab():
     group_options = ["All groups"] + [f"Group {group}" for group in sorted(clustered_df["cluster"].unique())]
     selected_group_label = st.selectbox("View group", group_options)
     selected_group = None if selected_group_label == "All groups" else int(selected_group_label.split()[-1])
-    spine_result = None
-    if selected_group is not None:
-        selected_cluster_df = clustered_df[clustered_df["cluster"] == selected_group]
-        if st.session_state.get("cluster_spine_group") != selected_group:
-            st.session_state.pop("cluster_spine_result", None)
-            st.session_state["cluster_spine_group"] = selected_group
-        if st.button("Calculate spine", type="primary", key="calculate_cluster_spine"):
-            try:
-                st.session_state["cluster_spine_result"] = calculate_cluster_spine(
-                    selected_cluster_df,
-                    clustered_df,
-                )
-            except ValueError as error:
-                st.warning(str(error))
-        spine_result = st.session_state.get("cluster_spine_result")
-        if spine_result is not None and not {
-            "rectangle_coords",
-            "count_points",
-            "side_labels",
-            "point_zero",
-            "point_one",
-            "point_zero_count",
-            "point_one_count",
-        }.issubset(spine_result):
-            st.session_state.pop("cluster_spine_result", None)
-            spine_result = None
-    else:
-        st.session_state.pop("cluster_spine_result", None)
-        st.session_state.pop("cluster_spine_group", None)
-        st.info("Select one group to calculate its largest-region spine.")
 
-    cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group, spine_result)
+    cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group)
     st.plotly_chart(cluster_fig, use_container_width=True)
     render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
     st.download_button(
         "Download colour-coded plan as PNG",
-        data=cluster_map_png(clustered_df, clustering_walls, selected_group, spine_result),
+        data=cluster_map_png(clustered_df, clustering_walls, selected_group),
         file_name="vga_metric_clusters.png",
         mime="image/png",
     )
+
+    groups_to_process = (
+        sorted(int(group) for group in clustered_df["cluster"].unique())
+        if selected_group is None
+        else [selected_group]
+    )
+    spine_results = {}
+    spine_summaries = []
+    for group in groups_to_process:
+        group_df = clustered_df[clustered_df["cluster"] == group]
+        try:
+            spine_result = calculate_cluster_spine(group_df, group_df, clustered_df)
+            spine_results[group] = spine_result
+            spine_summaries.append(
+                f"Group {group}: {spine_result['selected_zone_size']} cells, "
+                f"compactness {spine_result['selected_zone_compactness']:.3f}, "
+                f"score {spine_result['selected_zone_score']:.3f}"
+            )
+        except ValueError as error:
+            st.warning(f"Could not calculate a spine for Group {group}: {error}")
+
+    st.subheader("Automatic Spine Calculation")
+    st.caption(
+        "Edge-adjacent VGA cells form separate zones. The selected zone maximizes "
+        "cell count × compactness (4π × cell area ÷ perimeter²); ties favor the zone "
+        "closest to that group's center."
+    )
+    if spine_results:
+        st.caption("Selected zones: " + " | ".join(spine_summaries))
+        spine_fig = render_cluster_spine_map(
+            clustered_df,
+            clustering_walls,
+            selected_group,
+            spine_results,
+        )
+        st.plotly_chart(spine_fig, use_container_width=True)
+        render_png_download(
+            spine_fig,
+            "Download spine calculation as PNG",
+            "vga_cluster_spine.png",
+            "clustering_spine_png",
+        )
+    else:
+        st.info("No group contains enough usable VGA points to calculate a spine.")
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
