@@ -1446,59 +1446,6 @@ def render_projection_tab():
         hide_index=True,
     )
 
-    density_column = next((column for column in projections if "density" in column.lower()), None)
-    if density_column:
-        projected_density = f"projected_{density_column}"
-        high_density = projected_df[projected_density] > 3
-        st.metric("Projected areas above 3 people / m²", f"{int(high_density.sum())} / {len(projected_df)} nodes")
-        st.caption("Nodes above 3 people / m² are the mid-to-high density areas.")
-        map_fig = go.Figure()
-        for line in source_walls:
-            x_values, y_values = line.xy
-            map_fig.add_trace(go.Scatter(x=list(x_values), y=list(y_values), mode="lines", line=dict(color="#666"), showlegend=False))
-        map_fig.add_trace(
-            go.Scatter(
-                x=projected_df["x"].tolist(),
-                y=projected_df["y"].tolist(),
-                mode="markers",
-                marker=dict(
-                    size=9,
-                    color=projected_df[projected_density].tolist(),
-                    colorscale=DENSITY_COLORSCALE,
-                    cmin=0,
-                    cmax=DENSITY_SCALE_MAX,
-                    showscale=True,
-                    colorbar=dict(title="people / m²", tick0=0, dtick=1),
-                ),
-                customdata=projected_df[
-                    [
-                        f"{projected_density}_std",
-                        f"{projected_density}_lowest",
-                        f"{projected_density}_highest",
-                    ]
-                ].to_numpy(),
-                text=np.where(
-                    high_density,
-                    "MID-HIGH DENSITY (>3 people/m²)",
-                    "Below threshold",
-                ).tolist(),
-                hovertemplate=(
-                    "x=%{x}<br>y=%{y}"
-                    "<br>mean density=%{marker.color:.2f}"
-                    "<br>weighted standard deviation=%{customdata[0]:.2f}"
-                    "<br>predicted range=%{customdata[1]:.2f}–%{customdata[2]:.2f} people/m²"
-                    "<br>%{text}<extra></extra>"
-                ),
-                name="Projected density",
-            )
-        )
-        map_fig.update_layout(title="Projected Crowd Density", template="plotly_dark", height=620, xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1), yaxis=dict(title="Y (mm)"))
-        configure_floorplan_figure(map_fig)
-        st.plotly_chart(map_fig, use_container_width=True)
-        st.download_button("Download projected density map as PNG", projection_png(projected_df, projected_density, source_walls), "projected_crowd_density.png", "image/png", key="projection_map_png")
-    else:
-        st.info("No historical density column was found, so the >3 people / m² map cannot be calculated.")
-
     x_differences = np.diff(np.sort(projected_df["x"].dropna().unique()))
     y_differences = np.diff(np.sort(projected_df["y"].dropna().unique()))
     spacing_candidates = [
@@ -1508,135 +1455,189 @@ def render_projection_tab():
     ]
     vector_length = min(spacing_candidates) * 0.35 if spacing_candidates else 1.0
 
-    for target in direction_targets:
-        projected_direction = f"projected_{target}"
-        fig_direction = go.Figure()
-        for line in source_walls:
-            x_values, y_values = line.xy
-            fig_direction.add_trace(
-                go.Scatter(
-                    x=list(x_values),
-                    y=list(y_values),
-                    mode="lines",
-                    line=dict(color="#666"),
-                    showlegend=False,
-                )
-            )
-        fig_direction.add_trace(
-            go.Scatter(
-                x=projected_df["x"],
-                y=projected_df["y"],
-                mode="markers",
-                marker=dict(
-                    size=9,
-                    color=projected_df[projected_direction],
-                    colorscale="twilight",
-                    cmin=0,
-                    cmax=360,
-                    showscale=True,
-                    colorbar=dict(title="degrees from spine"),
-                ),
-                customdata=projected_df[
-                    [f"{projected_direction}_std"]
-                ].to_numpy(),
-                hovertemplate=(
-                    "x=%{x}<br>y=%{y}<br>predicted direction=%{marker.color:.2f}°"
-                    "<br>weighted standard deviation=%{customdata[0]:.2f}°"
-                    "<extra></extra>"
-                ),
-                name="Predicted direction",
-            )
-        )
-        add_direction_arrows(
-            fig_direction,
-            projected_df["x"],
-            projected_df["y"],
-            projected_df[projected_direction],
-            spine_bearing_from_north,
-            clockwise=direction_orientation == "Clockwise",
-            standard_deviations=projected_df[f"{projected_direction}_std"],
-            base_length=vector_length,
-        )
-        fig_direction.update_layout(
-            title=f"Predicted {crowd_metric_label(target)} with uncertainty-scaled arrows",
-            template="plotly_dark",
-            height=620,
-            xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
-            yaxis=dict(title="Y (mm)"),
-        )
-        configure_floorplan_figure(fig_direction)
-        st.plotly_chart(fig_direction, use_container_width=True)
-        st.caption(
-            "Arrow direction uses the spine bearing and selected clockwise/anti-clockwise convention. "
-            "Higher direction standard deviation produces shorter, more transparent arrows."
-        )
+    metric_tabs = st.tabs([crowd_metric_label(target) for target in projections])
+    for metric_index, (target, metric_tab) in enumerate(zip(projections, metric_tabs)):
+        with metric_tab:
+            projected_metric = f"projected_{target}"
+            metric_name = target.lower()
+            is_density_metric = "density" in metric_name
+            is_direction_metric = target in direction_targets
+            is_deviation_metric = target in deviation_targets
+            values = projected_df[projected_metric]
+            standard_deviation = projected_df[f"{projected_metric}_std"]
+            low_values = projected_df[f"{projected_metric}_lowest"]
+            high_values = projected_df[f"{projected_metric}_highest"]
+            metric_label = crowd_metric_label(target)
+            high_density = values > 3 if is_density_metric else None
 
-    for target in deviation_targets:
-        projected_deviation = f"projected_{target}"
-        fig_deviation = go.Figure()
-        for line in source_walls:
-            x_values, y_values = line.xy
-            fig_deviation.add_trace(
+            if is_density_metric:
+                st.metric(
+                    "Projected areas above 3 people / m²",
+                    f"{int(high_density.sum())} / {len(projected_df)} nodes",
+                )
+                st.caption("Nodes above 3 people / m² are the mid-to-high density areas.")
+
+            fig_metric = go.Figure()
+            for line in source_walls:
+                x_values, y_values = line.xy
+                fig_metric.add_trace(
+                    go.Scatter(
+                        x=list(x_values),
+                        y=list(y_values),
+                        mode="lines",
+                        line=dict(color="#666"),
+                        showlegend=False,
+                    )
+                )
+
+            if is_density_metric:
+                colorscale = DENSITY_COLORSCALE
+                color_min, color_max = 0, DENSITY_SCALE_MAX
+                colorbar_title = "people / m²"
+            elif is_direction_metric:
+                colorscale = "twilight"
+                color_min, color_max = 0, 360
+                colorbar_title = "degrees from spine"
+            elif is_deviation_metric:
+                colorscale = [
+                    [0.0, "#ffffff"],
+                    [0.25, "#fff7bc"],
+                    [0.5, "#fec44f"],
+                    [0.75, "#d95f0e"],
+                    [1.0, "#8c2d04"],
+                ]
+                color_min, color_max = 0, 90
+                colorbar_title = "deviation angle (°)"
+            else:
+                colorscale = "Viridis"
+                color_min = float(values.min())
+                color_max = float(values.max())
+                if color_min == color_max:
+                    color_max = color_min + 1
+                colorbar_title = metric_label
+
+            hover_value_label = (
+                "predicted density"
+                if is_density_metric
+                else "predicted direction"
+                if is_direction_metric
+                else "predicted deviation"
+                if is_deviation_metric
+                else f"predicted {metric_label}"
+            )
+            hover_template = (
+                f"x=%{{x}}<br>y=%{{y}}<br>{hover_value_label}=%{{marker.color:.2f}}"
+                "<br>weighted standard deviation=%{customdata[0]:.2f}"
+                "<br>predicted range=%{customdata[1]:.2f}–%{customdata[2]:.2f}"
+                "<extra></extra>"
+            )
+            marker_options = dict(
+                size=9,
+                color=values.tolist(),
+                colorscale=colorscale,
+                cmin=color_min,
+                cmax=color_max,
+                showscale=True,
+                colorbar=dict(
+                    title=colorbar_title,
+                    tick0=0 if is_density_metric else None,
+                    dtick=1 if is_density_metric else None,
+                ),
+            )
+            fig_metric.add_trace(
                 go.Scatter(
-                    x=list(x_values),
-                    y=list(y_values),
-                    mode="lines",
-                    line=dict(color="#666"),
-                    showlegend=False,
+                    x=projected_df["x"],
+                    y=projected_df["y"],
+                    mode="markers",
+                    marker=marker_options,
+                    customdata=pd.concat(
+                        [standard_deviation, low_values, high_values], axis=1
+                    ).to_numpy(),
+                    text=(
+                        np.where(
+                            high_density,
+                            "MID-HIGH DENSITY (>3 people/m²)",
+                            "Below threshold",
+                        ).tolist()
+                        if is_density_metric
+                        else None
+                    ),
+                    hovertemplate=(
+                        hover_template.replace(
+                            "<extra></extra>",
+                            "<br>%{text}<extra></extra>",
+                        )
+                        if is_density_metric
+                        else hover_template
+                    ),
+                    name=f"Predicted {metric_label}",
                 )
             )
-        fig_deviation.add_trace(
-            go.Scatter(
-                x=projected_df["x"],
-                y=projected_df["y"],
-                mode="markers",
-                marker=dict(
-                    size=9,
-                    color=projected_df[projected_deviation],
-                    colorscale=[
-                        [0.0, "#ffffff"],
-                        [0.25, "#fff7bc"],
-                        [0.5, "#fec44f"],
-                        [0.75, "#d95f0e"],
-                        [1.0, "#8c2d04"],
-                    ],
-                    cmin=0,
-                    cmax=90,
-                    showscale=True,
-                    colorbar=dict(title="deviation angle (°)"),
+
+            if is_direction_metric:
+                add_direction_arrows(
+                    fig_metric,
+                    projected_df["x"],
+                    projected_df["y"],
+                    values,
+                    spine_bearing_from_north,
+                    clockwise=direction_orientation == "Clockwise",
+                    standard_deviations=standard_deviation,
+                    base_length=vector_length,
+                )
+            elif is_deviation_metric:
+                add_deviation_rays(
+                    fig_metric,
+                    projected_df["x"],
+                    projected_df["y"],
+                    values,
+                    spine_bearing_from_north,
+                    length=vector_length,
+                )
+
+            fig_metric.update_layout(
+                title=(
+                    f"Predicted {metric_label} with uncertainty-scaled arrows"
+                    if is_direction_metric
+                    else f"Predicted {metric_label} with four rays per node"
+                    if is_deviation_metric
+                    else f"Projected {metric_label}"
                 ),
-                customdata=projected_df[
-                    [f"{projected_deviation}_std"]
-                ].to_numpy(),
-                hovertemplate=(
-                    "x=%{x}<br>y=%{y}<br>predicted deviation=%{marker.color:.2f}°"
-                    "<br>weighted standard deviation=%{customdata[0]:.2f}°"
-                    "<extra></extra>"
-                ),
-                name="Predicted deviation",
+                template="plotly_dark",
+                height=620,
+                xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
+                yaxis=dict(title="Y (mm)"),
             )
-        )
-        add_deviation_rays(
-            fig_deviation,
-            projected_df["x"],
-            projected_df["y"],
-            projected_df[projected_deviation],
-            spine_bearing_from_north,
-            length=vector_length,
-        )
-        fig_deviation.update_layout(
-            title=f"Predicted {crowd_metric_label(target)} with four rays per node",
-            template="plotly_dark",
-            height=620,
-            xaxis=dict(title="X (mm)", scaleanchor="y", scaleratio=1),
-            yaxis=dict(title="Y (mm)"),
-        )
-        configure_floorplan_figure(fig_deviation)
-        st.plotly_chart(fig_deviation, use_container_width=True)
-        st.caption(
-            "Four rays show both directions along the undirected spine and both "
-            "deviation angles (0–90°) from it."
-        )
+            configure_floorplan_figure(fig_metric)
+            st.plotly_chart(fig_metric, use_container_width=True)
+
+            if is_direction_metric:
+                st.caption(
+                    "Arrow direction uses the spine bearing and selected clockwise/anti-clockwise convention. "
+                    "Higher direction standard deviation produces shorter, more transparent arrows."
+                )
+            elif is_deviation_metric:
+                st.caption(
+                    "Four rays show both directions along the undirected spine and both "
+                    "deviation angles (0–90°) from it."
+                )
+
+            render_png_download(
+                fig_metric,
+                f"Download projected {metric_label} map as PNG",
+                f"projected_metric_{metric_index}.png",
+                f"projection_metric_png_{metric_index}",
+            )
+
+            if is_density_metric:
+                st.download_button(
+                    "Download projected density map as PNG",
+                    projection_png(projected_df, projected_metric, source_walls),
+                    "projected_crowd_density.png",
+                    "image/png",
+                    key="projection_map_png",
+                )
+
     serialized_walls = [list(line.coords) for line in source_walls]
     crowd_projection_export = {
         "metadata": {
