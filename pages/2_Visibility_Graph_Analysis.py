@@ -1383,7 +1383,7 @@ def render_projection_tab():
         spine_col, orientation_col = st.columns(2)
         with spine_col:
             spine_bearing_from_north = st.number_input(
-                "Spine bearing from north (degrees)",
+                "Spine direction from north (degrees)",
                 min_value=0.0,
                 max_value=359.999,
                 value=float(spine_bearing_from_north),
@@ -1393,8 +1393,13 @@ def render_projection_tab():
             )
         with orientation_col:
             direction_orientation = st.radio(
-                "Direction angle convention",
+                "Spine direction convention (C/AC)",
                 options=["Clockwise", "Anti-clockwise"],
+                format_func=lambda orientation: (
+                    "Clockwise (C)"
+                    if orientation == "Clockwise"
+                    else "AntiClockwise (AC)"
+                ),
                 index=0 if stored_orientation == "Clockwise" else 1,
                 horizontal=True,
                 key="projection_direction_orientation",
@@ -1404,23 +1409,69 @@ def render_projection_tab():
         direction_orientation = stored_orientation
 
     feature_columns = shared_vga_columns[:10]
-    projections, standard_deviations, neighbor_count = project_crowd_metrics_knn(
-        source_df,
-        historical_df,
-        feature_columns,
-        selected_targets,
-    )
-    usable_projections = {}
-    usable_standard_deviations = {}
-    for target, values in projections.items():
-        mean_values = pd.Series(values, index=source_df.index).clip(lower=0)
-        if pd.notna(mean_values).any():
-            usable_projections[target] = mean_values
-            usable_standard_deviations[target] = pd.Series(
-                standard_deviations[target], index=source_df.index
-            )
-    projections = usable_projections
-    standard_deviations = usable_standard_deviations
+    source_hash = hashlib.sha256(
+        pd.util.hash_pandas_object(source_df, index=True).values.tobytes()
+    ).hexdigest()
+    history_hash = hashlib.sha256(
+        pd.util.hash_pandas_object(
+            historical_df[feature_columns + selected_targets], index=True
+        ).values.tobytes()
+    ).hexdigest()
+    projection_signature = hashlib.sha256(
+        json.dumps(
+            {
+                "source": source_hash,
+                "history": history_hash,
+                "targets": selected_targets,
+                "features": feature_columns,
+                "spine_bearing_from_north": float(spine_bearing_from_north),
+                "direction_orientation": direction_orientation,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    if st.button(
+        "Generate Crowd Projection",
+        type="primary",
+        key="generate_crowd_projection",
+    ):
+        projections, standard_deviations, neighbor_count = project_crowd_metrics_knn(
+            source_df,
+            historical_df,
+            feature_columns,
+            selected_targets,
+        )
+        usable_projections = {}
+        usable_standard_deviations = {}
+        for target, values in projections.items():
+            mean_values = pd.Series(values, index=source_df.index).clip(lower=0)
+            if pd.notna(mean_values).any():
+                usable_projections[target] = mean_values
+                usable_standard_deviations[target] = pd.Series(
+                    standard_deviations[target], index=source_df.index
+                )
+        st.session_state["crowd_projection_result"] = {
+            "signature": projection_signature,
+            "projections": usable_projections,
+            "standard_deviations": usable_standard_deviations,
+            "neighbor_count": neighbor_count,
+        }
+
+    projection_result = st.session_state.get("crowd_projection_result")
+    if (
+        projection_result is None
+        or projection_result.get("signature") != projection_signature
+    ):
+        st.info(
+            "Choose the crowd metrics and spine settings, then press "
+            "**Generate Crowd Projection** to calculate predictions."
+        )
+        return
+
+    projections = projection_result["projections"]
+    standard_deviations = projection_result["standard_deviations"]
+    neighbor_count = projection_result["neighbor_count"]
     if not projections:
         st.warning("No selected crowd metrics have usable historical values in the closest VGA neighbors.")
         return
