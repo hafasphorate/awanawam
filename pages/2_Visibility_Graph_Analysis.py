@@ -581,16 +581,7 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
     ).dropna().to_numpy(dtype=float)
     spine_start = (center_x - direction_x * edge_length / 2, center_y - direction_y * edge_length / 2)
     spine_end = (center_x + direction_x * edge_length / 2, center_y + direction_y * edge_length / 2)
-    side_values = direction_x * (count_points[:, 1] - center_y) - direction_y * (count_points[:, 0] - center_x)
     side_tolerance = max(min(x_step, y_step) * 0.05, 1e-9)
-    side_labels = np.where(
-        side_values > side_tolerance,
-        "Side 1",
-        np.where(side_values < -side_tolerance, "Side 2", "On spine"),
-    )
-    positive_count = int(np.sum(side_labels == "Side 1"))
-    negative_count = int(np.sum(side_labels == "Side 2"))
-    boundary_count = int(np.sum(side_labels == "On spine"))
     end_values = direction_x * (count_points[:, 0] - center_x) + direction_y * (count_points[:, 1] - center_y)
     end_positive_count = int(np.sum(end_values > side_tolerance))
     end_negative_count = int(np.sum(end_values < -side_tolerance))
@@ -601,6 +592,30 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
     else:
         point_zero, point_one = spine_start, spine_end
         point_zero_count, point_one_count = end_negative_count, end_positive_count
+    spine_direction_length = math.hypot(
+        point_one[0] - point_zero[0],
+        point_one[1] - point_zero[1],
+    )
+    spine_direction_x = (point_one[0] - point_zero[0]) / spine_direction_length
+    spine_direction_y = (point_one[1] - point_zero[1]) / spine_direction_length
+    side_values = (
+        spine_direction_x * (count_points[:, 1] - center_y)
+        - spine_direction_y * (count_points[:, 0] - center_x)
+    )
+    side_labels = np.where(
+        side_values > side_tolerance,
+        "Side 1",
+        np.where(side_values < -side_tolerance, "Side 2", "On spine"),
+    )
+    positive_count = int(np.sum(side_labels == "Side 1"))
+    negative_count = int(np.sum(side_labels == "Side 2"))
+    boundary_count = int(np.sum(side_labels == "On spine"))
+    if negative_count > positive_count:
+        spine_direction = "C"
+    elif positive_count > negative_count:
+        spine_direction = "AC"
+    else:
+        spine_direction = "Balanced"
     spine_angle = math.degrees(
         math.atan2(point_one[1] - point_zero[1], point_one[0] - point_zero[0])
     ) % 360
@@ -612,6 +627,9 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
         "point_zero": point_zero,
         "point_one": point_one,
         "spine_angle": spine_angle,
+        "spine_direction": spine_direction,
+        "clockwise_side_count": negative_count,
+        "anticlockwise_side_count": positive_count,
         "count_points": count_points,
         "side_labels": side_labels,
         "positive_count": positive_count,
@@ -1056,6 +1074,16 @@ def render_clustering_tab():
             spine_result,
         )
         st.plotly_chart(spine_fig, use_container_width=True)
+        angle_col, direction_col = st.columns(2)
+        angle_col.metric("Spine angle", f"{spine_result['spine_angle']:.1f}°")
+        direction_col.metric(
+            "Spine Direction",
+            spine_result["spine_direction"],
+            help=(
+                "C = Clockwise (more cells to the right of Point 0 → Point 1); "
+                "AC = AntiClockwise (more cells to the left). Equal counts are Balanced."
+            ),
+        )
         render_png_download(
             spine_fig,
             "Download spine calculation as PNG",
