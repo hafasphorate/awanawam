@@ -511,13 +511,48 @@ def connected_grid_zones(points, grid_df=None):
     return zones, selected_zone, x_step, y_step
 
 
-def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None):
-    """Calculate a spine through the most substantial, compact connected zone."""
+def select_mall_spine_zone(clustered_df):
+    """Select one connected zone globally across every K-Means group."""
+    all_points = clustered_df[["x", "y"]].apply(
+        pd.to_numeric, errors="coerce"
+    ).dropna().drop_duplicates()
+    if all_points.empty:
+        raise ValueError("There are no usable VGA x/y cells for spine selection.")
+
+    mall_center = all_points[["x", "y"]].mean().to_numpy(dtype=float)
+    candidates = []
+    for group in sorted(clustered_df["cluster"].dropna().unique()):
+        group_df = clustered_df[clustered_df["cluster"] == group]
+        zones, _, _, _ = connected_grid_zones(group_df, clustered_df)
+        for zone in zones:
+            zone_center = zone["selected_points"].mean(axis=0)
+            zone["mall_center_distance"] = float(np.linalg.norm(zone_center - mall_center))
+            candidates.append((int(group), zone))
+
+    if not candidates:
+        raise ValueError("No connected VGA zones are available for spine selection.")
+
+    return max(
+        candidates,
+        key=lambda candidate: (
+            candidate[1]["score"],
+            candidate[1]["size"],
+            candidate[1]["compactness"],
+            -candidate[1]["mall_center_distance"],
+            -candidate[0],
+            tuple(-value for value in candidate[1]["tie_break"]),
+        ),
+    )
+
+
+def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zone=None):
+    """Calculate the spine through the globally selected connected zone."""
     points = cluster_df[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
     if points.empty:
         raise ValueError("The selected group has no usable x/y cells.")
 
-    zones, selected_zone, x_step, y_step = connected_grid_zones(points, grid_df)
+    zones, local_zone, x_step, y_step = connected_grid_zones(points, grid_df)
+    selected_zone = selected_zone or local_zone
     selected_points = selected_zone["selected_points"]
     largest_component_size = max(zone["size"] for zone in zones)
     point_geometry = MultiPoint(selected_points.tolist())
@@ -676,25 +711,15 @@ def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="
     return fig
 
 
-def render_cluster_spine_map(df, wall_lines, selected_group, spine_results):
-    """Render the cluster map with the automatically selected zone and spine(s)."""
-    fig = render_cluster_map(df, wall_lines, selected_group)
-    palette = px.colors.qualitative.Safe
-    for group, spine_result in sorted(spine_results.items()):
-        group_label = f"Group {group}"
-        spine_color = (
-            palette[(group - 1) % len(palette)]
-            if selected_group is None
-            else "#FFD166"
-        )
-        add_cluster_spine_overlay(
-            fig,
-            spine_result,
-            group_label=group_label,
-            spine_color=spine_color,
-        )
-    group_title = "All Groups" if selected_group is None else f"Group {selected_group}"
-    fig.update_layout(title=f"Automatic Spine Calculation — {group_title}")
+def render_cluster_spine_map(df, wall_lines, selected_group, spine_result):
+    """Render all groups and overlay the single mall-wide selected zone and spine."""
+    fig = render_cluster_map(df, wall_lines)
+    add_cluster_spine_overlay(
+        fig,
+        spine_result,
+        group_label=f"Winning zone — Group {selected_group}",
+    )
+    fig.update_layout(title="Mall-wide Automatic Spine Calculation")
     return fig
 
 
@@ -1004,39 +1029,31 @@ def render_clustering_tab():
         mime="image/png",
     )
 
-    groups_to_process = (
-        sorted(int(group) for group in clustered_df["cluster"].unique())
-        if selected_group is None
-        else [selected_group]
-    )
-    spine_results = {}
-    spine_summaries = []
-    for group in groups_to_process:
-        group_df = clustered_df[clustered_df["cluster"] == group]
-        try:
-            spine_result = calculate_cluster_spine(group_df, group_df, clustered_df)
-            spine_results[group] = spine_result
-            spine_summaries.append(
-                f"Group {group}: {spine_result['selected_zone_size']} cells, "
-                f"compactness {spine_result['selected_zone_compactness']:.3f}, "
-                f"score {spine_result['selected_zone_score']:.3f}"
-            )
-        except ValueError as error:
-            st.warning(f"Could not calculate a spine for Group {group}: {error}")
-
     st.subheader("Automatic Spine Calculation")
     st.caption(
-        "Edge-adjacent VGA cells form separate zones. The selected zone maximizes "
-        "cell count × compactness (4π × cell area ÷ perimeter²); ties favor the zone "
-        "closest to that group's center."
+        "Edge-adjacent VGA cells form separate zones across all groups. One zone is "
+        "selected by maximizing cell count × compactness (4π × cell area ÷ perimeter²); "
+        "ties favor the zone closest to the mall center."
     )
-    if spine_results:
-        st.caption("Selected zones: " + " | ".join(spine_summaries))
+    try:
+        winning_group, winning_zone = select_mall_spine_zone(clustered_df)
+        spine_result = calculate_cluster_spine(
+            clustered_df[clustered_df["cluster"] == winning_group],
+            count_df=clustered_df,
+            grid_df=clustered_df,
+            selected_zone=winning_zone,
+        )
+        st.caption(
+            f"Selected zone: Group {winning_group} | "
+            f"{spine_result['selected_zone_size']} cells | "
+            f"compactness {spine_result['selected_zone_compactness']:.3f} | "
+            f"score {spine_result['selected_zone_score']:.3f}"
+        )
         spine_fig = render_cluster_spine_map(
             clustered_df,
             clustering_walls,
-            selected_group,
-            spine_results,
+            winning_group,
+            spine_result,
         )
         st.plotly_chart(spine_fig, use_container_width=True)
         render_png_download(
@@ -1045,8 +1062,8 @@ def render_clustering_tab():
             "vga_cluster_spine.png",
             "clustering_spine_png",
         )
-    else:
-        st.info("No group contains enough usable VGA points to calculate a spine.")
+    except ValueError as error:
+        st.warning(f"Could not calculate a mall-wide spine: {error}")
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
