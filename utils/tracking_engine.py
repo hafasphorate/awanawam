@@ -161,6 +161,9 @@ def extract_frame_from_video(video_file, frame_number: int = 0) -> np.ndarray:
                 os.remove(tmp_path)
             return None
 
+        if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+            cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
+
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         target_frame = min(max(0, frame_number), max(0, total_frames - 1))
 

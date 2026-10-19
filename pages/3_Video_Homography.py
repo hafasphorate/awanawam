@@ -686,35 +686,6 @@ with tab_region:
     import streamlit as st
 
     # ==========================================
-    # 1. HELPER: VIDEO FRAME EXTRACTION
-    # ==========================================
-    def extract_frame_from_video(uploaded_file, frame_number=0):
-        """Extracts a specific frame (RGB) from a Streamlit UploadedFile object using OpenCV."""
-        if uploaded_file is None:
-            return None
-
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
-
-            cap = cv2.VideoCapture(tmp_path)
-            if not cap.isOpened():
-                return None
-
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            ret, frame = cap.read()
-            cap.release()
-
-            if ret and frame is not None:
-                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        except Exception as e:
-            st.error(f"Error reading video frame: {e}")
-
-        return None
-
-
-    # ==========================================
     # 2. SESSION STATE INITIALIZATION
     # ==========================================
     for key, default in [
