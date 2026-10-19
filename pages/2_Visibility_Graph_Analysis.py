@@ -1686,7 +1686,7 @@ def render_projection_tab():
                     projection_png(projected_df, projected_metric, source_walls),
                     "projected_crowd_density.png",
                     "image/png",
-                    key="projection_map_png",
+                    key=f"projection_map_png_{metric_index}",
                 )
 
     serialized_walls = [list(line.coords) for line in source_walls]
