@@ -131,6 +131,25 @@ def add_log_density_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def collapse_metrics_by_mall(
+    df: pd.DataFrame, metric_columns: list[str], mall_column: str = "location"
+) -> pd.DataFrame:
+    """Center selected metrics within each mall to remove between-mall offsets."""
+    if mall_column not in df.columns:
+        raise ValueError(f"Mall metadata column `{mall_column}` is unavailable.")
+
+    collapsed = df.loc[df[mall_column].notna()].copy()
+    if collapsed.empty:
+        raise ValueError("No records have mall metadata for data collapse.")
+
+    mall_groups = collapsed[mall_column]
+    for column in metric_columns:
+        values = pd.to_numeric(collapsed[column], errors="coerce")
+        mall_means = values.groupby(mall_groups, sort=False).transform("mean")
+        collapsed[column] = values - mall_means
+    return collapsed
+
+
 def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 100):
     """
     Recreates the exact visual matrix:
@@ -258,113 +277,177 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
 # -----------------------------------------------------------------------------
 # 3. Focused Pair Inspector (Expanded Graph + Non-Linear Trendlines)
 # -----------------------------------------------------------------------------
-def render_pair_focused_inspector(df: pd.DataFrame, col_x: str, col_y: str):
-    """Large scatter plot with both linear (Pearson) and non-linear/monotonic (Spearman) trendlines."""
-    clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
-    clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
+def _pair_correlation_values(sub_df: pd.DataFrame, col_x: str, col_y: str):
+    """Calculate pairwise linear and rank correlations on the same rows."""
+    pair = sub_df[[col_x, col_y]].apply(pd.to_numeric, errors="coerce").dropna()
+    if len(pair) < 2:
+        return pair, float("nan"), float("nan"), float("nan")
+    return (
+        pair,
+        pair[col_x].corr(pair[col_y], method="pearson"),
+        pair[col_x].corr(pair[col_y], method="spearman"),
+        pair[col_x].corr(pair[col_y], method="kendall"),
+    )
 
-    sub_df = df[[col_x, col_y]].apply(pd.to_numeric, errors="coerce").dropna()
 
-    # Calculate all three correlation metrics
-    p_r = sub_df.corr(method="pearson").iloc[0, 1]
-    s_rho = sub_df.corr(method="spearman").iloc[0, 1]
-    k_tau = sub_df.corr(method="kendall").iloc[0, 1]
-
-    c1, c2 = st.columns([1.6, 1])
-
-    with c1:
-        st.markdown(f"#####  Pair Scatter Analysis: `{clean_y}` vs `{clean_x}`")
-        fig_scatter = go.Figure()
-
-        # Scatter points
-        fig_scatter.add_trace(
+def _pair_scatter_figure(
+    sub_df: pd.DataFrame,
+    col_x: str,
+    col_y: str,
+    clean_x: str,
+    clean_y: str,
+    title: str,
+):
+    fig = go.Figure()
+    mall_labels = (
+        sub_df["_mall_label"]
+        if "_mall_label" in sub_df
+        else pd.Series("All records", index=sub_df.index)
+    )
+    palette = px.colors.qualitative.Safe
+    for index, (mall, mall_df) in enumerate(
+        sub_df.assign(_mall_label=mall_labels).groupby(
+            "_mall_label", sort=True, dropna=False
+        )
+    ):
+        fig.add_trace(
             go.Scatter(
-                x=sub_df[col_x],
-                y=sub_df[col_y],
+                x=mall_df[col_x],
+                y=mall_df[col_y],
                 mode="markers",
-                marker=dict(color="#2b5c8f", opacity=0.5, size=7),
-                name="Data Points",
+                marker=dict(
+                    color=palette[index % len(palette)],
+                    opacity=0.65,
+                    size=7,
+                ),
+                name=str(mall),
             )
         )
 
-        if len(sub_df) > 2:
-            x_vals = sub_df[col_x].values
-            y_vals = sub_df[col_y].values
-            x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
-
-            # 1. Linear OLS Fit (Pearson r)
-            m, b = np.polyfit(x_vals, y_vals, 1)
-            y_linear = m * x_line + b
-
-            fig_scatter.add_trace(
-                go.Scatter(
-                    x=x_line,
-                    y=y_linear,
-                    mode="lines",
-                    line=dict(color="#d73027", width=2.5),
-                    name="Linear Trend (Pearson)",
-                )
+    if len(sub_df) > 2 and sub_df[col_x].nunique() > 1:
+        x_vals = sub_df[col_x].to_numpy()
+        y_vals = sub_df[col_y].to_numpy()
+        x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+        m, b = np.polyfit(x_vals, y_vals, 1)
+        fig.add_trace(
+            go.Scatter(
+                x=x_line,
+                y=m * x_line + b,
+                mode="lines",
+                line=dict(color="#d73027", width=2.5),
+                name="Linear Trend (Pearson)",
             )
-
-            # 2. Polynomial 2nd Degree Curved Fit (Monotonic / Spearman curve alignment)
+        )
+        if sub_df[col_x].nunique() > 2:
             p_coefs = np.polyfit(x_vals, y_vals, 2)
-            p_func = np.poly1d(p_coefs)
-            y_curved = p_func(x_line)
-
-            fig_scatter.add_trace(
+            fig.add_trace(
                 go.Scatter(
                     x=x_line,
-                    y=y_curved,
+                    y=np.poly1d(p_coefs)(x_line),
                     mode="lines",
                     line=dict(color="#2b5c8f", width=2.5, dash="dash"),
                     name="Curved/Monotonic Fit (Spearman/Kendall)",
                 )
             )
 
-        fig_scatter.update_layout(
-            height=480,
-            template=PLOTLY_TEMPLATE,
-            margin=dict(l=20, r=20, t=20, b=20),
-            xaxis_title=clean_x,
-            yaxis_title=clean_y,
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-            ),
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+    fig.update_layout(
+        title=title,
+        height=480,
+        template=PLOTLY_TEMPLATE,
+        margin=dict(l=20, r=20, t=50, b=20),
+        xaxis_title=clean_x,
+        yaxis_title=clean_y,
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+        ),
+    )
+    return fig
 
-    with c2:
-        st.markdown("#####  Statistical Relationship Comparison")
 
-        # Metric Display Cards
-        st.markdown(
-            f"""
-            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                <div style="background: #f8f9fa; border-left: 5px solid #d73027; padding: 12px; flex: 1; border-radius: 4px;">
-                    <span style="font-size: 12px; color: #666;">Pearson (r)</span>
-                    <h2 style="margin:0; color:#111;">{p_r:.3f}</h2>
-                </div>
-                <div style="background: #f8f9fa; border-left: 5px solid #2b5c8f; padding: 12px; flex: 1; border-radius: 4px;">
-                    <span style="font-size: 12px; color: #666;">Spearman (ρ)</span>
-                    <h2 style="margin:0; color:#111;">{s_rho:.3f}</h2>
-                </div>
-                <div style="background: #f8f9fa; border-left: 5px solid #27ae60; padding: 12px; flex: 1; border-radius: 4px;">
-                    <span style="font-size: 12px; color: #666;">Kendall (τ)</span>
-                    <h2 style="margin:0; color:#111;">{k_tau:.3f}</h2>
-                </div>
+def _render_pair_statistics(p_r: float, s_rho: float, k_tau: float):
+    st.markdown(
+        f"""
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <div style="background: #f8f9fa; border-left: 5px solid #d73027; padding: 12px; flex: 1; border-radius: 4px;">
+                <span style="font-size: 12px; color: #666;">Pearson (r)</span>
+                <h2 style="margin:0; color:#111;">{p_r:.3f}</h2>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div style="background: #f8f9fa; border-left: 5px solid #2b5c8f; padding: 12px; flex: 1; border-radius: 4px;">
+                <span style="font-size: 12px; color: #666;">Spearman (ρ)</span>
+                <h2 style="margin:0; color:#111;">{s_rho:.3f}</h2>
+            </div>
+            <div style="background: #f8f9fa; border-left: 5px solid #27ae60; padding: 12px; flex: 1; border-radius: 4px;">
+                <span style="font-size: 12px; color: #666;">Kendall (τ)</span>
+                <h2 style="margin:0; color:#111;">{k_tau:.3f}</h2>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        with st.expander(" Understanding these metrics & trendlines", expanded=True):
+
+def render_pair_focused_inspector(
+    df: pd.DataFrame, col_x: str, col_y: str, mall_col: str = "location"
+):
+    """Compare the mall-colored raw pair with its within-mall collapsed relationship."""
+    clean_x = col_x.replace("isovist_", "").replace("_", " ").title()
+    clean_y = col_y.replace("isovist_", "").replace("_", " ").title()
+    if mall_col not in df.columns:
+        st.warning("Mall labels are unavailable; the focused pair cannot be collapsed by mall.")
+        return
+
+    raw_df, p_r, s_rho, k_tau = _pair_correlation_values(df, col_x, col_y)
+    raw_df["_mall_label"] = (
+        df.loc[raw_df.index, mall_col].fillna("Unknown mall").astype(str)
+    )
+    raw_plot, raw_stats = st.columns([1.6, 1])
+    with raw_plot:
+        st.markdown(f"##### Pair Scatter Analysis: `{clean_y}` vs `{clean_x}`")
+        st.plotly_chart(
+            _pair_scatter_figure(
+                raw_df, col_x, col_y, clean_x, clean_y, "Raw data by mall"
+            ),
+            use_container_width=True,
+        )
+    with raw_stats:
+        st.markdown("##### Statistical Relationship Comparison (raw)")
+        _render_pair_statistics(p_r, s_rho, k_tau)
+        with st.expander("Understanding these metrics & trendlines", expanded=True):
             st.markdown(
                 """
                 * **Red Solid Line — Pearson ($r$):** Fits a straight-line model. Evaluates pure **linear** proportionality.
-                * **Blue Dashed Line — Spearman ($\rho$) & Kendall ($\tau$):** Fits a non-linear polynomial curve to track monotonic trends (data bending smoothly upwards/downwards).
-                * **Comparing metrics:** If Spearman ($\rho$) is higher than Pearson ($r$), the relationship is strong but **curved** rather than strictly straight.
+                * **Blue Dashed Line — Spearman ($\rho$) & Kendall ($\tau$):** Fits a non-linear polynomial curve to track monotonic trends.
                 """
             )
+
+    collapsed_source = collapse_metrics_by_mall(df, [col_x, col_y], mall_col)
+    collapsed_df, collapsed_p, collapsed_s, collapsed_k = _pair_correlation_values(
+        collapsed_source, col_x, col_y
+    )
+    collapsed_df["_mall_label"] = collapsed_source.loc[
+        collapsed_df.index, mall_col
+    ].astype(str)
+    st.markdown("---")
+    collapsed_plot, collapsed_stats = st.columns([1.6, 1])
+    with collapsed_plot:
+        st.markdown("##### Mall-Collapsed Pair Scatter Analysis")
+        st.caption(
+            "Each point is centered by subtracting its mall’s mean for each metric."
+        )
+        st.plotly_chart(
+            _pair_scatter_figure(
+                collapsed_df,
+                col_x,
+                col_y,
+                clean_x,
+                clean_y,
+                "Within-mall centered data",
+            ),
+            use_container_width=True,
+        )
+    with collapsed_stats:
+        st.markdown("##### Statistical Relationship Comparison (collapsed)")
+        _render_pair_statistics(collapsed_p, collapsed_s, collapsed_k)
 
 
 # -----------------------------------------------------------------------------
@@ -759,37 +842,11 @@ else:
     analysis_db_df = active_db_df.iloc[df_global.index].reset_index(drop=True)
     df_global = df_global.reset_index(drop=True)
     log_density_metrics = ["log10_crowd_density", "log10_peak_density"]
-    log_density_preview_columns = [
-        column
-        for column in df_global.columns
-        if "density" in str(column).lower()
-        and not str(column).lower().startswith("log10_")
-    ]
     available_log_density_metrics = [
         metric
         for metric in log_density_metrics
         if df_global[metric].notna().any()
     ]
-    if available_log_density_metrics:
-        st.subheader("Log-Transformed Density Values")
-        st.caption(
-            "Values shown are log10 of each positive density. Zero, negative, or missing "
-            "density values are blank for the log metrics; the original rows remain in other analyses."
-        )
-        st.dataframe(
-            df_global[
-                list(dict.fromkeys(log_density_preview_columns + log_density_metrics))
-            ]
-            .head(20)
-            .rename(columns={column: crowd_metric_label(column) for column in df_global.columns}),
-            use_container_width=True,
-        )
-    else:
-        st.warning(
-            "Log-density values could not be calculated. "
-            "Available metric columns: "
-            + ", ".join(crowd_metric_label(column) for column in df_global.columns)
-        )
 
     dataset_count = (
         active_db_df["upload_batch_id"].nunique()
@@ -905,6 +962,16 @@ else:
         )
 
         if len(selected_metrics) >= 2:
+            analysis_with_mall = df_global.copy()
+            if "location" in analysis_db_df.columns:
+                analysis_with_mall["location"] = analysis_db_df[
+                    "location"
+                ].to_numpy()
+            else:
+                st.warning(
+                    "Mall metadata is unavailable. Mall-collapsed analyses cannot be calculated."
+                )
+
             st.subheader(
                 f"Global Spatial Analysis ({len(selected_metrics)} Metrics)"
             )
@@ -960,52 +1027,74 @@ else:
             if var1 == var2:
                 st.info("Select two different metrics to inspect.")
             else:
-                render_pair_focused_inspector(df_global, var1, var2)
+                render_pair_focused_inspector(
+                    analysis_with_mall, var1, var2
+                )
 
-            # Multivariate Regression Feature Drivers Section
-            render_multivariate_regression(df_global, selected_metrics)
-
-            # Mediation Analysis Section
-            render_mediation_analysis(df_global, selected_metrics)
-
-            # Treat each mall/date combination as one independent correlation group.
-            with st.expander("View Mall-and-Date-Averaged Pearson Correlations"):
-                group_columns = ["location", "date"]
-                if all(column in analysis_db_df.columns for column in group_columns):
-                    correlation_data = df_global.copy()
-                    for column in group_columns:
-                        correlation_data[column] = analysis_db_df[column].to_numpy()
-                    agg_corr = fisher_average_batch_correlations(
-                        correlation_data,
-                        selected_metrics,
-                        batch_column=group_columns,
+            if "location" in analysis_with_mall.columns:
+                try:
+                    collapsed_analysis_df = collapse_metrics_by_mall(
+                        analysis_with_mall, selected_metrics
                     )
-                    triangle_corr = agg_corr.copy()
-                    for metric_index, metric in enumerate(selected_metrics):
-                        triangle_corr.loc[
-                            metric, selected_metrics[metric_index:]
-                        ] = np.nan
+                except ValueError as error:
+                    collapsed_analysis_df = None
+                    st.warning(f"Could not collapse records by mall: {error}")
 
-                    triangle_corr_display = triangle_corr.rename(
-                        index=crowd_metric_label,
-                        columns=crowd_metric_label,
-                    )
+                if collapsed_analysis_df is not None:
                     st.caption(
-                        "Each mall-and-date combination contributes one within-group Pearson correlation per pair, "
-                        "regardless of how many upload batches contain that combination. "
-                        "Coefficients are averaged equally across mall/date groups using Fisher z-transformation; "
-                        "pairs with fewer than 3 complete observations or no variation in a batch are excluded."
+                        "Drivers, mediation, and all-date Pearson analyses use mall-collapsed metrics "
+                        "(each metric minus its mean within that mall). Global spatial analysis remains "
+                        "on original values; the focused inspector shows both raw and collapsed views."
                     )
-                    st.dataframe(
-                        triangle_corr_display.style.background_gradient(
-                            cmap="coolwarm", vmin=-1, vmax=1
-                        ).format("{:.3f}", na_rep=""),
-                        use_container_width=True,
+                    render_multivariate_regression(
+                        collapsed_analysis_df, selected_metrics
                     )
-                else:
-                    st.info(
-                        "Mall-and-date-averaged correlations are unavailable because location or date metadata is missing."
+                    render_mediation_analysis(
+                        collapsed_analysis_df, selected_metrics
                     )
+
+                    with st.expander("View Mall-and-Date-Averaged Pearson Correlations"):
+                        group_columns = ["location", "date"]
+                        if all(column in analysis_db_df.columns for column in group_columns):
+                            correlation_data = collapsed_analysis_df.copy()
+                            correlation_data["date"] = analysis_db_df.loc[
+                                collapsed_analysis_df.index, "date"
+                            ].to_numpy()
+                            agg_corr = fisher_average_batch_correlations(
+                                correlation_data,
+                                selected_metrics,
+                                batch_column=group_columns,
+                            )
+                            triangle_corr = agg_corr.copy()
+                            for metric_index, metric in enumerate(selected_metrics):
+                                triangle_corr.loc[
+                                    metric, selected_metrics[metric_index:]
+                                ] = np.nan
+
+                            triangle_corr_display = triangle_corr.rename(
+                                index=crowd_metric_label,
+                                columns=crowd_metric_label,
+                            )
+                            st.caption(
+                                "Metrics are first centered within each mall to remove between-mall offsets. "
+                                "Each mall-and-date group then contributes one within-group Pearson correlation "
+                                "per pair; coefficients are averaged equally using Fisher z-transformation. "
+                                "Pairs with fewer than 3 complete observations or no variation in a group are excluded."
+                            )
+                            st.dataframe(
+                                triangle_corr_display.style.background_gradient(
+                                    cmap="coolwarm", vmin=-1, vmax=1
+                                ).format("{:.3f}", na_rep=""),
+                                use_container_width=True,
+                            )
+                        else:
+                            st.info(
+                                "Mall-and-date-averaged correlations are unavailable because date metadata is missing."
+                            )
+            else:
+                st.info(
+                    "Drivers analysis, mediation analysis, and mall-collapsed Pearson correlations require mall/location metadata."
+                )
         else:
             st.info("Select at least two metrics across the Crowd and VGA filters, then press **Generate Analysis**.")
 
