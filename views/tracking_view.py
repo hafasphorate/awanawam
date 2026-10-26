@@ -324,6 +324,9 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             tmp_path = tmp_v.name
 
         cap = cv2.VideoCapture(tmp_path)
+        # Match the reference frame's orientation (portrait videos carry rotation metadata)
+        if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
+            cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         curr_frame_idx = 0
@@ -338,6 +341,11 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             if curr_frame_idx % frame_skip != 0:
                 curr_frame_idx += 1
                 continue
+
+            # Fallback if auto-orientation is unsupported: rotate to match reference frame
+            fh, fw = frame.shape[:2]
+            if (fw > fh) != (img_w > img_h):
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
