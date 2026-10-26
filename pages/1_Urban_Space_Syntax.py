@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import io
 import json
+import os
 from shapely.geometry import LineString, mapping, shape
 from shapely.ops import linemerge, substring
 from folium.plugins import Draw
@@ -35,6 +36,10 @@ st.markdown("""
 * **Units:** Bounded dimensionless score from **0.0** (completely isolated / low choice) to **1.0** (maximum spatial movement / high choice). Higher values highlight primary movement trunks in the urban layout.
 """)
 st.write("---")
+
+tab_syntax, tab_gravity = st.tabs(["Space Syntax", "Gravity Model Density"])
+# Tab 1 spans the rest of the page; it is closed explicitly before Tab 2 at the end of the file.
+tab_syntax.__enter__()
 
 # -----------------------------------------------------------------------------
 # 2. Controls & Instant Toggle Configuration
@@ -1040,3 +1045,218 @@ if st.session_state.graph_data is not None:
         mime="image/png",
         key="urban_space_syntax_png_export",
     )
+
+tab_syntax.__exit__(None, None, None)
+
+
+# -----------------------------------------------------------------------------
+# Tab 2: Gravity model of pedestrian density along the Tab 1 desire paths
+# -----------------------------------------------------------------------------
+GEOJSON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+
+
+def load_mass_points(source, weight_field):
+    """Read point features and return a GeoDataFrame with a numeric 'mass' column."""
+    gdf = gpd.read_file(source)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(4326)
+    gdf = gdf.to_crs(4326)
+    gdf = gdf.explode(index_parts=False, ignore_index=True)
+    gdf = gdf[gdf.geometry.notna() & (gdf.geometry.geom_type == "Point")].copy()
+    column = next((c for c in gdf.columns if c.upper() == weight_field.upper()), None)
+    if column is None:
+        raise KeyError(f"Field '{weight_field}' not found. Available: {', '.join(map(str, gdf.columns))}")
+    gdf["mass"] = pd.to_numeric(gdf[column], errors="coerce")
+    gdf = gdf[gdf["mass"].notna() & (gdf["mass"] > 0)].reset_index(drop=True)
+    return gdf
+
+
+def gravity_path_density(mass_gdf, paths, beta, spacing_m, people_per_m2, min_distance_m):
+    """Production-constrained gravity model.
+
+    Each mass i emits P_i = MAX_GFA_i * people_per_m2 people. They are distributed over all
+    sample points s on the paths in proportion to d_is^-beta, so
+    people_s = sum_i P_i * d_is^-beta / sum_s' d_is'^-beta.
+    """
+    utm = mass_gdf.estimate_utm_crs()
+    masses_xy = np.column_stack([
+        mass_gdf.to_crs(utm).geometry.x.to_numpy(), mass_gdf.to_crs(utm).geometry.y.to_numpy()
+    ])
+    projected_paths = gpd.GeoSeries(paths, crs=4326).to_crs(utm)
+
+    rows = []
+    for path_id, (path, projected) in enumerate(zip(paths, projected_paths), start=1):
+        length = float(projected.length)
+        if length <= 0:
+            continue
+        count = max(1, int(np.ceil(length / spacing_m)))
+        step = length / count
+        for k in range(count):
+            fraction = (k + 0.5) / count
+            lonlat = path.interpolate(fraction, normalized=True)
+            xy = projected.interpolate(fraction, normalized=True)
+            rows.append({
+                "path_id": path_id, "offset_m": fraction * length, "segment_length_m": step,
+                "x": xy.x, "y": xy.y, "lon": lonlat.x, "lat": lonlat.y,
+            })
+    samples = pd.DataFrame(rows)
+    if samples.empty:
+        return samples, pd.DataFrame()
+
+    sample_xy = samples[["x", "y"]].to_numpy()
+    distance = np.linalg.norm(masses_xy[:, None, :] - sample_xy[None, :, :], axis=2)
+    attraction = np.maximum(distance, min_distance_m) ** (-beta)
+    share = attraction / attraction.sum(axis=1, keepdims=True)
+    generated = mass_gdf["mass"].to_numpy() * people_per_m2
+    samples["people"] = (generated[:, None] * share).sum(axis=0)
+    samples["density_people_per_m"] = samples["people"] / samples["segment_length_m"]
+
+    summary = samples.groupby("path_id").agg(
+        length_m=("segment_length_m", "sum"),
+        total_people=("people", "sum"),
+        peak_density_people_per_m=("density_people_per_m", "max"),
+    ).reset_index()
+    summary["mean_density_people_per_m"] = summary["total_people"] / summary["length_m"]
+    summary["length_m"] = summary["length_m"].round(1)
+    return samples, summary
+
+
+with tab_gravity:
+    st.subheader("Gravity Model: People Density Along Desire Paths")
+    st.markdown(
+        "Each point is a **mass** weighted by `MAX_GFA`. Its people are distributed over the Tab 1 "
+        "desire paths by the gravity model (spatial interaction theory):"
+    )
+    st.latex(r"T_{is} = P_i \cdot \frac{d_{is}^{-\beta}}{\sum_{s'} d_{is'}^{-\beta}}, \qquad P_i = \text{MAX\_GFA}_i \cdot \rho")
+    st.caption(
+        f"Place your GeoJSON in `{GEOJSON_DIR}` (it will appear in the list below), or upload it directly."
+    )
+
+    os.makedirs(GEOJSON_DIR, exist_ok=True)
+    available_files = sorted(
+        f for f in os.listdir(GEOJSON_DIR) if f.lower().endswith((".geojson", ".json"))
+    )
+    source_col, upload_col = st.columns(2)
+    with source_col:
+        chosen_file = st.selectbox("GeoJSON in data folder", ["-- none --"] + available_files)
+    with upload_col:
+        uploaded_masses = st.file_uploader("...or upload GeoJSON", type=["geojson", "json"], key="gravity_geojson")
+
+    param_cols = st.columns(4)
+    beta = param_cols[0].number_input("Distance decay β", 0.1, 5.0, 2.0, 0.1)
+    people_per_m2 = param_cols[1].number_input("People per m² GFA (ρ)", 0.001, 1.0, 0.05, 0.005, format="%.3f")
+    spacing_m = param_cols[2].number_input("Sample spacing (m)", 1.0, 100.0, 10.0, 1.0)
+    min_distance_m = param_cols[3].number_input("Min. distance (m)", 1.0, 100.0, 10.0, 1.0)
+
+    mass_source = uploaded_masses if uploaded_masses is not None else (
+        os.path.join(GEOJSON_DIR, chosen_file) if chosen_file != "-- none --" else None
+    )
+    mass_gdf = None
+    if mass_source is not None:
+        try:
+            mass_gdf = load_mass_points(mass_source, "MAX_GFA")
+            if mass_gdf.empty:
+                st.warning("No point features with a positive MAX_GFA were found.")
+                mass_gdf = None
+        except Exception as error:
+            st.error(f"Could not read GeoJSON: {error}")
+
+    desire_paths_t2 = list(st.session_state.desire_paths)
+    graph_t2 = st.session_state.graph_data
+    if mass_gdf is None:
+        st.info("Select or upload a GeoJSON of points with a `MAX_GFA` property.")
+    if not desire_paths_t2:
+        st.info("Draw desire paths in the Space Syntax tab first.")
+    if graph_t2 is None:
+        st.info("Run the axial analysis in the Space Syntax tab to show the red high-contrast nodes here.")
+
+    samples = summary = None
+    if mass_gdf is not None and desire_paths_t2:
+        samples, summary = gravity_path_density(
+            mass_gdf, desire_paths_t2, beta, spacing_m, people_per_m2, min_distance_m
+        )
+
+    if mass_gdf is not None or desire_paths_t2 or graph_t2 is not None:
+        if graph_t2 is not None:
+            center = [graph_t2["center_lat"], graph_t2["center_lon"]]
+        elif mass_gdf is not None:
+            center = [mass_gdf.geometry.y.mean(), mass_gdf.geometry.x.mean()]
+        else:
+            center = [desire_paths_t2[0].coords[0][1], desire_paths_t2[0].coords[0][0]]
+        gravity_map = folium.Map(location=center, zoom_start=16, tiles="CartoDB dark_matter")
+
+        if graph_t2 is not None:
+            for _, street in graph_t2["gdf_edges"].iterrows():
+                if street.geometry.geom_type == "LineString":
+                    folium.PolyLine(
+                        locations=[[p[1], p[0]] for p in street.geometry.coords],
+                        color="#35B7FF", weight=2, opacity=0.35,
+                    ).add_to(gravity_map)
+            # Same red nodes as Tab 1
+            for node_id in graph_t2["high_contrast_nodes"]:
+                if node_id in graph_t2["gdf_nodes"].index:
+                    point = graph_t2["gdf_nodes"].loc[node_id].geometry
+                    folium.CircleMarker(
+                        location=[point.y, point.x], radius=6, color="#FF0055",
+                        fill=True, fill_color="#FF0055", fill_opacity=0.4,
+                        popup="High-Contrast Intersection",
+                    ).add_to(gravity_map)
+
+        if mass_gdf is not None:
+            max_mass = float(mass_gdf["mass"].max())
+            min_mass = float(mass_gdf["mass"].min())
+            for _, mass_row in mass_gdf.iterrows():
+                mass_color = mcolors.to_hex(plt.get_cmap("RdYlGn_r")(
+                    (mass_row["mass"] - min_mass) / (max_mass - min_mass + 1e-9)
+                ))
+                folium.CircleMarker(
+                    location=[mass_row.geometry.y, mass_row.geometry.x],
+                    radius=3 + 9 * (mass_row["mass"] / max_mass) ** 0.5,
+                    color=mass_color, weight=1, fill=True, fill_color=mass_color, fill_opacity=0.7,
+                    tooltip=f"MAX_GFA: {mass_row['mass']:,.0f} m²",
+                ).add_to(gravity_map)
+
+        if samples is not None and not samples.empty:
+            d_min = float(samples["density_people_per_m"].min())
+            d_max = float(samples["density_people_per_m"].max())
+            for path_id, group in samples.groupby("path_id"):
+                points = group.sort_values("offset_m")
+                for (_, a), (_, b) in zip(points.iterrows(), points.iloc[1:].iterrows()):
+                    folium.PolyLine(
+                        locations=[[a["lat"], a["lon"]], [b["lat"], b["lon"]]],
+                        color=centrality_color(a["density_people_per_m"], d_min, d_max),
+                        weight=7, opacity=0.95,
+                        tooltip=f"Path {path_id} | {a['density_people_per_m']:.3f} people/m",
+                    ).add_to(gravity_map)
+        else:
+            for index, path in enumerate(desire_paths_t2):
+                folium.PolyLine(
+                    locations=[[p[1], p[0]] for p in path.coords],
+                    color="#FFD166", weight=5, opacity=0.95, tooltip=f"Desire path {index + 1}",
+                ).add_to(gravity_map)
+
+        st_folium(gravity_map, width=1000, height=520, key="gravity_map", returned_objects=[])
+        st.caption(
+            "Mass circles: buildings (size ∝ √MAX_GFA; green = lighter, red = heavier). Red dots: high-contrast intersections from Tab 1. "
+            "Path colour: people density (blue = low, red = high)."
+        )
+
+    if summary is not None and not summary.empty:
+        st.subheader("Density Along Desire Paths")
+        st.dataframe(summary, use_container_width=True)
+        profile = go.Figure()
+        for path_id, group in samples.groupby("path_id"):
+            profile.add_trace(go.Scatter(
+                x=group["offset_m"], y=group["density_people_per_m"],
+                mode="lines", name=f"Path {path_id}",
+            ))
+        profile.update_layout(
+            template="plotly_dark", xaxis_title="Distance along path (m)",
+            yaxis_title="Density (people / m)", height=380,
+        )
+        st.plotly_chart(profile, use_container_width=True)
+        st.download_button(
+            "Download sample densities (.csv)",
+            data=samples.drop(columns=["x", "y"]).to_csv(index=False),
+            file_name="gravity_path_density.csv", mime="text/csv", key="gravity_csv_export",
+        )
