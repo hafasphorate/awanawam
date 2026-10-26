@@ -1079,8 +1079,9 @@ def gravity_path_density(mass_gdf, paths, beta, spacing_m, people_per_m2, min_di
     people_s = sum_i P_i * d_is^-beta / sum_s' d_is'^-beta.
     """
     utm = mass_gdf.estimate_utm_crs()
+    projected_masses = mass_gdf.to_crs(utm)
     masses_xy = np.column_stack([
-        mass_gdf.to_crs(utm).geometry.x.to_numpy(), mass_gdf.to_crs(utm).geometry.y.to_numpy()
+        projected_masses.geometry.x.to_numpy(), projected_masses.geometry.y.to_numpy()
     ])
     projected_paths = gpd.GeoSeries(paths, crs=4326).to_crs(utm)
 
@@ -1104,11 +1105,15 @@ def gravity_path_density(mass_gdf, paths, beta, spacing_m, people_per_m2, min_di
         return samples, pd.DataFrame()
 
     sample_xy = samples[["x", "y"]].to_numpy()
-    distance = np.linalg.norm(masses_xy[:, None, :] - sample_xy[None, :, :], axis=2)
-    attraction = np.maximum(distance, min_distance_m) ** (-beta)
-    share = attraction / attraction.sum(axis=1, keepdims=True)
     generated = mass_gdf["mass"].to_numpy() * people_per_m2
-    samples["people"] = (generated[:, None] * share).sum(axis=0)
+    allocated_people = np.zeros(len(samples), dtype=float)
+    for mass_xy, people in zip(masses_xy, generated):
+        distance = np.linalg.norm(sample_xy - mass_xy, axis=1)
+        attraction = np.maximum(distance, min_distance_m) ** (-beta)
+        attraction_total = attraction.sum()
+        if attraction_total > 0:
+            allocated_people += people * attraction / attraction_total
+    samples["people"] = allocated_people
     samples["density_people_per_m"] = samples["people"] / samples["segment_length_m"]
 
     summary = samples.groupby("path_id").agg(
@@ -1122,10 +1127,10 @@ def gravity_path_density(mass_gdf, paths, beta, spacing_m, people_per_m2, min_di
 
 
 with tab_gravity:
-    st.subheader("Gravity Model: People Density Along Desire Paths")
+    st.subheader("Gravity Model: People Density Along All Street Paths")
     st.markdown(
-        "Each point is a **mass** weighted by `MAX_GFA`. Its people are distributed over the Tab 1 "
-        "desire paths by the gravity model (spatial interaction theory):"
+        "Each point is a **mass** weighted by `MAX_GFA`. Its people are distributed over every street "
+        "path from the Tab 1 network by the gravity model (spatial interaction theory):"
     )
     st.latex(r"T_{is} = P_i \cdot \frac{d_{is}^{-\beta}}{\sum_{s'} d_{is'}^{-\beta}}, \qquad P_i = \text{MAX\_GFA}_i \cdot \rho")
     st.caption(
@@ -1161,28 +1166,30 @@ with tab_gravity:
         except Exception as error:
             st.error(f"Could not read GeoJSON: {error}")
 
-    desire_paths_t2 = list(st.session_state.desire_paths)
     graph_t2 = st.session_state.graph_data
+    street_paths_t2 = list(st.session_state.street_plan_paths)
+    if not street_paths_t2 and graph_t2 is not None:
+        street_paths_t2 = street_paths_from_edges(graph_t2["gdf_edges"])
     if mass_gdf is None:
         st.info("Select or upload a GeoJSON of points with a `MAX_GFA` property.")
-    if not desire_paths_t2:
-        st.info("Draw desire paths in the Space Syntax tab first.")
+    if not street_paths_t2:
+        st.info("Load a street plan in the Space Syntax tab first.")
     if graph_t2 is None:
         st.info("Run the axial analysis in the Space Syntax tab to show the red high-contrast nodes here.")
 
     samples = summary = None
-    if mass_gdf is not None and desire_paths_t2:
+    if mass_gdf is not None and street_paths_t2:
         samples, summary = gravity_path_density(
-            mass_gdf, desire_paths_t2, beta, spacing_m, people_per_m2, min_distance_m
+            mass_gdf, street_paths_t2, beta, spacing_m, people_per_m2, min_distance_m
         )
 
-    if mass_gdf is not None or desire_paths_t2 or graph_t2 is not None:
+    if mass_gdf is not None or street_paths_t2 or graph_t2 is not None:
         if graph_t2 is not None:
             center = [graph_t2["center_lat"], graph_t2["center_lon"]]
         elif mass_gdf is not None:
             center = [mass_gdf.geometry.y.mean(), mass_gdf.geometry.x.mean()]
         else:
-            center = [desire_paths_t2[0].coords[0][1], desire_paths_t2[0].coords[0][0]]
+            center = [street_paths_t2[0].coords[0][1], street_paths_t2[0].coords[0][0]]
         gravity_map = folium.Map(location=center, zoom_start=16, tiles="CartoDB dark_matter")
 
         if graph_t2 is not None:
@@ -1229,10 +1236,10 @@ with tab_gravity:
                         tooltip=f"Path {path_id} | {a['density_people_per_m']:.3f} people/m",
                     ).add_to(gravity_map)
         else:
-            for index, path in enumerate(desire_paths_t2):
+            for index, path in enumerate(street_paths_t2):
                 folium.PolyLine(
                     locations=[[p[1], p[0]] for p in path.coords],
-                    color="#FFD166", weight=5, opacity=0.95, tooltip=f"Desire path {index + 1}",
+                    color="#FFD166", weight=5, opacity=0.95, tooltip=f"Street path {index + 1}",
                 ).add_to(gravity_map)
 
         st_folium(gravity_map, width=1000, height=520, key="gravity_map", returned_objects=[])
@@ -1242,7 +1249,7 @@ with tab_gravity:
         )
 
     if summary is not None and not summary.empty:
-        st.subheader("Density Along Desire Paths")
+        st.subheader("Density Along All Street Paths")
         st.dataframe(summary, use_container_width=True)
         profile = go.Figure()
         for path_id, group in samples.groupby("path_id"):
