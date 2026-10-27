@@ -7,8 +7,13 @@ import streamlit as st
 LOGO_PATH = Path(__file__).resolve().parent.parent / "awanawam_logo.png"
 
 
+@st.cache_resource(show_spinner=False)
+def _logo_base64():
+    return base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+
+
 def render_home_button(width=160):
-    logo_data = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    logo_data = _logo_base64()
     markup = f'''
         <a href="/" target="_self" aria-label="Home" style="display:block; text-align:center;">
             <img src="data:image/png;base64,{logo_data}" alt="Awanawam home" width="{width}" style="max-width:100%; height:auto;">

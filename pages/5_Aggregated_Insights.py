@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 from utils.crowd_visuals import crowd_metric_label
@@ -230,6 +229,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
 
     font_size = max(6, int(14 - 0.45 * n_vars))
     text_val_size = max(7, int(15 - 0.55 * n_vars))
+    import seaborn as sns
 
     for i in range(n_vars):
         for j in range(n_vars):

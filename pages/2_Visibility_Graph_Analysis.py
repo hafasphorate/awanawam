@@ -17,10 +17,6 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
-from sklearn.cluster import KMeans
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import silhouette_score
-from sklearn.preprocessing import StandardScaler
 from utils.navigation import render_home_button
 from utils.plotly_floorplan import configure_floorplan_figure
 from utils.dataset_locks import unlocked_records
@@ -923,6 +919,11 @@ def choose_elbow_k(inertias):
 
 def cluster_vga_metrics(source_df, requested_k=None):
     """Cluster all usable numeric VGA metrics and return results plus diagnostics."""
+    from sklearn.cluster import KMeans
+    from sklearn.impute import SimpleImputer
+    from sklearn.metrics import silhouette_score
+    from sklearn.preprocessing import StandardScaler
+
     metric_columns = [
         column for column in source_df.select_dtypes(include=np.number).columns
         if column not in {"x", "y"}
@@ -1215,6 +1216,8 @@ def projection_png(projected_df, density_column, walls):
 
 def project_crowd_metrics_knn(source_df, historical_df, feature_columns, target_columns, neighbor_fraction=0.05):
     """Project crowd metrics and weighted standard deviations from nearest VGA neighbors."""
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler
     historical_features = historical_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     source_features = source_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     imputer = SimpleImputer(strategy="median")

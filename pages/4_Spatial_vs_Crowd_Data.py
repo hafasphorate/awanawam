@@ -8,7 +8,6 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import streamlit as st
 from supabase import Client, create_client
 from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
@@ -200,6 +199,7 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
         crowd_metric_label(col.replace("isovist_", ""))
         for col in selected_cols
     ]
+    import seaborn as sns
 
     for i in range(n_vars):
         for j in range(n_vars):

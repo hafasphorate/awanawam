@@ -6,12 +6,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-try:
-    from ultralytics import RTDETR, YOLO
-
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
+from importlib.util import find_spec
 
 from utils.homography_engine import project_points
 
@@ -25,11 +20,17 @@ MODEL_MAPPING = {
 }
 
 
+def yolo_available() -> bool:
+    """Checks for ultralytics without importing torch at page load."""
+    return find_spec("ultralytics") is not None
+
+
 @st.cache_resource
 def load_detection_model(model_name: str = "yolov8n.pt"):
     """Loads and caches YOLO or RT-DETR models."""
-    if not YOLO_AVAILABLE:
+    if not yolo_available():
         return None
+    from ultralytics import RTDETR, YOLO
 
     actual_model_path = MODEL_MAPPING.get(model_name, "yolov8n.pt")
 
@@ -206,7 +207,7 @@ def process_video_frame(
     if frame_rgb is None:
         return None, pd.DataFrame()
 
-    if not YOLO_AVAILABLE:
+    if not yolo_available():
         return frame_rgb.copy(), pd.DataFrame()
 
     # Frame annotations are reference-only in the homography workflow.

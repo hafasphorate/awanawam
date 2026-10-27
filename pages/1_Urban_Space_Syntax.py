@@ -1,5 +1,4 @@
 import streamlit as st
-import osmnx as ox
 import networkx as nx
 import geopandas as gpd
 import folium
@@ -20,6 +19,17 @@ from utils.navigation import render_home_button
 
 st.set_page_config(page_title="Module 1: Urban Space Syntax Analysis", layout="wide")
 render_home_button()
+
+
+def dark_map(location, zoom_start=16):
+    """Folium map with a keyless dark basemap (Carto's dark_matter now requires an API key)."""
+    return folium.Map(
+        location=location, zoom_start=zoom_start, tiles=None, max_zoom=19
+    ).add_child(folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        attr="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+        name="Dark basemap", max_native_zoom=16, max_zoom=19,
+    ))
 
 # -----------------------------------------------------------------------------
 # 1. Page Title & Definitions
@@ -86,7 +96,10 @@ def clean_name(val):
     return str(val) if val and str(val) != 'nan' else 'Unnamed Segment'
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=8)
 def load_plan(location, distance, kind):
+    import osmnx as ox
+
     gdf_place = ox.geocode_to_gdf(location)
     center_lat = gdf_place.geometry.iloc[0].centroid.y
     center_lon = gdf_place.geometry.iloc[0].centroid.x
@@ -566,9 +579,7 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
     st.subheader("Street Plan Preview")
     st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
     selected_preview_path, preview_cut_position = render_path_editor("preview")
-    preview_map = folium.Map(
-        location=[plan["center_lat"], plan["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter"
-    )
+    preview_map = dark_map([plan["center_lat"], plan["center_lon"]])
     for index, path in enumerate(st.session_state.street_plan_paths):
         folium.PolyLine(
             locations=[[point[1], point[0]] for point in path.coords],
@@ -604,6 +615,8 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
                 raise ValueError("Imported display data cannot be rerun; load the street plan to calculate new metrics.")
             edge_centrality = nx.edge_betweenness_centrality(G_undirected)
             nx.set_edge_attributes(G_undirected, edge_centrality, "betweenness")
+
+            import osmnx as ox
 
             gdf_nodes, gdf_edges = ox.convert.graph_to_gdfs(G_undirected)
             gdf_edges['street_name'] = gdf_edges['name'].apply(clean_name)
@@ -652,7 +665,7 @@ if st.session_state.graph_data is not None:
     selected_preview_path, preview_cut_position = render_path_editor("analysis")
 
     # Map Rendering
-    m = folium.Map(location=[data["center_lat"], data["center_lon"]], zoom_start=16, tiles="CartoDB dark_matter")
+    m = dark_map([data["center_lat"], data["center_lon"]])
     centrality_min = float(gdf_edges["betweenness"].min())
     centrality_max = float(gdf_edges["betweenness"].max())
     desire_results = {
@@ -1237,7 +1250,7 @@ with tab_gravity:
             center = [mass_gdf.geometry.y.mean(), mass_gdf.geometry.x.mean()]
         else:
             center = [street_paths_t2[0].coords[0][1], street_paths_t2[0].coords[0][0]]
-        gravity_map = folium.Map(location=center, zoom_start=16, tiles="CartoDB dark_matter")
+        gravity_map = dark_map(center)
 
         if graph_t2 is not None:
             for _, street in graph_t2["gdf_edges"].iterrows():
