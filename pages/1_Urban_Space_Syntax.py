@@ -672,7 +672,8 @@ if st.session_state.graph_data is not None:
             opacity=0.85,
             tooltip=f"Street: {row['street_name']} | Centrality: {row['betweenness']:.4f}"
         ).add_to(m)
-    # Draw Nodes with standard / highlight styling
+    # All dots go into one layer that is added after every path so they render on top.
+    node_layer = folium.FeatureGroup(name="Nodes")
     for node_id, row in gdf_nodes.iterrows():
         lat, lon = row.geometry.y, row.geometry.x
         is_contrast = node_id in high_contrast_nodes
@@ -687,7 +688,7 @@ if st.session_state.graph_data is not None:
                 fill_color='#00FFFF',
                 fill_opacity=0.9,
                 popup=f"Selected Node"
-            ).add_to(m)
+            ).add_to(node_layer)
         elif is_contrast and show_contrast_nodes:
             folium.CircleMarker(
                 location=[lat, lon],
@@ -697,7 +698,7 @@ if st.session_state.graph_data is not None:
                 fill_color='#FF0055',
                 fill_opacity=0.4,
                 popup="High-Contrast Intersection"
-            ).add_to(m)
+            ).add_to(node_layer)
         elif not is_contrast and show_standard_nodes:
             folium.CircleMarker(
                 location=[lat, lon],
@@ -707,7 +708,7 @@ if st.session_state.graph_data is not None:
                 fill_color='#FFFFFF',
                 fill_opacity=0.4,
                 tooltip=f"Intersection"
-            ).add_to(m)
+            ).add_to(node_layer)
 
     # Keep desire routes and snapped intersections above the network layers.
     visible_intersections = set()
@@ -746,7 +747,7 @@ if st.session_state.graph_data is not None:
                     color="#FFFFFF", weight=2, fill=True,
                     fill_color="#FF3366", fill_opacity=1.0,
                     tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
-                ).add_to(m)
+                ).add_to(node_layer)
         for street_path in st.session_state.street_plan_paths:
             for point in geometry_intersection_points(drawn_path, street_path):
                 point_key = (round(point.x, 7), round(point.y, 7))
@@ -758,8 +759,9 @@ if st.session_state.graph_data is not None:
                     color="#FFFFFF", weight=2, fill=True,
                     fill_color=route_color, fill_opacity=1.0,
                     tooltip=f"Desire path {result['path_id']} street intersection | Centrality: {centrality:.6f}",
-                ).add_to(m)
+                ).add_to(node_layer)
     add_cut_preview(m, selected_preview_path, preview_cut_position)
+    node_layer.add_to(m)
 
     # Legend Overlay for Map
     legend_html = '''
@@ -1126,6 +1128,43 @@ def gravity_path_density(mass_gdf, paths, beta, spacing_m, people_per_m2, min_di
     return samples, summary
 
 
+EVENT_COLUMNS = ["label", "lat", "lon", "radius_m", "factor"]
+
+
+def empty_events():
+    return pd.DataFrame({
+        "label": pd.Series(dtype="object"), "lat": pd.Series(dtype="float"),
+        "lon": pd.Series(dtype="float"), "radius_m": pd.Series(dtype="float"),
+        "factor": pd.Series(dtype="float"),
+    })
+
+
+def clean_events(events):
+    events = events.dropna(subset=["lat", "lon", "radius_m", "factor"]).copy()
+    events = events[(events["radius_m"] > 0) & (events["factor"] > 0)]
+    events["label"] = events["label"].fillna("").astype(str)
+    events.loc[events["label"] == "", "label"] = [str(i + 1) for i in range(int((events["label"] == "").sum()))]
+    return events.reset_index(drop=True)
+
+
+def apply_event_factors(mass_gdf, events):
+    """Multiply each building's GFA by the factor of every event whose radius covers it."""
+    adjusted = mass_gdf.copy()
+    adjusted["base_mass"] = adjusted["mass"]
+    adjusted["event_factor"] = 1.0
+    if not events.empty:
+        utm = adjusted.estimate_utm_crs()
+        mass_xy = adjusted.to_crs(utm).geometry
+        event_xy = gpd.GeoSeries(
+            gpd.points_from_xy(events["lon"], events["lat"]), crs=4326
+        ).to_crs(utm)
+        for (_, event), event_point in zip(events.iterrows(), event_xy):
+            inside = mass_xy.distance(event_point).to_numpy() <= float(event["radius_m"])
+            adjusted.loc[inside, "event_factor"] *= float(event["factor"])
+    adjusted["mass"] = adjusted["base_mass"] * adjusted["event_factor"]
+    return adjusted
+
+
 with tab_gravity:
     st.subheader("Gravity Model: People Density Along All Street Paths")
     st.markdown(
@@ -1167,6 +1206,14 @@ with tab_gravity:
             st.error(f"Could not read GeoJSON: {error}")
 
     graph_t2 = st.session_state.graph_data
+    if "gravity_events_base" not in st.session_state:
+        st.session_state.gravity_events_base = empty_events()
+        st.session_state.gravity_events_applied = empty_events()
+        st.session_state.gravity_events_rev = 0
+    event_df = st.session_state.gravity_events_applied
+    clicked_point = None
+    if mass_gdf is not None:
+        mass_gdf = apply_event_factors(mass_gdf, event_df)
     street_paths_t2 = list(st.session_state.street_plan_paths)
     if not street_paths_t2 and graph_t2 is not None:
         street_paths_t2 = street_paths_from_edges(graph_t2["gdf_edges"])
@@ -1199,29 +1246,6 @@ with tab_gravity:
                         locations=[[p[1], p[0]] for p in street.geometry.coords],
                         color="#35B7FF", weight=2, opacity=0.35,
                     ).add_to(gravity_map)
-            # Same red nodes as Tab 1
-            for node_id in graph_t2["high_contrast_nodes"]:
-                if node_id in graph_t2["gdf_nodes"].index:
-                    point = graph_t2["gdf_nodes"].loc[node_id].geometry
-                    folium.CircleMarker(
-                        location=[point.y, point.x], radius=6, color="#FF0055",
-                        fill=True, fill_color="#FF0055", fill_opacity=0.4,
-                        popup="High-Contrast Intersection",
-                    ).add_to(gravity_map)
-
-        if mass_gdf is not None:
-            max_mass = float(mass_gdf["mass"].max())
-            min_mass = float(mass_gdf["mass"].min())
-            for _, mass_row in mass_gdf.iterrows():
-                mass_color = mcolors.to_hex(plt.get_cmap("RdYlGn_r")(
-                    (mass_row["mass"] - min_mass) / (max_mass - min_mass + 1e-9)
-                ))
-                folium.CircleMarker(
-                    location=[mass_row.geometry.y, mass_row.geometry.x],
-                    radius=3 + 9 * (mass_row["mass"] / max_mass) ** 0.5,
-                    color=mass_color, weight=1, fill=True, fill_color=mass_color, fill_opacity=0.7,
-                    tooltip=f"MAX_GFA: {mass_row['mass']:,.0f} m²",
-                ).add_to(gravity_map)
 
         if samples is not None and not samples.empty:
             d_min = float(samples["density_people_per_m"].min())
@@ -1242,10 +1266,53 @@ with tab_gravity:
                     color="#FFD166", weight=5, opacity=0.95, tooltip=f"Street path {index + 1}",
                 ).add_to(gravity_map)
 
-        st_folium(gravity_map, width=1000, height=520, key="gravity_map", returned_objects=[])
+        # Dots are added last so they sit above every path.
+        if graph_t2 is not None:
+            for node_id in graph_t2["high_contrast_nodes"]:
+                if node_id in graph_t2["gdf_nodes"].index:
+                    point = graph_t2["gdf_nodes"].loc[node_id].geometry
+                    folium.CircleMarker(
+                        location=[point.y, point.x], radius=6, color="#FF0055",
+                        fill=True, fill_color="#FF0055", fill_opacity=0.4,
+                        popup="High-Contrast Intersection",
+                    ).add_to(gravity_map)
+
+        if mass_gdf is not None:
+            max_mass = float(mass_gdf["mass"].max())
+            min_mass = float(mass_gdf["mass"].min())
+            for _, mass_row in mass_gdf.iterrows():
+                mass_color = mcolors.to_hex(plt.get_cmap("RdYlGn_r")(
+                    (mass_row["mass"] - min_mass) / (max_mass - min_mass + 1e-9)
+                ))
+                folium.CircleMarker(
+                    location=[mass_row.geometry.y, mass_row.geometry.x],
+                    radius=3 + 9 * (mass_row["mass"] / max_mass) ** 0.5,
+                    color=mass_color, weight=1, fill=True, fill_color=mass_color, fill_opacity=0.7,
+                    tooltip=(
+                        f"GFA: {mass_row['base_mass']:,.0f} m² × event factor {mass_row['event_factor']:.2f}"
+                        f" = {mass_row['mass']:,.0f} m²"
+                    ),
+                ).add_to(gravity_map)
+
+        for _, event in event_df.iterrows():
+            folium.Circle(
+                location=[event["lat"], event["lon"]], radius=float(event["radius_m"]),
+                color="#B266FF", weight=2, fill=True, fill_opacity=0.08,
+                tooltip=f"Event {event['label']} | ×{event['factor']:.2f} within {event['radius_m']:.0f} m",
+            ).add_to(gravity_map)
+            folium.CircleMarker(
+                location=[event["lat"], event["lon"]], radius=7, color="#FFFFFF", weight=2,
+                fill=True, fill_color="#B266FF", fill_opacity=1.0,
+                tooltip=f"Event {event['label']} | ×{event['factor']:.2f}",
+            ).add_to(gravity_map)
+
+        map_state = st_folium(
+            gravity_map, width=1000, height=520, key="gravity_map", returned_objects=["last_clicked"]
+        )
+        clicked_point = (map_state or {}).get("last_clicked")
         st.caption(
-            "Mass circles: buildings (size ∝ √MAX_GFA; green = lighter, red = heavier). Red dots: high-contrast intersections from Tab 1. "
-            "Path colour: people density (blue = low, red = high)."
+            "Mass circles: buildings (size ∝ √adjusted GFA; green = lighter, red = heavier). Red dots: high-contrast intersections from Tab 1. "
+            "Purple: event points and their radius. Path colour: people density (blue = low, red = high)."
         )
 
     if summary is not None and not summary.empty:
@@ -1266,4 +1333,52 @@ with tab_gravity:
             "Download sample densities (.csv)",
             data=samples.drop(columns=["x", "y"]).to_csv(index=False),
             file_name="gravity_path_density.csv", mime="text/csv", key="gravity_csv_export",
+        )
+
+    st.write("---")
+    st.subheader("Step 2: Event Factors on GFA")
+    st.caption(
+        "Add one or more event points. Every building within an event's radius has its GFA multiplied by "
+        "that event's factor (overlapping events multiply). Edit the table, then click the button to recompute."
+    )
+    if clicked_point:
+        st.write(f"Last map click: {clicked_point['lat']:.6f}, {clicked_point['lng']:.6f}")
+        add_cols = st.columns(3)
+        new_radius = add_cols[0].number_input("Radius (m)", 5.0, 5000.0, 100.0, 5.0, key="new_event_radius")
+        new_factor = add_cols[1].number_input("Factor", 0.1, 50.0, 2.0, 0.1, key="new_event_factor")
+        if add_cols[2].button("Add event at clicked point", key="add_clicked_event"):
+            new_row = pd.DataFrame([{
+                "label": f"Event {len(st.session_state.gravity_events_base) + 1}", "lat": clicked_point["lat"],
+                "lon": clicked_point["lng"], "radius_m": new_radius, "factor": new_factor,
+            }])
+            st.session_state.gravity_events_base = pd.concat(
+                [st.session_state.gravity_events_base, new_row], ignore_index=True
+            )
+            st.session_state.gravity_events_rev += 1
+            st.rerun()
+    else:
+        st.caption("Tip: click the map above to pick a location, then add it as an event here.")
+
+    edited_events = st.data_editor(
+        st.session_state.gravity_events_base,
+        num_rows="dynamic", use_container_width=True,
+        key=f"gravity_events_editor_{st.session_state.gravity_events_rev}",
+        column_config={
+            "label": st.column_config.TextColumn("Event"),
+            "lat": st.column_config.NumberColumn("Latitude", format="%.6f"),
+            "lon": st.column_config.NumberColumn("Longitude", format="%.6f"),
+            "radius_m": st.column_config.NumberColumn("Radius (m)", min_value=1.0, default=100.0),
+            "factor": st.column_config.NumberColumn("GFA factor", min_value=0.01, default=2.0),
+        },
+    )
+    if st.button("Apply events and recompute", type="primary", key="apply_gravity_events"):
+        st.session_state.gravity_events_applied = clean_events(edited_events)
+        st.rerun()
+    if clean_events(edited_events).to_dict("records") != event_df.to_dict("records"):
+        st.warning("Event table has changes that are not applied yet. Click the button to recompute.")
+    if mass_gdf is not None and not event_df.empty:
+        affected = int((mass_gdf["event_factor"] != 1.0).sum())
+        st.info(
+            f"{affected} of {len(mass_gdf)} buildings affected. Total GFA "
+            f"{mass_gdf['base_mass'].sum():,.0f} → {mass_gdf['mass'].sum():,.0f} m²."
         )
