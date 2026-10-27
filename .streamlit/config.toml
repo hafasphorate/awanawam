@@ -1,0 +1,7 @@
+[server]
+# The file watcher scans every imported module (torch, geopandas, ...) after each run
+# and blocks the server for several seconds. Restart the app after editing code.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false

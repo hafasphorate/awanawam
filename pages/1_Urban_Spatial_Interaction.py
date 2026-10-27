@@ -16,8 +16,12 @@ from shapely.ops import linemerge, substring
 from folium.plugins import Draw
 from geopy.distance import geodesic
 from utils.navigation import render_home_button
+from utils.urban_paths import (
+    entrance_barrier_nodes_within_radius,
+    entrance_barrier_paths,
+)
 
-st.set_page_config(page_title="Module 1: Urban Space Syntax Analysis", layout="wide")
+st.set_page_config(page_title="Urban Spatial Interaction", layout="wide")
 render_home_button()
 
 
@@ -34,7 +38,7 @@ def dark_map(location, zoom_start=16):
 # -----------------------------------------------------------------------------
 # 1. Page Title & Definitions
 # -----------------------------------------------------------------------------
-st.title("Module 1: Urban Space Syntax Analysis")
+st.title("Module 1: Urban Spatial Interaction")
 
 st.markdown("""
 **Metric Definition:** **Betweenness Centrality** (used here as an axial proxy for *Space Syntax Choice / Integration*) measures the fraction of all shortest topological paths passing through a specific street segment within the network:
@@ -47,9 +51,9 @@ st.markdown("""
 """)
 st.write("---")
 
-tab_syntax, tab_gravity = st.tabs(["Space Syntax", "Gravity Model Density"])
+tab_interaction, tab_gravity = st.tabs(["Urban Spatial Interaction", "Gravity Model Density"])
 # Tab 1 spans the rest of the page; it is closed explicitly before Tab 2 at the end of the file.
-tab_syntax.__enter__()
+tab_interaction.__enter__()
 
 # -----------------------------------------------------------------------------
 # 2. Controls & Instant Toggle Configuration
@@ -58,7 +62,9 @@ col1, col2, col3 = st.columns([2, 2, 1])
 with col1:
     search_query = st.text_input("Location in Singapore", "Tiong Bahru, Singapore")
 with col2:
-    radius = st.slider("Analysis Radius (meters)", min_value=300, max_value=2000, value=600, step=100)
+    radius = int(st.number_input(
+        "Analysis Radius (meters)", min_value=100, max_value=5000, value=600, step=1, format="%d"
+    ))
 with col3:
     network_type = st.selectbox("Network Type", ["walk", "drive", "all"])
 
@@ -75,11 +81,17 @@ if "plan_data" not in st.session_state:
 if "desire_paths" not in st.session_state:
     st.session_state.desire_paths = []
 
+if "entrance_barrier_paths" not in st.session_state:
+    st.session_state.entrance_barrier_paths = []
+
 if "street_plan_paths" not in st.session_state:
     st.session_state.street_plan_paths = []
 
 if "desire_path_analysis" not in st.session_state:
     st.session_state.desire_path_analysis = []
+
+if "entrance_barrier_analysis" not in st.session_state:
+    st.session_state.entrance_barrier_analysis = []
 
 if "path_map_revision" not in st.session_state:
     st.session_state.path_map_revision = 0
@@ -136,7 +148,17 @@ def load_plan(location, distance, kind):
     return {
         "G_undirected": graph, "gdf_nodes": nodes, "gdf_edges": edges,
         "center_lat": center_lat, "center_lon": center_lon, "search_query": location,
+        "analysis_radius_m": distance,
     }
+
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+ENTRANCE_BARRIER_FILE = os.path.join(DATA_DIR, "entrances and barriers.geojson")
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=4)
+def load_entrance_barrier_data():
+    return gpd.read_file(ENTRANCE_BARRIER_FILE)
 
 
 def street_paths_from_edges(edges):
@@ -356,6 +378,9 @@ def render_path_editor(key_prefix):
     ] + [
         (f"desire:{index}:{path.wkb_hex}", "desire", index, path)
         for index, path in enumerate(st.session_state.desire_paths)
+    ] + [
+        (f"entrance:{index}:{path.wkb_hex}", "entrance", index, path)
+        for index, path in enumerate(st.session_state.entrance_barrier_paths)
     ]
     if not path_options:
         return None, 50
@@ -371,7 +396,11 @@ def render_path_editor(key_prefix):
         format_func=lambda option_id: (
             f"Street path {option_lookup[option_id][2] + 1}"
             if option_lookup[option_id][1] == "street"
-            else f"Desire path {option_lookup[option_id][2] + 1}"
+            else (
+                f"Desire path {option_lookup[option_id][2] + 1}"
+                if option_lookup[option_id][1] == "desire"
+                else f"Entrance/barrier path {option_lookup[option_id][2] + 1}"
+            )
         ), key=selection_key
     )
     selected_id = st.session_state[selection_key]
@@ -385,26 +414,34 @@ def render_path_editor(key_prefix):
             selected_id = st.session_state[selection_key]
             _, path_type, path_index, path = option_lookup[selected_id]
             first_path, second_path = split_path(path, cut_position)
-            target_paths = (st.session_state.street_plan_paths
-                            if path_type == "street" else st.session_state.desire_paths)
+            target_paths = {
+                "street": st.session_state.street_plan_paths,
+                "desire": st.session_state.desire_paths,
+                "entrance": st.session_state.entrance_barrier_paths,
+            }[path_type]
             target_paths[path_index:path_index + 1] = [first_path, second_path]
             st.session_state.desire_path_analysis = []
+            st.session_state.entrance_barrier_analysis = []
             st.session_state.path_map_revision += 1
             st.rerun()
     with remove_col:
         if st.button("Remove selected path", key=f"{key_prefix}_remove_button"):
             selected_id = st.session_state[selection_key]
             _, path_type, path_index, _ = option_lookup[selected_id]
-            target_paths = (st.session_state.street_plan_paths
-                            if path_type == "street" else st.session_state.desire_paths)
+            target_paths = {
+                "street": st.session_state.street_plan_paths,
+                "desire": st.session_state.desire_paths,
+                "entrance": st.session_state.entrance_barrier_paths,
+            }[path_type]
             target_paths.pop(path_index)
             st.session_state.desire_path_analysis = []
+            st.session_state.entrance_barrier_analysis = []
             st.session_state.path_map_revision += 1
             st.rerun()
     return selected_path, cut_position
 
 
-def analyze_desire_paths(graph, paths, edge_centrality):
+def analyze_desire_paths(graph, paths, edge_centrality, path_type="Desire path"):
     """Snap each drawn path to the network and summarize its shortest route."""
     def edge_score(u, v, edge_key):
         return edge_centrality.get(
@@ -436,7 +473,8 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             route = nx.shortest_path(graph, start, end, weight="length")
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             results.append({
-                "path_id": index + 1, "drawn_geometry": mapping(drawn_path),
+                "path_type": path_type, "path_id": index + 1,
+                "drawn_geometry": mapping(drawn_path),
                 "drawn_length_m": round(path_length_m(drawn_path), 2),
                 "start_node": start, "end_node": end,
                 "route_geometry": None,
@@ -488,6 +526,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
             route_edges = [(u, v)]
         merged_route = linemerge(route_lines)
         results.append({
+            "path_type": path_type,
             "path_id": index + 1,
             "drawn_geometry": mapping(drawn_path),
             "drawn_length_m": round(path_length_m(drawn_path), 2),
@@ -503,7 +542,7 @@ def analyze_desire_paths(graph, paths, edge_centrality):
     return results
 
 
-uploaded_json = st.file_uploader("Import Urban Space Syntax JSON", type=["json"])
+uploaded_json = st.file_uploader("Import Urban Spatial Interaction JSON", type=["json"])
 if uploaded_json is not None:
     try:
         imported = json.load(uploaded_json)
@@ -518,6 +557,7 @@ if uploaded_json is not None:
         else:
             imported_edges["betweenness"] = 0.0
         imported_graph = build_graph_from_gdfs(imported_nodes, imported_edges)
+        edge_centrality = {}
         if imported_graph.number_of_edges() > 0:
             edge_centrality = nx.edge_betweenness_centrality(imported_graph)
             nx.set_edge_attributes(imported_graph, edge_centrality, "betweenness")
@@ -529,6 +569,7 @@ if uploaded_json is not None:
             "gdf_edges": imported_edges, "gdf_nodes": imported_nodes,
             "center_lat": imported["plan"]["center_lat"], "center_lon": imported["plan"]["center_lon"],
             "search_query": imported["plan"].get("search_query", "Imported plan"), "G_undirected": imported_graph,
+            "analysis_radius_m": imported["plan"].get("analysis_radius_m", radius),
         }
         st.session_state.plan_data = plan
         st.session_state.graph_data = {
@@ -539,6 +580,7 @@ if uploaded_json is not None:
             "center_lon": imported["plan"]["center_lon"],
             "high_contrast_nodes": high_contrast_nodes_for_edges(imported_nodes, imported_edges),
             "search_query": imported["plan"].get("search_query", "Imported plan"),
+            "analysis_radius_m": imported["plan"].get("analysis_radius_m", radius),
         }
         imported_street_paths = imported.get("street_plan_paths")
         st.session_state.street_plan_paths = (
@@ -548,6 +590,32 @@ if uploaded_json is not None:
         )
         st.session_state.desire_paths = [shape(feature["geometry"]) for feature in imported.get("desire_paths", [])]
         st.session_state.desire_path_analysis = imported.get("desire_path_analysis", [])
+        imported_entrance_paths = imported.get("entrance_barrier_paths")
+        if imported_entrance_paths is not None:
+            st.session_state.entrance_barrier_paths = [
+                shape(feature["geometry"]) for feature in imported_entrance_paths
+            ]
+        else:
+            entrance_nodes = entrance_barrier_nodes_within_radius(
+                load_entrance_barrier_data(),
+                imported["plan"]["center_lat"],
+                imported["plan"]["center_lon"],
+                imported["plan"].get("analysis_radius_m", radius),
+            )
+            st.session_state.entrance_barrier_paths = entrance_barrier_paths(
+                entrance_nodes, st.session_state.street_plan_paths
+            )
+        imported_entrance_analysis = imported.get("entrance_barrier_analysis")
+        st.session_state.entrance_barrier_analysis = (
+            imported_entrance_analysis
+            if imported_entrance_analysis is not None
+            else analyze_desire_paths(
+                imported_graph,
+                st.session_state.entrance_barrier_paths,
+                edge_centrality,
+                path_type="Entrance/barrier path",
+            )
+        )
         for result in st.session_state.desire_path_analysis:
             result.setdefault("drawn_length_m", 0.0)
             result.setdefault("route_length_m", 0.0)
@@ -555,7 +623,7 @@ if uploaded_json is not None:
             result.setdefault("mean_betweenness", 0.0)
             result.setdefault("max_betweenness", 0.0)
             result.setdefault("network_edge_count", 0)
-        st.success("Urban plan imported. The map and desire paths are ready to view.")
+        st.success("Urban plan imported. The map and pathways are ready to view.")
     except (KeyError, ValueError, TypeError) as error:
         st.error(f"Could not import this JSON package: {error}")
 
@@ -568,6 +636,18 @@ if st.button("Load Street Plan"):
             st.session_state.street_plan_paths = street_paths_from_edges(
                 st.session_state.plan_data["gdf_edges"]
             )
+            entrance_nodes = entrance_barrier_nodes_within_radius(
+                load_entrance_barrier_data(),
+                st.session_state.plan_data["center_lat"],
+                st.session_state.plan_data["center_lon"],
+                radius,
+            )
+            st.session_state.entrance_barrier_paths = entrance_barrier_paths(
+                entrance_nodes, st.session_state.street_plan_paths
+            )
+            st.session_state.desire_paths = []
+            st.session_state.desire_path_analysis = []
+            st.session_state.entrance_barrier_analysis = []
         except Exception as e:
             st.error(f"Error loading street plan: {e}")
 
@@ -577,7 +657,7 @@ if st.button("Load Street Plan"):
 if st.session_state.plan_data is not None and st.session_state.graph_data is None:
     plan = st.session_state.plan_data
     st.subheader("Street Plan Preview")
-    st.caption("Draw desire paths on the plan, edit them below, then run the axial analysis.")
+    st.caption("Entrance and barrier connectors are generated from nearby tagged nodes. Draw desire paths or edit any pathway before analysis.")
     selected_preview_path, preview_cut_position = render_path_editor("preview")
     preview_map = dark_map([plan["center_lat"], plan["center_lon"]])
     for index, path in enumerate(st.session_state.street_plan_paths):
@@ -592,6 +672,12 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
             color="#FFD166", weight=5, opacity=0.95,
             tooltip=f"Desire path {index + 1} ({path_length_m(path):.1f} m)"
         ).add_to(preview_map)
+    for index, path in enumerate(st.session_state.entrance_barrier_paths):
+        folium.PolyLine(
+            locations=[[point[1], point[0]] for point in path.coords],
+            color="#B388FF", weight=4, opacity=0.9,
+            tooltip=f"Entrance/barrier path {index + 1} ({path_length_m(path):.1f} m)"
+        ).add_to(preview_map)
     add_cut_preview(preview_map, selected_preview_path, preview_cut_position)
     Draw(
         export=False,
@@ -604,7 +690,10 @@ if st.session_state.plan_data is not None and st.session_state.graph_data is Non
     )
     drawings = (preview_result or {}).get("all_drawings") or []
     update_desire_paths_from_map(drawings)
-    st.info(f"{len(st.session_state.desire_paths)} desire path(s) staged for analysis.")
+    st.info(
+        f"{len(st.session_state.desire_paths)} desire path(s) and "
+        f"{len(st.session_state.entrance_barrier_paths)} entrance/barrier path(s) staged for analysis."
+    )
 
 if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
     with st.spinner("Calculating spatial depth and centrality..."):
@@ -640,11 +729,17 @@ if st.session_state.plan_data is not None and st.button("Run Axial Analysis"):
                 "gdf_edges": gdf_edges,
                 "center_lat": plan["center_lat"],
                 "center_lon": plan["center_lon"],
+                "analysis_radius_m": plan["analysis_radius_m"],
                 "high_contrast_nodes": high_contrast_nodes,
                 "search_query": plan["search_query"]
             }
             st.session_state.desire_path_analysis = analyze_desire_paths(
-                G_undirected, st.session_state.desire_paths, edge_centrality
+                G_undirected, st.session_state.desire_paths, edge_centrality,
+                path_type="Desire path",
+            )
+            st.session_state.entrance_barrier_analysis = analyze_desire_paths(
+                G_undirected, st.session_state.entrance_barrier_paths, edge_centrality,
+                path_type="Entrance/barrier path",
             )
             st.session_state.selected_node = None
 
@@ -668,11 +763,6 @@ if st.session_state.graph_data is not None:
     m = dark_map([data["center_lat"], data["center_lon"]])
     centrality_min = float(gdf_edges["betweenness"].min())
     centrality_max = float(gdf_edges["betweenness"].max())
-    desire_results = {
-        result["path_id"]: result
-        for result in st.session_state.desire_path_analysis
-    }
-
     # Draw the analyzed network using the edited street geometry.
     street_rows = [row for _, row in gdf_edges.iterrows()
                    if row.geometry.geom_type == "LineString"]
@@ -723,56 +813,78 @@ if st.session_state.graph_data is not None:
                 tooltip=f"Intersection"
             ).add_to(node_layer)
 
-    # Keep desire routes and snapped intersections above the network layers.
+    # Keep user-drawn and entrance/barrier routes above the network layers.
     visible_intersections = set()
-    for result in st.session_state.desire_path_analysis:
-        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
-        route_color = centrality_color(centrality, centrality_min, centrality_max)
-        route_tooltip = (
-            f"Desire path {result['path_id']}"
-            f" | Centrality: {centrality:.6f}"
-            f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
-            f" | Max: {result.get('max_betweenness', centrality):.6f}"
-            f" | Drawn: {result.get('drawn_length_m', 0.0):.1f} m"
-            f" | Route: {result.get('route_length_m', 0.0):.1f} m"
-        )
-        drawn_path = st.session_state.desire_paths[result["path_id"] - 1]
-        folium.PolyLine(
-            locations=[[point[1], point[0]] for point in drawn_path.coords],
-            color=route_color, weight=6, opacity=0.95,
-            tooltip=route_tooltip,
-        ).add_to(m)
-        if result.get("route_geometry") is not None:
-            route_shape = shape(result["route_geometry"])
-            route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
-            for route_part in route_parts:
-                folium.PolyLine(
-                    locations=[[point[1], point[0]] for point in route_part.coords],
-                    color=route_color, weight=8, opacity=1.0,
-                    tooltip=route_tooltip,
-                ).add_to(m)
-        for node_label in ("start_node", "end_node"):
-            node_id = result.get(node_label)
-            if node_id in gdf_nodes.index:
-                node = gdf_nodes.loc[node_id].geometry
-                folium.CircleMarker(
-                    location=[node.y, node.x], radius=7,
-                    color="#FFFFFF", weight=2, fill=True,
-                    fill_color="#FF3366", fill_opacity=1.0,
-                    tooltip=f"Desire path {result['path_id']} {node_label.replace('_', ' ')}",
-                ).add_to(node_layer)
-        for street_path in st.session_state.street_plan_paths:
-            for point in geometry_intersection_points(drawn_path, street_path):
-                point_key = (round(point.x, 7), round(point.y, 7))
-                if point_key in visible_intersections:
-                    continue
-                visible_intersections.add(point_key)
-                folium.CircleMarker(
-                    location=[point.y, point.x], radius=5,
-                    color="#FFFFFF", weight=2, fill=True,
-                    fill_color=route_color, fill_opacity=1.0,
-                    tooltip=f"Desire path {result['path_id']} street intersection | Centrality: {centrality:.6f}",
-                ).add_to(node_layer)
+    path_groups = [
+        ("Desire path", st.session_state.desire_paths, st.session_state.desire_path_analysis),
+        (
+            "Entrance/barrier path",
+            st.session_state.entrance_barrier_paths,
+            st.session_state.entrance_barrier_analysis,
+        ),
+    ]
+    for path_label, paths, results in path_groups:
+        result_by_path_id = {result["path_id"]: result for result in results}
+        fallback_color = "#FFD166" if path_label == "Desire path" else "#B388FF"
+        for path_id, drawn_path in enumerate(paths, start=1):
+            result = result_by_path_id.get(path_id)
+            centrality = (
+                result.get("centrality", result.get("mean_betweenness", 0.0))
+                if result else None
+            )
+            route_color = (
+                centrality_color(centrality, centrality_min, centrality_max)
+                if centrality is not None else fallback_color
+            )
+            route_tooltip = f"{path_label} {path_id}"
+            if result:
+                route_tooltip += (
+                    f" | Centrality: {centrality:.6f}"
+                    f" | Mean: {result.get('mean_betweenness', centrality):.6f}"
+                    f" | Max: {result.get('max_betweenness', centrality):.6f}"
+                    f" | Connector: {result.get('drawn_length_m', 0.0):.1f} m"
+                    f" | Network route: {result.get('route_length_m', 0.0):.1f} m"
+                )
+            folium.PolyLine(
+                locations=[[point[1], point[0]] for point in drawn_path.coords],
+                color=route_color, weight=6, opacity=0.95,
+                tooltip=route_tooltip,
+            ).add_to(m)
+            if result and result.get("route_geometry") is not None:
+                route_shape = shape(result["route_geometry"])
+                route_parts = route_shape.geoms if hasattr(route_shape, "geoms") else [route_shape]
+                for route_part in route_parts:
+                    folium.PolyLine(
+                        locations=[[point[1], point[0]] for point in route_part.coords],
+                        color=route_color, weight=8, opacity=1.0,
+                        tooltip=route_tooltip,
+                    ).add_to(m)
+            if result:
+                for node_label in ("start_node", "end_node"):
+                    node_id = result.get(node_label)
+                    if node_id in gdf_nodes.index:
+                        node = gdf_nodes.loc[node_id].geometry
+                        folium.CircleMarker(
+                            location=[node.y, node.x], radius=7,
+                            color="#FFFFFF", weight=2, fill=True,
+                            fill_color="#FF3366", fill_opacity=1.0,
+                            tooltip=f"{path_label} {path_id} {node_label.replace('_', ' ')}",
+                        ).add_to(node_layer)
+            for street_path in st.session_state.street_plan_paths:
+                for point in geometry_intersection_points(drawn_path, street_path):
+                    point_key = (round(point.x, 7), round(point.y, 7))
+                    if point_key in visible_intersections:
+                        continue
+                    visible_intersections.add(point_key)
+                    folium.CircleMarker(
+                        location=[point.y, point.x], radius=5,
+                        color="#FFFFFF", weight=2, fill=True,
+                        fill_color=route_color, fill_opacity=1.0,
+                        tooltip=(
+                            f"{path_label} {path_id} street intersection"
+                            + (f" | Centrality: {centrality:.6f}" if centrality is not None else "")
+                        ),
+                    ).add_to(node_layer)
     add_cut_preview(m, selected_preview_path, preview_cut_position)
     node_layer.add_to(m)
 
@@ -781,7 +893,7 @@ if st.session_state.graph_data is not None:
     <div style="position: fixed; bottom: 30px; left: 30px; width: 250px; 
                 background-color: rgba(17,17,17,0.9); z-index:9999; font-size:12px; color: white;
                 padding: 12px; border-radius: 6px; font-family: sans-serif; border: 1px solid #444;">
-        <b>Space Syntax Integration</b><br>
+        <b>Urban Spatial Interaction</b><br>
         <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 10px;">
             <span>Low (0.0)</span>
             <span>High (1.0)</span>
@@ -794,11 +906,15 @@ if st.session_state.graph_data is not None:
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    st.subheader("1. Interactive Space Syntax Map")
+    st.subheader("1. Interactive Urban Spatial Interaction Map")
     st_folium(m, width=1000, height=520, key="main_map", returned_objects=[])
-    if st.session_state.desire_path_analysis:
-        st.subheader("Desire Path Axial Results")
-        st.dataframe(st.session_state.desire_path_analysis, use_container_width=True)
+    path_analysis = (
+        st.session_state.desire_path_analysis
+        + st.session_state.entrance_barrier_analysis
+    )
+    if path_analysis:
+        st.subheader("Pathway Centrality Results")
+        st.dataframe(path_analysis, use_container_width=True)
 
     # Feature Explanations for Map
     st.markdown("### Feature Explanations & Urban Implications")
@@ -993,6 +1109,7 @@ if st.session_state.graph_data is not None:
             "search_query": data["search_query"],
             "center_lat": data["center_lat"],
             "center_lon": data["center_lon"],
+            "analysis_radius_m": data.get("analysis_radius_m", radius),
             "edges": geojson_feature_collection(export_edges),
             "nodes": geojson_feature_collection(export_nodes),
         },
@@ -1001,19 +1118,26 @@ if st.session_state.graph_data is not None:
             "type": "Feature", "properties": {"path_id": index + 1},
             "geometry": mapping(path),
         } for index, path in enumerate(st.session_state.street_plan_paths)],
+        "entrance_barrier_paths": [{
+            "type": "Feature",
+            "properties": {"path_id": index + 1, "source": "entrance_or_barrier"},
+            "geometry": mapping(path),
+        } for index, path in enumerate(st.session_state.entrance_barrier_paths)],
         "desire_path_analysis": st.session_state.desire_path_analysis,
+        "entrance_barrier_analysis": st.session_state.entrance_barrier_analysis,
         "analysis": {
             "metric": "edge_betweenness_centrality",
             "edge_count": len(gdf_edges),
             "desire_path_count": len(st.session_state.desire_paths),
+            "entrance_barrier_path_count": len(st.session_state.entrance_barrier_paths),
         },
     }
     st.sidebar.download_button(
         label="Download Complete Analysis (.json)",
         data=json.dumps(json_package, indent=2),
-        file_name="urban_space_syntax_analysis.json",
+        file_name="urban_spatial_interaction_analysis.json",
         mime="application/json",
-        key="urban_space_syntax_json_export",
+        key="urban_spatial_interaction_json_export",
     )
     
     gdf_export = gdf_edges[['street_name', 'betweenness', 'length', 'geometry']]
@@ -1021,26 +1145,33 @@ if st.session_state.graph_data is not None:
     st.sidebar.download_button(
         label="Download GIS Vector (.geojson)",
         data=geojson_str,
-        file_name="space_syntax_singapore.geojson",
+        file_name="urban_spatial_interaction.geojson",
         mime="application/geo+json",
-        key="urban_space_syntax_geojson_export",
+        key="urban_spatial_interaction_geojson_export",
     )
     
     fig_export, ax_export = plt.subplots(figsize=(8, 8), dpi=300)
     gdf_edges.plot(ax=ax_export, column='betweenness', cmap='turbo', linewidth=2, zorder=1)
-    for result in st.session_state.desire_path_analysis:
-        centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
-        route_color = centrality_color(centrality, centrality_min, centrality_max)
-        drawn_geometry = st.session_state.desire_paths[result["path_id"] - 1]
-        gpd.GeoSeries([drawn_geometry], crs=gdf_edges.crs).plot(
-            ax=ax_export, color=route_color, linewidth=3.5, zorder=4
-        )
-        route_geometry = result.get("route_geometry")
-        if route_geometry is not None:
-            route_shape = shape(route_geometry)
-            gpd.GeoSeries([route_shape], crs=gdf_edges.crs).plot(
-                ax=ax_export, color=route_color, linewidth=5, alpha=0.9, zorder=3
+    for paths, results in (
+        (st.session_state.desire_paths, st.session_state.desire_path_analysis),
+        (
+            st.session_state.entrance_barrier_paths,
+            st.session_state.entrance_barrier_analysis,
+        ),
+    ):
+        for result in results:
+            centrality = result.get("centrality", result.get("mean_betweenness", 0.0))
+            route_color = centrality_color(centrality, centrality_min, centrality_max)
+            drawn_geometry = paths[result["path_id"] - 1]
+            gpd.GeoSeries([drawn_geometry], crs=gdf_edges.crs).plot(
+                ax=ax_export, color=route_color, linewidth=3.5, zorder=4
             )
+            route_geometry = result.get("route_geometry")
+            if route_geometry is not None:
+                route_shape = shape(route_geometry)
+                gpd.GeoSeries([route_shape], crs=gdf_edges.crs).plot(
+                    ax=ax_export, color=route_color, linewidth=5, alpha=0.9, zorder=3
+                )
     if show_standard_nodes:
         gdf_nodes[~gdf_nodes.index.isin(high_contrast_nodes)].plot(ax=ax_export, color='white', markersize=3, alpha=0.8, zorder=2)
     if show_contrast_nodes:
@@ -1058,10 +1189,10 @@ if st.session_state.graph_data is not None:
         data=png_io.getvalue(),
         file_name="space_syntax_map.png",
         mime="image/png",
-        key="urban_space_syntax_png_export",
+        key="urban_spatial_interaction_png_export",
     )
 
-tab_syntax.__exit__(None, None, None)
+tab_interaction.__exit__(None, None, None)
 
 
 # -----------------------------------------------------------------------------
@@ -1233,9 +1364,9 @@ with tab_gravity:
     if mass_gdf is None:
         st.info("Select or upload a GeoJSON of points with a `MAX_GFA` property.")
     if not street_paths_t2:
-        st.info("Load a street plan in the Space Syntax tab first.")
+        st.info("Load a street plan in the Urban Spatial Interaction tab first.")
     if graph_t2 is None:
-        st.info("Run the axial analysis in the Space Syntax tab to show the red high-contrast nodes here.")
+        st.info("Run the axial analysis in the Urban Spatial Interaction tab to show the red high-contrast nodes here.")
 
     samples = summary = None
     if mass_gdf is not None and street_paths_t2:

@@ -23,7 +23,7 @@ A comprehensive Streamlit-based web application for analyzing how spatial config
 
 ### Core Capabilities
 - **Visibility Graph Analysis (VGA):** Calculate spatial metrics (visual integration, entropy, isovist) from CAD floorplans
-- **Urban Space Syntax:** Analyze street networks for movement patterns using betweenness centrality
+- **Urban Spatial Interaction:** Analyze street networks and entrance/barrier connections using betweenness centrality
 - **Video Tracking & Homography:** Track people in surveillance videos and project coordinates onto floorplans
 - **Statistical Correlation:** Link spatial metrics to crowd behavior using Pearson/Spearman analysis
 - **Aggregated Insights:** Synthesize data across multiple case studies (Supabase integration)
@@ -78,8 +78,8 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ---
 
-### Module 1: Urban Space Syntax Analysis
-**What it does:** Analyzes urban street networks to identify primary movement corridors and spatial integration.
+### Module 1: Urban Spatial Interaction
+**What it does:** Analyzes urban street networks and entrance/barrier connections to identify primary movement corridors and spatial integration.
 
 **Key Metrics:**
 - **Betweenness Centrality:** Percentage of all shortest paths that pass through a street segment (proxy for movement/foot traffic)
@@ -88,13 +88,13 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 **How to use:**
 1. Enter a location (e.g., "Tiong Bahru, Singapore")
-2. Set analysis radius (300-2000 meters)
+2. Enter an analysis radius in meters (integer, 100-5000)
 3. Choose network type: walk, drive, or all
-4. Click "Load Street Plan" to preview the network before analysis
-5. Draw desire paths directly on the preview map, then click "Run Axial Analysis"
-6. View interactive map showing street segments colored by betweenness centrality
-7. Red nodes highlight high-contrast intersections
-8. Download the complete JSON package to restore the plan, spatial data, and desire paths later
+4. Click "Load Street Plan" to preview the network and generate shortest connectors from nearby entrance/barrier nodes to existing pathways
+5. Draw desire paths and select, split, or remove street, desire, and entrance/barrier pathways
+6. Click "Run Axial Analysis" to calculate centrality for the street network and all staged pathways
+7. View the interactive map with centrality-colored paths; red nodes highlight high-contrast intersections
+8. Download the complete JSON package to restore the plan, spatial data, and pathways later
 
 **Exports:**
 - JSON package containing spatial data, analysis values, and desire paths for reimport

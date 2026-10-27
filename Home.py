@@ -41,8 +41,8 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 ##  Module Guide
 
-### Module 1: Urban Space Syntax Analysis
-**What it does:** Analyzes urban street networks to identify primary movement corridors and spatial integration.
+### Module 1: Urban Spatial Interaction
+**What it does:** Analyzes urban street networks and entrance/barrier connections to identify movement corridors and spatial integration.
 
 **Key Metrics:**
 - **Betweenness Centrality:** Percentage of all shortest paths that pass through a street segment (proxy for movement/foot traffic)
@@ -51,11 +51,12 @@ Each module provides interactive visualizations, metrics calculations, and expor
 
 **How to use:**
 1. Enter a location (e.g., "Tiong Bahru, Singapore")
-2. Set analysis radius (300-2000 meters)
+2. Enter an analysis radius in meters (integer, 100-5000)
 3. Choose network type: walk, drive, or all
-4. Click "Run Axial Analysis"
-5. View interactive map showing street segments colored by betweenness centrality
-6. Red nodes highlight high-contrast intersections
+4. Load the street plan to generate connectors from nearby entrance and barrier nodes to existing pathways
+5. Draw, split, or remove desire and entrance/barrier pathways, then click "Run Axial Analysis"
+6. View the interactive map with street and pathway centrality
+7. Red nodes highlight high-contrast intersections
 
 **Best for:** Urban planning, traffic studies, walkability analysis, retail location analysis
 
