@@ -11,6 +11,7 @@ import pandas as pd
 import io
 import json
 import os
+import time
 from shapely.geometry import LineString, mapping, shape
 from shapely.ops import linemerge, substring
 from folium.plugins import Draw
@@ -117,24 +118,34 @@ def load_plan(location, distance, kind):
     center_lon = gdf_place.geometry.iloc[0].centroid.x
     overpass_endpoints = [
         "https://overpass-api.de/api",
-        "https://overpass.kumi.systems/api",
         "https://overpass.private.coffee/api",
+        "https://overpass.kumi.systems/api",
+        "https://overpass.osm.jp/api",
+        "https://overpass.openstreetmap.fr/api",
+        "https://maps.mail.ru/osm/tools/overpass/api",
     ]
     original_endpoint = ox.settings.overpass_url
+    original_timeout = ox.settings.requests_timeout
     graph = None
     errors = []
     try:
-        for endpoint in overpass_endpoints:
-            ox.settings.overpass_url = endpoint
-            try:
-                graph = ox.convert.to_undirected(
-                    ox.graph_from_point(
-                        (center_lat, center_lon), dist=distance, network_type=kind
+        # Public Overpass servers are often overloaded; fail over quickly and make a second pass.
+        ox.settings.requests_timeout = 60
+        for attempt in range(2):
+            for endpoint in overpass_endpoints:
+                ox.settings.overpass_url = endpoint
+                try:
+                    graph = ox.convert.to_undirected(
+                        ox.graph_from_point(
+                            (center_lat, center_lon), dist=distance, network_type=kind
+                        )
                     )
-                )
+                    break
+                except Exception as error:
+                    errors.append(f"{endpoint}: {str(error)[:150]}")
+            if graph is not None:
                 break
-            except Exception as error:
-                errors.append(f"{endpoint}: {error}")
+            time.sleep(5)
         if graph is None:
             raise ConnectionError(
                 "All Overpass services were unavailable. "
@@ -143,6 +154,7 @@ def load_plan(location, distance, kind):
             )
     finally:
         ox.settings.overpass_url = original_endpoint
+        ox.settings.requests_timeout = original_timeout
     nodes, edges = ox.convert.graph_to_gdfs(graph)
     edges['street_name'] = edges['name'].apply(clean_name)
     return {

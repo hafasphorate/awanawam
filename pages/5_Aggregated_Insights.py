@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from scipy import stats
 from supabase import Client, create_client
 from utils.crowd_visuals import crowd_metric_label
 from utils.dataset_locks import is_locked, unlocked_records
@@ -177,26 +178,66 @@ def collapse_outcome_by_mall(
     return collapsed
 
 
+def significance_stars(p_value: float) -> str:
+    """Conventional significance marks: * p<0.05, ** p<0.01, *** p<0.001."""
+    if p_value is None or not np.isfinite(p_value):
+        return ""
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    return ""
+
+
+def format_p_value(p_value: float) -> str:
+    if p_value is None or not np.isfinite(p_value):
+        return "n/a"
+    return "<0.001" if p_value < 0.001 else f"{p_value:.3f}"
+
+
+def correlation_with_p(x, y, method: str = "pearson") -> tuple[float, float]:
+    """Return (coefficient, two-sided p-value); NaN when it is undefined."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
+        return float("nan"), float("nan")
+    func = {
+        "pearson": stats.pearsonr,
+        "spearman": stats.spearmanr,
+        "kendall": stats.kendalltau,
+    }[method]
+    result = func(x, y)
+    return float(result[0]), float(result[1])
+
+
 def directional_mall_collapsed_pearson(
     df: pd.DataFrame,
     metric_columns: list[str],
     mall_column: str = "location",
-) -> pd.DataFrame:
+    return_p_values: bool = False,
+):
     """Calculate pooled directional Pearson values with each outcome mall-centered."""
     correlations = pd.DataFrame(
         np.nan, index=metric_columns, columns=metric_columns, dtype=float
     )
+    p_values = correlations.copy()
     for outcome in metric_columns:
         correlations.loc[outcome, outcome] = 1.0
+        p_values.loc[outcome, outcome] = 0.0
         for predictor in metric_columns:
             if predictor == outcome:
                 continue
             collapsed_pair = collapse_outcome_by_mall(
                 df, predictor, outcome, mall_column
             )
-            correlations.loc[outcome, predictor] = collapsed_pair[
-                predictor
-            ].corr(collapsed_pair[outcome], method="pearson")
+            pair = collapsed_pair[[predictor, outcome]].dropna()
+            r_val, p_val = correlation_with_p(pair[predictor], pair[outcome])
+            correlations.loc[outcome, predictor] = r_val
+            p_values.loc[outcome, predictor] = p_val
+    if return_p_values:
+        return correlations, p_values
     return correlations
 
 
@@ -261,6 +302,15 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                     s=max(6, int(26 - 1.1 * n_vars)),
                     color="#2c3e50",
                 )
+                if sub_df[col_x].nunique() > 1 and len(sub_df) > 2:
+                    slope, intercept = np.polyfit(sub_df[col_x], sub_df[col_y], 1)
+                    x_line = np.array([sub_df[col_x].min(), sub_df[col_x].max()])
+                    ax.plot(
+                        x_line,
+                        slope * x_line + intercept,
+                        color="#d73027",
+                        linewidth=1.6,
+                    )
 
             # --- UPPER TRIANGLE: Sized Correlation Squares ---
             else:
@@ -289,7 +339,8 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                     )
                     ax.add_patch(rect)
 
-                    text_str = f"{r_val:.2f}"
+                    _, p_val = correlation_with_p(sub_df[col_x], sub_df[col_y])
+                    text_str = f"{r_val:.2f}{significance_stars(p_val)}"
                     text_color = "white" if abs_r > 0.65 else "#111111"
                     ax.text(
                         0.5,
@@ -331,14 +382,13 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
 def _pair_correlation_values(sub_df: pd.DataFrame, col_x: str, col_y: str):
     """Calculate pairwise linear and rank correlations on the same rows."""
     pair = sub_df[[col_x, col_y]].apply(pd.to_numeric, errors="coerce").dropna()
+    nan = float("nan")
     if len(pair) < 2:
-        return pair, float("nan"), float("nan"), float("nan")
-    return (
-        pair,
-        pair[col_x].corr(pair[col_y], method="pearson"),
-        pair[col_x].corr(pair[col_y], method="spearman"),
-        pair[col_x].corr(pair[col_y], method="kendall"),
-    )
+        return pair, nan, nan, nan, nan, nan, nan
+    r, p_r = correlation_with_p(pair[col_x], pair[col_y], "pearson")
+    rho, p_rho = correlation_with_p(pair[col_x], pair[col_y], "spearman")
+    tau, p_tau = correlation_with_p(pair[col_x], pair[col_y], "kendall")
+    return pair, r, rho, tau, p_r, p_rho, p_tau
 
 
 def _pair_scatter_figure(
@@ -415,22 +465,38 @@ def _pair_scatter_figure(
     return fig
 
 
-def _render_pair_statistics(p_r: float, s_rho: float, k_tau: float):
+def _render_pair_statistics(
+    p_r: float,
+    s_rho: float,
+    k_tau: float,
+    p_r_pval: float = float("nan"),
+    s_rho_pval: float = float("nan"),
+    k_tau_pval: float = float("nan"),
+):
+    def p_line(p_value):
+        return (
+            f'<span style="font-size: 12px; color: #666;">'
+            f"p = {format_p_value(p_value)} {significance_stars(p_value)}</span>"
+        )
+
     st.markdown(
         f"""
         <div style="display: flex; gap: 10px; margin-bottom: 15px;">
             <div style="background: #f8f9fa; border-left: 5px solid #d73027; padding: 12px; flex: 1; border-radius: 4px;">
                 <span style="font-size: 12px; color: #666;">Pearson (r)</span>
                 <h2 style="margin:0; color:#111;">{p_r:.3f}</h2>
-            </div>
+                                {p_line(p_r_pval)}
+                            </div>
             <div style="background: #f8f9fa; border-left: 5px solid #2b5c8f; padding: 12px; flex: 1; border-radius: 4px;">
                 <span style="font-size: 12px; color: #666;">Spearman (ρ)</span>
                 <h2 style="margin:0; color:#111;">{s_rho:.3f}</h2>
-            </div>
+                                {p_line(s_rho_pval)}
+                            </div>
             <div style="background: #f8f9fa; border-left: 5px solid #27ae60; padding: 12px; flex: 1; border-radius: 4px;">
                 <span style="font-size: 12px; color: #666;">Kendall (τ)</span>
                 <h2 style="margin:0; color:#111;">{k_tau:.3f}</h2>
-            </div>
+                                {p_line(k_tau_pval)}
+                            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -447,7 +513,9 @@ def render_pair_focused_inspector(
         st.warning("Mall labels are unavailable; the focused pair cannot be collapsed by mall.")
         return
 
-    raw_df, p_r, s_rho, k_tau = _pair_correlation_values(df, col_x, col_y)
+    raw_df, p_r, s_rho, k_tau, p_r_pval, s_rho_pval, k_tau_pval = (
+        _pair_correlation_values(df, col_x, col_y)
+    )
     raw_df["_mall_label"] = (
         df.loc[raw_df.index, mall_col].fillna("Unknown mall").astype(str)
     )
@@ -462,7 +530,10 @@ def render_pair_focused_inspector(
         )
     with raw_stats:
         st.markdown("##### Statistical Relationship Comparison (raw)")
-        _render_pair_statistics(p_r, s_rho, k_tau)
+        _render_pair_statistics(
+            p_r, s_rho, k_tau, p_r_pval, s_rho_pval, k_tau_pval
+        )
+        st.caption("Significance: * p<0.05, ** p<0.01, *** p<0.001.")
         with st.expander("Understanding these metrics & trendlines", expanded=True):
             st.markdown(
                 """
@@ -474,9 +545,15 @@ def render_pair_focused_inspector(
     collapsed_source = collapse_outcome_by_mall(
         df, col_x, col_y, mall_col
     )
-    collapsed_df, collapsed_p, collapsed_s, collapsed_k = _pair_correlation_values(
-        collapsed_source, col_x, col_y
-    )
+    (
+        collapsed_df,
+        collapsed_p,
+        collapsed_s,
+        collapsed_k,
+        collapsed_p_pval,
+        collapsed_s_pval,
+        collapsed_k_pval,
+    ) = _pair_correlation_values(collapsed_source, col_x, col_y)
     collapsed_df["_mall_label"] = collapsed_source.loc[
         collapsed_df.index, mall_col
     ].astype(str)
@@ -501,7 +578,14 @@ def render_pair_focused_inspector(
         )
     with collapsed_stats:
         st.markdown("##### Statistical Relationship Comparison (directional)")
-        _render_pair_statistics(collapsed_p, collapsed_s, collapsed_k)
+        _render_pair_statistics(
+            collapsed_p,
+            collapsed_s,
+            collapsed_k,
+            collapsed_p_pval,
+            collapsed_s_pval,
+            collapsed_k_pval,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -1033,6 +1117,9 @@ else:
             # Matplotlib Grid Display
             fig = plot_vga_pairs_matrix(df_global, selected_metrics, dpi_val=100)
             st.pyplot(fig, width="stretch")
+            st.caption(
+                "Significance of Pearson r: none = p ≥ 0.05, * p < 0.05, ** p < 0.01, *** p < 0.001."
+            )
 
             # High-Res Export Buffer
             buffer = io.BytesIO()
@@ -1108,13 +1195,38 @@ else:
                     )
 
                     with st.expander("View All-Date Directional Pearson Associations"):
-                        directional_corr = directional_mall_collapsed_pearson(
+                        directional_corr, directional_p = directional_mall_collapsed_pearson(
                             analysis_with_mall,
                             selected_metrics,
+                            return_p_values=True,
                         )
                         directional_corr_display = directional_corr.rename(
                             index=crowd_metric_label,
                             columns=crowd_metric_label,
+                        )
+                        directional_text = pd.DataFrame(
+                            [
+                                [
+                                    "—"
+                                    if np.isnan(directional_corr.loc[row, col])
+                                    else f"{directional_corr.loc[row, col]:.3f}/"
+                                    f"{format_p_value(directional_p.loc[row, col])}"
+                                    for col in directional_corr.columns
+                                ]
+                                for row in directional_corr.index
+                            ],
+                            index=directional_corr_display.index,
+                            columns=directional_corr_display.columns,
+                        )
+                        cell_colors = directional_corr_display.apply(
+                            lambda column: [
+                                ""
+                                if np.isnan(value)
+                                else "background-color: "
+                                + mcolors.to_hex(plt.get_cmap("coolwarm")((value + 1) / 2))
+                                + "; color: black"
+                                for value in column
+                            ]
                         )
                         st.caption(
                             "Uses all selected dates pooled together. For each cell, the row metric is treated "
@@ -1123,10 +1235,11 @@ else:
                             "is intentionally directional and need not be symmetric. Values match the "
                             "focused inspector’s mall-collapsed Pearson result for the same ordered pair."
                         )
+                        st.caption("Each cell shows correlation/p-value.")
                         st.dataframe(
-                            directional_corr_display.style.background_gradient(
-                                cmap="coolwarm", vmin=-1, vmax=1
-                            ).format("{:.3f}", na_rep="—"),
+                            directional_text.style.apply(
+                                lambda _: cell_colors, axis=None
+                            ),
                             width="stretch",
                         )
             else:
