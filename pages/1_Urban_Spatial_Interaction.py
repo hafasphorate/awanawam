@@ -798,8 +798,9 @@ if st.session_state.graph_data is not None:
         if is_selected:
             folium.CircleMarker(
                 location=[lat, lon],
-                radius=12,
+                radius=18,
                 color='#00FFFF',
+                weight=3,
                 fill=True,
                 fill_color='#00FFFF',
                 fill_opacity=0.9,
@@ -828,6 +829,18 @@ if st.session_state.graph_data is not None:
 
     # Keep user-drawn and entrance/barrier routes above the network layers.
     visible_intersections = set()
+    # Imported or edited sessions can lack results for some paths; compute them from the
+    # graph's stored edge betweenness so every route is coloured on the centrality scale.
+    if G_undirected is not None:
+        if len(st.session_state.desire_path_analysis) != len(st.session_state.desire_paths):
+            st.session_state.desire_path_analysis = analyze_desire_paths(
+                G_undirected, st.session_state.desire_paths, {}, path_type="Desire path"
+            )
+        if len(st.session_state.entrance_barrier_analysis) != len(st.session_state.entrance_barrier_paths):
+            st.session_state.entrance_barrier_analysis = analyze_desire_paths(
+                G_undirected, st.session_state.entrance_barrier_paths, {},
+                path_type="Entrance/barrier path",
+            )
     path_groups = [
         ("Desire path", st.session_state.desire_paths, st.session_state.desire_path_analysis),
         (
@@ -898,6 +911,22 @@ if st.session_state.graph_data is not None:
                             + (f" | Centrality: {centrality:.6f}" if centrality is not None else "")
                         ),
                     ).add_to(node_layer)
+            # Path end points (e.g. building entrances) are intersections too: white, or
+            # red when the network node they attach to is a high-contrast intersection.
+            for end_label, end_coord in (("start_node", drawn_path.coords[0]), ("end_node", drawn_path.coords[-1])):
+                end_key = (round(end_coord[0], 7), round(end_coord[1], 7))
+                if end_key in visible_intersections:
+                    continue
+                visible_intersections.add(end_key)
+                end_is_contrast = bool(result) and result.get(end_label) in high_contrast_nodes
+                end_color = "#FF0055" if end_is_contrast else "#FFFFFF"
+                folium.CircleMarker(
+                    location=[end_coord[1], end_coord[0]], radius=5 if end_is_contrast else 4,
+                    color=end_color, weight=2, fill=True,
+                    fill_color=end_color, fill_opacity=0.9,
+                    tooltip=f"{path_label} {path_id} end point"
+                    + (" | High-Contrast Intersection" if end_is_contrast else ""),
+                ).add_to(node_layer)
     add_cut_preview(m, selected_preview_path, preview_cut_position)
     node_layer.add_to(m)
 
