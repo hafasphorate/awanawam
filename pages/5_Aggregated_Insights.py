@@ -372,7 +372,41 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
             for spine in ax.spines.values():
                 spine.set_color(SPINE_COLOR)
 
-    plt.tight_layout()
+    from matplotlib.lines import Line2D
+
+    fig.suptitle(
+        "Global Spatial Analysis: Pairwise Metric Correlations",
+        fontsize=max(14, font_size + 4),
+        fontweight="bold",
+        color=TEXT_COLOR,
+        x=0.01,
+        ha="left",
+        y=0.995,
+    )
+    fig.text(
+        0.01,
+        0.962,
+        f"n = {len(sub_df)} records | Pearson r in upper triangle | significance: "
+        "* p<0.05, ** p<0.01, *** p<0.001, none = not significant",
+        fontsize=max(8, font_size - 1),
+        color=TEXT_COLOR,
+        ha="left",
+        va="top",
+    )
+    fig.legend(
+        handles=[
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="#2c3e50", alpha=0.6, markersize=7, label="Observation"),
+            Line2D([0], [0], color="#d73027", linewidth=1.8, label="Linear fit (Pearson)"),
+            Line2D([0], [0], marker="s", color="none", markerfacecolor="#d73027", markersize=8, label="Positive r (upper triangle)"),
+            Line2D([0], [0], marker="s", color="none", markerfacecolor="#2b5c8f", markersize=8, label="Negative r (upper triangle)"),
+        ],
+        loc="lower center",
+        ncol=4,
+        frameon=False,
+        fontsize=max(8, font_size - 1),
+        labelcolor=TEXT_COLOR,
+    )
+    plt.tight_layout(rect=[0, 0.04, 1, 0.94])
     return fig
 
 

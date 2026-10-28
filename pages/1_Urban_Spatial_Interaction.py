@@ -5,6 +5,7 @@ import folium
 from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.lines import Line2D
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
@@ -1234,6 +1235,34 @@ if st.session_state.graph_data is not None:
     ax_export.set_facecolor('#111111')
     fig_export.patch.set_facecolor('#111111')
     ax_export.axis('off')
+
+    betweenness_values = gdf_edges['betweenness']
+    scalar_map = plt.cm.ScalarMappable(
+        cmap='turbo',
+        norm=mcolors.Normalize(vmin=float(betweenness_values.min()), vmax=float(betweenness_values.max())),
+    )
+    colorbar = fig_export.colorbar(scalar_map, ax=ax_export, fraction=0.035, pad=0.02)
+    colorbar.set_label('Edge betweenness centrality', color='white')
+    colorbar.ax.tick_params(colors='white')
+    legend_handles = [Line2D([0], [0], color='#cccccc', linewidth=2, label='Street segment (colour = centrality)')]
+    if len(st.session_state.desire_paths) or len(st.session_state.entrance_barrier_paths):
+        legend_handles.append(Line2D([0], [0], color='#cccccc', linewidth=4, label='Analysed path (colour = mean centrality)'))
+    if show_standard_nodes:
+        legend_handles.append(Line2D([0], [0], marker='o', color='none', markerfacecolor='white', markersize=6, label='Intersection / path end'))
+    if show_contrast_nodes:
+        legend_handles.append(Line2D([0], [0], marker='o', color='none', markerfacecolor='#FF0055', markersize=8, label='High-contrast node'))
+    ax_export.legend(handles=legend_handles, loc='lower left', facecolor='#222222', edgecolor='#555555', labelcolor='white', fontsize=8)
+    ax_export.set_title(
+        f"Space Syntax Street Centrality: {data['search_query']}",
+        color='white', fontsize=14, fontweight='bold', loc='left', pad=24,
+    )
+    ax_export.text(
+        0, 1.015,
+        f"Radius {data.get('analysis_radius_m', radius)} m | {len(gdf_edges)} street segments | "
+        f"{len(st.session_state.desire_paths)} drawn path(s), "
+        f"{len(st.session_state.entrance_barrier_paths)} entrance/barrier path(s)",
+        transform=ax_export.transAxes, color='#cccccc', fontsize=9, va='bottom',
+    )
     plt.tight_layout()
 
     png_io = io.BytesIO()

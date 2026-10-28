@@ -19,6 +19,7 @@ from shapely.strtree import STRtree
 import streamlit as st
 import shapely
 from utils.navigation import render_home_button
+from utils.export_figures import prepare_export_figure
 from utils.plotly_floorplan import configure_floorplan_figure
 from utils.dataset_locks import unlocked_records
 from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
@@ -420,7 +421,20 @@ def render_cluster_map(df, wall_lines, selected_group=None, spine_result=None):
 
 
 def connected_grid_zones(points, grid_df=None):
-    """Return edge-connected grid zones ranked by size and cell-based compactness."""
+    """Return edge-connected grid zones ranked by size and mean integration."""
+    integration_lookup = {}
+    if "integration" in points.columns:
+        integration_lookup = (
+            points.assign(
+                x=pd.to_numeric(points["x"], errors="coerce"),
+                y=pd.to_numeric(points["y"], errors="coerce"),
+                integration=pd.to_numeric(points["integration"], errors="coerce"),
+            )
+            .dropna(subset=["x", "y"])
+            .drop_duplicates(subset=["x", "y"])
+            .set_index(["x", "y"])["integration"]
+            .to_dict()
+        )
     points = points[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
     if points.empty:
         raise ValueError("The selected group has no usable x/y cells.")
@@ -487,6 +501,12 @@ def connected_grid_zones(points, grid_df=None):
         area = len(component) * x_step * y_step
         compactness = 4 * math.pi * area / (exposed_edges**2)
         selected_points = np.array([point_lookup[key] for key in sorted(component)], dtype=float)
+        integration_values = [
+            integration_lookup.get(point_lookup[key], np.nan) for key in component
+        ]
+        mean_integration = float(np.nanmean(integration_values)) if not np.all(
+            np.isnan(integration_values)
+        ) else 1.0
         zone_center = selected_points.mean(axis=0)
         center_distance = float(np.linalg.norm(zone_center - cluster_center))
         zones.append(
@@ -495,7 +515,8 @@ def connected_grid_zones(points, grid_df=None):
                 "selected_points": selected_points,
                 "size": len(component),
                 "compactness": compactness,
-                "score": len(component) * compactness,
+                "mean_integration": mean_integration,
+                "score": len(component) * mean_integration,
                 "center_distance": center_distance,
                 "tie_break": min(component),
             }
@@ -506,7 +527,7 @@ def connected_grid_zones(points, grid_df=None):
         key=lambda zone: (
             zone["score"],
             zone["size"],
-            zone["compactness"],
+            zone["mean_integration"],
             -zone["center_distance"],
             tuple(-value for value in zone["tie_break"]),
         ),
@@ -540,7 +561,7 @@ def select_mall_spine_zone(clustered_df):
         key=lambda candidate: (
             candidate[1]["score"],
             candidate[1]["size"],
-            candidate[1]["compactness"],
+            candidate[1]["mean_integration"],
             -candidate[1]["mall_center_distance"],
             -candidate[0],
             tuple(-value for value in candidate[1]["tie_break"]),
@@ -554,7 +575,7 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
     if points.empty:
         raise ValueError("The selected group has no usable x/y cells.")
 
-    zones, local_zone, x_step, y_step = connected_grid_zones(points, grid_df)
+    zones, local_zone, x_step, y_step = connected_grid_zones(cluster_df, grid_df)
     selected_zone = selected_zone or local_zone
     selected_points = selected_zone["selected_points"]
     largest_component_size = max(zone["size"] for zone in zones)
@@ -647,6 +668,7 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
         "largest_component_size": largest_component_size,
         "selected_zone_size": selected_zone["size"],
         "selected_zone_compactness": selected_zone["compactness"],
+        "selected_zone_mean_integration": selected_zone["mean_integration"],
         "selected_zone_score": selected_zone["score"],
     }
 
@@ -715,7 +737,7 @@ def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="
             f"{group_label + '<br>' if group_label else ''}"
             f"Spine angle: {spine_result['spine_angle']:.1f}°<br>"
             f"Selected zone: {spine_result['selected_zone_size']} cells | "
-            f"Compactness: {spine_result['selected_zone_compactness']:.3f} | "
+            f"Mean integration: {spine_result['selected_zone_mean_integration']:.3f} | "
             f"Score: {spine_result['selected_zone_score']:.3f}<br>"
             f"Side 1 (red): {spine_result['positive_count']} cells | "
             f"Side 2 (blue): {spine_result['negative_count']} cells<br>"
@@ -797,12 +819,13 @@ def matplotlib_color(plotly_color):
     return plotly_color
 
 
-def render_png_download(fig, label, file_name, key):
+def render_png_download(fig, label, file_name, key, title=None, subtitle=None):
     """Offer a PNG export for Plotly figures when Kaleido is installed (generated on demand)."""
     state_key = f"{key}_data"
     if st.button(f"Prepare {label.lower()}", key=f"{key}_prepare"):
         try:
-            st.session_state[state_key] = fig.to_image(format="png")
+            export_fig = prepare_export_figure(fig, title=title, subtitle=subtitle)
+            st.session_state[state_key] = export_fig.to_image(format="png", scale=2)
         except Exception:
             st.caption("PNG export requires the `kaleido` package.")
             return
@@ -810,7 +833,7 @@ def render_png_download(fig, label, file_name, key):
         st.download_button(label, st.session_state[state_key], file_name, "image/png", key=key)
 
 
-def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None):
+def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None, subtitle=None):
     """Create a PNG directly with Matplotlib, avoiding Plotly's Chrome dependency."""
     figure, axis = plt.subplots(figsize=(10, 8), facecolor="#111111")
     axis.set_facecolor("#111111")
@@ -899,7 +922,9 @@ def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None):
             zorder=9,
         )
     axis.set_aspect("equal", adjustable="datalim")
-    axis.set_title("VGA Metric Clusters", color="white")
+    axis.set_title("VGA Metric Clusters", color="white", fontsize=14, fontweight="bold", loc="left", pad=22 if subtitle else 6)
+    if subtitle:
+        axis.text(0, 1.015, subtitle, transform=axis.transAxes, color="#cccccc", fontsize=9, va="bottom")
     axis.set_xlabel("X (mm)", color="white")
     axis.set_ylabel("Y (mm)", color="white")
     axis.tick_params(colors="white")
@@ -1043,17 +1068,26 @@ def render_clustering_tab():
         labels={"k": "Number of groups", "inertia": "Within-group inertia"},
     )
     st.plotly_chart(elbow_fig, width="stretch")
-    render_png_download(elbow_fig, "Download elbow chart as PNG", "vga_elbow.png", "clustering_elbow_png")
+    render_png_download(
+        elbow_fig, "Download elbow chart as PNG", "vga_elbow.png", "clustering_elbow_png",
+        subtitle=f"Selected {selected_k} groups | silhouette coefficient {silhouette:.3f}",
+    )
     group_options = ["All groups"] + [f"Group {group}" for group in sorted(clustered_df["cluster"].unique())]
     selected_group_label = st.selectbox("View group", group_options)
     selected_group = None if selected_group_label == "All groups" else int(selected_group_label.split()[-1])
 
     cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group)
     st.plotly_chart(cluster_fig, width="stretch")
-    render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
+    render_png_download(
+        cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png",
+        subtitle=f"K-Means, {selected_k} groups | showing: {selected_group_label} | {len(clustered_df)} cells",
+    )
     st.download_button(
         "Download colour-coded plan as PNG",
-        data=cluster_map_png(clustered_df, clustering_walls, selected_group),
+        data=cluster_map_png(
+            clustered_df, clustering_walls, selected_group,
+            subtitle=f"K-Means, {selected_k} groups | showing: {selected_group_label} | {len(clustered_df)} cells",
+        ),
         file_name="vga_metric_clusters.png",
         mime="image/png",
     )
@@ -1061,7 +1095,7 @@ def render_clustering_tab():
     st.subheader("Automatic Spine Calculation")
     st.caption(
         "Edge-adjacent VGA cells form separate zones across all groups. One zone is "
-        "selected by maximizing cell count × compactness (4π × cell area ÷ perimeter²); "
+        "selected by maximizing cell count × mean integration of the zone; "
         "ties favor the zone closest to the mall center."
     )
     try:
@@ -1075,7 +1109,7 @@ def render_clustering_tab():
         st.caption(
             f"Selected zone: Group {winning_group} | "
             f"{spine_result['selected_zone_size']} cells | "
-            f"compactness {spine_result['selected_zone_compactness']:.3f} | "
+            f"mean integration {spine_result['selected_zone_mean_integration']:.3f} | "
             f"score {spine_result['selected_zone_score']:.3f}"
         )
         spine_fig = render_cluster_spine_map(
@@ -1100,6 +1134,11 @@ def render_clustering_tab():
             "Download spine calculation as PNG",
             "vga_cluster_spine.png",
             "clustering_spine_png",
+            subtitle=(
+                f"Winning zone: Group {winning_group} | {spine_result['selected_zone_size']} cells | "
+                f"mean integration {spine_result['selected_zone_mean_integration']:.3f} | "
+                f"spine angle {spine_result['spine_angle']:.1f}° ({spine_result['spine_direction']})"
+            ),
         )
     except ValueError as error:
         st.warning(f"Could not calculate a mall-wide spine: {error}")
@@ -1107,7 +1146,10 @@ def render_clustering_tab():
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
     st.plotly_chart(radar_fig, width="stretch")
-    render_png_download(radar_fig, "Download radar chart as PNG", "vga_cluster_radar.png", "clustering_radar_png")
+    render_png_download(
+        radar_fig, "Download radar chart as PNG", "vga_cluster_radar.png", "clustering_radar_png",
+        subtitle="Each metric is min-max normalised across groups (0 = lowest group average, 1 = highest)",
+    )
     group_averages.insert(0, "Group", group_averages.pop("cluster").map(lambda value: f"Group {value}"))
     st.subheader("Average Metrics by Group")
     st.dataframe(group_averages, width="stretch", hide_index=True)
@@ -1206,14 +1248,25 @@ def projection_png(projected_df, density_column, walls):
         norm=Normalize(vmin=0, vmax=DENSITY_SCALE_MAX),
         s=42,
     )
-    figure.colorbar(
+    colorbar = figure.colorbar(
         scatter,
         ax=axis,
         label="Projected people / m²",
         ticks=range(DENSITY_SCALE_MAX + 1),
     )
+    colorbar.set_label("Projected people / m²", color="white")
+    colorbar.ax.tick_params(colors="white")
+    axis.plot([], [], color="#666666", linewidth=1.5, label="CAD walls")
+    axis.legend(facecolor="#222222", labelcolor="white", loc="upper right")
     axis.set_aspect("equal", adjustable="datalim")
-    axis.set_title("Projected Crowd Density", color="white")
+    axis.set_title(
+        "Projected Crowd Density", color="white", fontsize=14, fontweight="bold", loc="left", pad=22
+    )
+    axis.text(
+        0, 1.015,
+        f"{len(projected_df)} nodes | colour = predicted people per m² (scale 0-{DENSITY_SCALE_MAX})",
+        transform=axis.transAxes, color="#cccccc", fontsize=9, va="bottom",
+    )
     axis.set_xlabel("X (mm)", color="white")
     axis.set_ylabel("Y (mm)", color="white")
     axis.tick_params(colors="white")
@@ -1732,6 +1785,10 @@ def render_projection_tab():
                 f"Download projected {metric_label} map as PNG",
                 f"projected_metric_{metric_index}.png",
                 f"projection_metric_png_{metric_index}",
+                subtitle=(
+                    f"Inverse-distance weighted mean of {neighbor_count} nearest historical nodes | "
+                    f"{len(projected_df)} nodes | colour = {colorbar_title}"
+                ),
             )
 
             if is_density_metric:
@@ -1897,7 +1954,11 @@ def render_analysis_tab():
                 selection_mode="points",
                 key="floorplan_selector",
             )
-            render_png_download(fig_plan, "Download floorplan as PNG", "vga_floorplan.png", "vga_floorplan_png")
+            render_png_download(
+                fig_plan, "Download floorplan as PNG", "vga_floorplan.png", "vga_floorplan_png",
+                title="VGA Floorplan and Selected Zones",
+                subtitle=f"{len(selected_polygons)} zone(s) selected | {len(wall_lines)} wall segments | axes in mm",
+            )
 
             if chart_events and "selection" in chart_events:
                 pts = chart_events["selection"].get("points", [])
@@ -2163,7 +2224,10 @@ def render_analysis_tab():
                         length=vector_length,
                     )
                 st.plotly_chart(fig_heatmap, width="stretch")
-                render_png_download(fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png")
+                render_png_download(
+                    fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png",
+                    subtitle=f"{len(df)} VGA cells | axes in mm",
+                )
 
 
 
