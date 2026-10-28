@@ -791,13 +791,16 @@ def matplotlib_color(plotly_color):
 
 
 def render_png_download(fig, label, file_name, key):
-    """Offer a PNG export for Plotly figures when Kaleido is installed."""
-    try:
-        png_data = fig.to_image(format="png")
-    except Exception:
-        st.caption("PNG export requires the `kaleido` package.")
-        return
-    st.download_button(label, png_data, file_name, "image/png", key=key)
+    """Offer a PNG export for Plotly figures when Kaleido is installed (generated on demand)."""
+    state_key = f"{key}_data"
+    if st.button(f"Prepare {label.lower()}", key=f"{key}_prepare"):
+        try:
+            st.session_state[state_key] = fig.to_image(format="png")
+        except Exception:
+            st.caption("PNG export requires the `kaleido` package.")
+            return
+    if state_key in st.session_state:
+        st.download_button(label, st.session_state[state_key], file_name, "image/png", key=key)
 
 
 def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None):
@@ -1962,6 +1965,49 @@ def render_analysis_tab():
     if "vga_df" in st.session_state and not st.session_state["vga_df"].empty:
         df = st.session_state["vga_df"]
 
+        # Offer the session download first, so results can be saved even if
+        # rendering the heatmap below is slow or fails for large grids.
+        export_key = (id(df), uploaded_file.name, len(st.session_state.get("selected_rooms", [])))
+        if st.session_state.get("vga_export_key") != export_key:
+            wall_lines_serialized = [
+                [list(c) for c in line.coords]
+                for line in st.session_state.get("wall_lines", [])
+            ]
+            selected_rooms_serialized = [
+                [list(c) for c in poly.exterior.coords]
+                for poly in st.session_state.get("selected_rooms", [])
+            ]
+            complete_vga_export = {
+                "metadata": {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "file_name": uploaded_file.name if uploaded_file else "imported_session",
+                    "camera_corners": st.session_state.get("four_corners", []),
+                },
+                "analysis_settings": {
+                    "grid_size_mm": grid_size,
+                    "ray_step_deg": ray_step,
+                    "door_snap_dist_mm": door_snap_dist,
+                    "selection_mode": selection_mode_option if 'selection_mode_option' in locals() else "Unknown"
+                },
+                "floorplan": {
+                    "bounds": floorplan_bounds if 'floorplan_bounds' in locals() else None,
+                    "wall_lines": wall_lines_serialized,
+                    "selected_rooms": selected_rooms_serialized,
+                    "camera_corners": st.session_state.get("four_corners", []),
+                },
+                "camera_corners": st.session_state.get("four_corners", []),
+                "vga_results": df.to_dict(orient="records")
+            }
+            st.session_state["vga_export_json"] = json.dumps(complete_vga_export, default=float)
+            st.session_state["vga_export_key"] = export_key
+
+        st.download_button(
+            label=" Download Complete VGA Session JSON",
+            data=st.session_state["vga_export_json"],
+            file_name="vga_complete_session.json",
+            mime="application/json",
+        )
+
         st.subheader("VGA Heatmap Visualizer")
         available_metrics = [c for c in df.columns if c not in ["x", "y"]]
 
@@ -2041,49 +2087,6 @@ def render_analysis_tab():
                 st.plotly_chart(fig_heatmap, use_container_width=True)
                 render_png_download(fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png")
 
-        # Serialize Shapely wall lines to list of coordinate lists
-        wall_lines_serialized = []
-        if "wall_lines" in st.session_state:
-            for line in st.session_state["wall_lines"]:
-                wall_lines_serialized.append(list(line.coords))
-
-        # Serialize Shapely selected room polygons
-        selected_rooms_serialized = []
-        if "selected_rooms" in st.session_state:
-            for poly in st.session_state["selected_rooms"]:
-                selected_rooms_serialized.append(list(poly.exterior.coords))
-
-        # Build complete JSON package
-        complete_vga_export = {
-            "metadata": {
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "file_name": uploaded_file.name if uploaded_file else "imported_session",
-                "camera_corners": st.session_state.get("four_corners", []),
-            },
-            "analysis_settings": {
-                "grid_size_mm": grid_size,
-                "ray_step_deg": ray_step,
-                "door_snap_dist_mm": door_snap_dist,
-                "selection_mode": selection_mode_option if 'selection_mode_option' in locals() else "Unknown"
-            },
-            "floorplan": {
-                "bounds": floorplan_bounds if 'floorplan_bounds' in locals() else None,
-                "wall_lines": wall_lines_serialized,
-                "selected_rooms": selected_rooms_serialized,
-                "camera_corners": st.session_state.get("four_corners", []),
-            },
-            "camera_corners": st.session_state.get("four_corners", []),
-            "vga_results": df.to_dict(orient="records")
-        }
-
-        json_data = json.dumps(complete_vga_export, indent=2)
-
-        st.download_button(
-            label=" Download Complete VGA Session JSON",
-            data=json_data,
-            file_name="vga_complete_session.json",
-            mime="application/json",
-        )
 
 
 with analysis_tab:
