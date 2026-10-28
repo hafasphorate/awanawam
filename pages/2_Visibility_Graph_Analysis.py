@@ -639,15 +639,10 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
     }
 
 
-def _truthy_walkable(series):
-    return series.map(lambda value: str(value).strip().lower() in {"1", "1.0", "true", "yes", "y"})
-
-
 def calculate_centrality_spine(
     df,
     top_fraction=0.15,
     measure="betweenness",
-    walkable_column="walkable",
     max_exact_nodes=600,
 ):
     """Isolate a continuous spine from the top integration cells using graph centrality.
@@ -670,11 +665,9 @@ def calculate_centrality_spine(
     for column in ("x", "y", "integration"):
         data[column] = pd.to_numeric(data[column], errors="coerce")
     data = data.dropna(subset=["x", "y", "integration"])
-    if walkable_column in data.columns:
-        data = data[_truthy_walkable(data[walkable_column])]
     data = data.drop_duplicates(subset=["x", "y"])
     if len(data) < 2:
-        raise ValueError("There are not enough walkable cells with integration values.")
+        raise ValueError("There are not enough cells with integration values.")
 
     x_steps = np.diff(np.sort(data["x"].unique()))
     y_steps = np.diff(np.sort(data["y"].unique()))
@@ -1158,8 +1151,7 @@ def render_centrality_spine_section(source_df, walls):
     with st.expander("How the spine is calculated", expanded=True):
         st.markdown(
             """
-1. **Select candidate cells.** Only walkable cells with an integration value are used (cells flagged
-   `walkable = false` are dropped when that column exists). The cells at or above the chosen percentile
+1. **Select candidate cells.** Only cells with an integration value are used. The cells at or above the chosen percentile
    of integration (default: the top 15%) are kept. These are the places that are most visually
    accessible from the rest of the plan.
 2. **Build an adjacency graph.** Each kept cell becomes a node. It is linked to the kept cells that touch it
@@ -1179,7 +1171,7 @@ def render_centrality_spine_section(source_df, walls):
 6. **Describe the spine.** A minimum rotated rectangle is fitted around the path and its long axis gives the
    spine line, **Point 0** and **Point 1**. Point 1 is placed at the end with fewer cells beyond it.
    The **spine angle** is the direction from Point 0 to Point 1, measured anticlockwise from the +X axis.
-   All walkable cells are then counted either side of the line: **Side 1** (red) is to the left of
+   All VGA cells are then counted either side of the line: **Side 1** (red) is to the left of
    Point 0 → Point 1 and **Side 2** (blue) is to the right. More cells on the right gives **C** (clockwise),
    more on the left gives **AC** (anticlockwise), and equal counts are **Balanced**.
             """
