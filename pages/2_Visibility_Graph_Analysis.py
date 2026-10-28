@@ -535,40 +535,6 @@ def connected_grid_zones(points, grid_df=None):
     return zones, selected_zone, x_step, y_step
 
 
-def select_mall_spine_zone(clustered_df):
-    """Select one connected zone globally across every K-Means group."""
-    all_points = clustered_df[["x", "y"]].apply(
-        pd.to_numeric, errors="coerce"
-    ).dropna().drop_duplicates()
-    if all_points.empty:
-        raise ValueError("There are no usable VGA x/y cells for spine selection.")
-
-    mall_center = all_points[["x", "y"]].mean().to_numpy(dtype=float)
-    candidates = []
-    for group in sorted(clustered_df["cluster"].dropna().unique()):
-        group_df = clustered_df[clustered_df["cluster"] == group]
-        zones, _, _, _ = connected_grid_zones(group_df, clustered_df)
-        for zone in zones:
-            zone_center = zone["selected_points"].mean(axis=0)
-            zone["mall_center_distance"] = float(np.linalg.norm(zone_center - mall_center))
-            candidates.append((int(group), zone))
-
-    if not candidates:
-        raise ValueError("No connected VGA zones are available for spine selection.")
-
-    return max(
-        candidates,
-        key=lambda candidate: (
-            candidate[1]["score"],
-            candidate[1]["size"],
-            candidate[1]["mean_integration"],
-            -candidate[1]["mall_center_distance"],
-            -candidate[0],
-            tuple(-value for value in candidate[1]["tie_break"]),
-        ),
-    )
-
-
 def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zone=None):
     """Calculate the spine through the globally selected connected zone."""
     points = cluster_df[["x", "y"]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
@@ -673,6 +639,150 @@ def calculate_cluster_spine(cluster_df, count_df=None, grid_df=None, selected_zo
     }
 
 
+def _truthy_walkable(series):
+    return series.map(lambda value: str(value).strip().lower() in {"1", "1.0", "true", "yes", "y"})
+
+
+def calculate_centrality_spine(
+    df,
+    top_fraction=0.15,
+    measure="betweenness",
+    walkable_column="walkable",
+    max_exact_nodes=600,
+):
+    """Isolate a continuous spine from the top integration cells using graph centrality.
+
+    The highest-integration cells are linked to their 8-connected grid neighbours, the
+    strongest connected region is scored with betweenness or closeness centrality, and the
+    spine is the lowest-cost path between that region's two extremities, where stepping onto
+    a high-centrality cell is cheap. The path then feeds the same bounding-box/side-count
+    analysis as the zone-based spine so the results render identically.
+    """
+    import networkx as nx
+
+    required = {"x", "y", "integration"}
+    if not required.issubset(df.columns):
+        raise ValueError("Graph-based spine calculation needs x, y and integration columns.")
+    if not 0 < top_fraction <= 1:
+        raise ValueError("The top fraction must be between 0 and 1.")
+
+    data = df.copy()
+    for column in ("x", "y", "integration"):
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    data = data.dropna(subset=["x", "y", "integration"])
+    if walkable_column in data.columns:
+        data = data[_truthy_walkable(data[walkable_column])]
+    data = data.drop_duplicates(subset=["x", "y"])
+    if len(data) < 2:
+        raise ValueError("There are not enough walkable cells with integration values.")
+
+    x_steps = np.diff(np.sort(data["x"].unique()))
+    y_steps = np.diff(np.sort(data["y"].unique()))
+    steps = [float(steps[steps > 0].min()) for steps in (x_steps, y_steps) if np.any(steps > 0)]
+    if not steps:
+        raise ValueError("The grid cells do not span more than one position.")
+    x_step = float(x_steps[x_steps > 0].min()) if np.any(x_steps > 0) else min(steps)
+    y_step = float(y_steps[y_steps > 0].min()) if np.any(y_steps > 0) else min(steps)
+    x_origin, y_origin = float(data["x"].min()), float(data["y"].min())
+
+    threshold = float(data["integration"].quantile(1.0 - top_fraction))
+    candidates = data[data["integration"] >= threshold].copy()
+    candidates["gx"] = np.round((candidates["x"] - x_origin) / x_step).astype(int)
+    candidates["gy"] = np.round((candidates["y"] - y_origin) / y_step).astype(int)
+
+    graph = nx.Graph()
+    for gx, gy, x_value, y_value, integration_value in zip(
+        candidates["gx"], candidates["gy"], candidates["x"], candidates["y"], candidates["integration"]
+    ):
+        graph.add_node(
+            (int(gx), int(gy)), x=float(x_value), y=float(y_value), integration=float(integration_value)
+        )
+    for gx, gy in list(graph.nodes):
+        for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            neighbor = (gx + dx, gy + dy)
+            if neighbor in graph:
+                graph.add_edge(
+                    (gx, gy), neighbor, distance=math.hypot(dx * x_step, dy * y_step)
+                )
+
+    components = [graph.subgraph(nodes).copy() for nodes in nx.connected_components(graph)]
+    components = [component for component in components if component.number_of_nodes() >= 2]
+    if not components:
+        raise ValueError(
+            "The top-integration cells are not adjacent to each other; try a larger top percentage."
+        )
+    region = max(
+        components,
+        key=lambda component: (
+            component.number_of_nodes()
+            * np.mean([attrs["integration"] for _, attrs in component.nodes(data=True)]),
+            component.number_of_nodes(),
+        ),
+    )
+
+    if measure == "closeness":
+        centrality = nx.closeness_centrality(region, distance="distance")
+    else:
+        sample = region.number_of_nodes() > max_exact_nodes
+        centrality = nx.betweenness_centrality(
+            region,
+            k=max_exact_nodes if sample else None,
+            weight="distance",
+            seed=42,
+            normalized=True,
+        )
+    centrality_values = np.array(list(centrality.values()), dtype=float)
+    centrality_range = np.ptp(centrality_values)
+    normalized_centrality = {
+        node: (value - centrality_values.min()) / centrality_range if centrality_range > 0 else 1.0
+        for node, value in centrality.items()
+    }
+    for first, second, attrs in region.edges(data=True):
+        mean_centrality = (normalized_centrality[first] + normalized_centrality[second]) / 2
+        attrs["cost"] = attrs["distance"] / (0.05 + mean_centrality)
+
+    anchor = max(normalized_centrality, key=normalized_centrality.get)
+    end_a = max(
+        nx.single_source_dijkstra_path_length(region, anchor, weight="distance").items(),
+        key=lambda item: item[1],
+    )[0]
+    end_b = max(
+        nx.single_source_dijkstra_path_length(region, end_a, weight="distance").items(),
+        key=lambda item: item[1],
+    )[0]
+    path_nodes = nx.shortest_path(region, end_a, end_b, weight="cost")
+    path_points = np.array(
+        [[region.nodes[node]["x"], region.nodes[node]["y"]] for node in path_nodes], dtype=float
+    )
+    path_integration = np.array([region.nodes[node]["integration"] for node in path_nodes])
+    path_df = pd.DataFrame(
+        {"x": path_points[:, 0], "y": path_points[:, 1], "integration": path_integration}
+    )
+    zone = {
+        "selected_points": path_points,
+        "size": len(path_points),
+        "compactness": 0.0,
+        "mean_integration": float(path_integration.mean()),
+        "score": float(len(path_points) * path_integration.mean()),
+    }
+    result = calculate_cluster_spine(path_df, count_df=data, grid_df=data, selected_zone=zone)
+    result.update(
+        {
+            "path_coords": path_points,
+            "candidate_points": candidates[["x", "y"]].to_numpy(dtype=float),
+            "top_fraction": top_fraction,
+            "integration_threshold": threshold,
+            "centrality_measure": measure,
+            "candidate_count": len(candidates),
+            "region_size": region.number_of_nodes(),
+            "path_mean_centrality": float(
+                np.mean([normalized_centrality[node] for node in path_nodes])
+            ),
+        }
+    )
+    return result
+
+
 def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="#FFD166"):
     """Overlay the selected cluster bounding box, spine, and side counts."""
     if not spine_result or not {
@@ -715,6 +825,31 @@ def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="
         )
     point_zero = spine_result.get("point_zero", spine_result["spine_start"])
     point_one = spine_result.get("point_one", spine_result["spine_end"])
+    if "candidate_points" in spine_result:
+        candidate_points = np.asarray(spine_result["candidate_points"])
+        fig.add_trace(
+            go.Scatter(
+                x=candidate_points[:, 0],
+                y=candidate_points[:, 1],
+                mode="markers",
+                marker=dict(size=7, color="#00E5FF", symbol="diamond-open"),
+                name=f"Top {spine_result['top_fraction'] * 100:.0f}% integration cells",
+                hovertemplate="x=%{x}<br>y=%{y}<extra>Top integration cell</extra>",
+            )
+        )
+    if "path_coords" in spine_result:
+        path_coords = np.asarray(spine_result["path_coords"])
+        fig.add_trace(
+            go.Scatter(
+                x=path_coords[:, 0],
+                y=path_coords[:, 1],
+                mode="lines+markers",
+                line=dict(color="#FFFFFF", width=3),
+                marker=dict(size=8, color="#FFFFFF", line=dict(color="#111111", width=1)),
+                name="Centrality path",
+                hovertemplate="x=%{x}<br>y=%{y}<extra>Centrality path</extra>",
+            )
+        )
     fig.add_trace(
         go.Scatter(
             x=[point_zero[0], point_one[0]],
@@ -751,18 +886,6 @@ def add_cluster_spine_overlay(fig, spine_result, group_label=None, spine_color="
         borderwidth=1,
         font=dict(color="#FFFFFF"),
     )
-    return fig
-
-
-def render_cluster_spine_map(df, wall_lines, selected_group, spine_result):
-    """Render all groups and overlay the single mall-wide selected zone and spine."""
-    fig = render_cluster_map(df, wall_lines)
-    add_cluster_spine_overlay(
-        fig,
-        spine_result,
-        group_label=f"Winning zone — Group {selected_group}",
-    )
-    fig.update_layout(title="Mall-wide Automatic Spine Calculation")
     return fig
 
 
@@ -1025,8 +1148,101 @@ def cluster_vga_metrics(source_df, requested_k=None):
     return clustered_df, metric_columns, selected_k, score, elbow_df
 
 
+def render_centrality_spine_section(source_df, walls):
+    """Alternative spine: top-integration cells -> adjacency graph -> centrality path."""
+    st.subheader("Spine Identification: Graph-Based Topographic Centrality")
+    st.markdown(
+        "The spine is the continuous, most-connected corridor of the space, found from the "
+        "highest-integration VGA cells rather than from a hand-drawn line."
+    )
+    with st.expander("How the spine is calculated", expanded=True):
+        st.markdown(
+            """
+1. **Select candidate cells.** Only walkable cells with an integration value are used (cells flagged
+   `walkable = false` are dropped when that column exists). The cells at or above the chosen percentile
+   of integration (default: the top 15%) are kept. These are the places that are most visually
+   accessible from the rest of the plan.
+2. **Build an adjacency graph.** Each kept cell becomes a node. It is linked to the kept cells that touch it
+   on the grid (up, down, left, right and diagonals). Edge length is the true centre-to-centre distance, so
+   the method works for any node interval, not just 1 m.
+3. **Isolate the main region.** The kept cells can break into several disconnected patches. The patch with the
+   highest *cell count × mean integration* is chosen, so a large, strongly integrated area wins over small
+   isolated hot spots.
+4. **Score centrality.** Every cell in that region gets a network centrality score.
+   *Betweenness* measures how many shortest routes between other cells pass through a cell, so it highlights
+   the backbone of the region. *Closeness* measures how near a cell is to all others, so it highlights the
+   geometric core. Scores are rescaled to 0–1.
+5. **Trace the continuous spine.** The two cells furthest apart in the region are taken as its extremities.
+   The spine is the lowest-cost path between them, where moving through a high-centrality cell is cheap and
+   moving through a low-centrality cell is expensive. The path therefore stays on the central corridor and
+   is always unbroken.
+6. **Describe the spine.** A minimum rotated rectangle is fitted around the path and its long axis gives the
+   spine line, **Point 0** and **Point 1**. Point 1 is placed at the end with fewer cells beyond it.
+   The **spine angle** is the direction from Point 0 to Point 1, measured anticlockwise from the +X axis.
+   All walkable cells are then counted either side of the line: **Side 1** (red) is to the left of
+   Point 0 → Point 1 and **Side 2** (blue) is to the right. More cells on the right gives **C** (clockwise),
+   more on the left gives **AC** (anticlockwise), and equal counts are **Balanced**.
+            """
+        )
+    if "integration" not in source_df.columns:
+        st.info("This method needs an `integration` value for every VGA cell.")
+        return
+    control_a, control_b = st.columns(2)
+    top_percent = control_a.slider(
+        "Top integration cells to keep (%)", 5, 50, 15, step=1, key="centrality_spine_percent"
+    )
+    measure_label = control_b.selectbox(
+        "Centrality measure",
+        ["Betweenness", "Closeness"],
+        key="centrality_spine_measure",
+        help="Betweenness favours cells that many shortest routes pass through; closeness favours "
+        "cells that are nearest to all other top cells.",
+    )
+    try:
+        result = calculate_centrality_spine(
+            source_df,
+            top_fraction=top_percent / 100,
+            measure=measure_label.lower(),
+        )
+    except ValueError as error:
+        st.warning(f"Could not calculate a graph-based spine: {error}")
+        return
+
+    st.caption(
+        f"{result['candidate_count']} cells with integration ≥ {result['integration_threshold']:.3f} | "
+        f"largest connected region {result['region_size']} cells | spine path "
+        f"{result['selected_zone_size']} cells | mean integration "
+        f"{result['selected_zone_mean_integration']:.3f}"
+    )
+    fig = render_vga_heatmap_with_underlay(source_df, "integration", walls)
+    add_cluster_spine_overlay(fig, result, group_label="Graph-based spine")
+    fig.update_layout(title="Graph-Based Topographic Centrality Spine")
+    st.plotly_chart(fig, width="stretch")
+    angle_col, direction_col = st.columns(2)
+    angle_col.metric("Spine angle", f"{result['spine_angle']:.1f}°")
+    direction_col.metric(
+        "Spine Direction",
+        result["spine_direction"],
+        help=(
+            "C = Clockwise (more cells to the right of Point 0 → Point 1); "
+            "AC = AntiClockwise (more cells to the left). Equal counts are Balanced."
+        ),
+    )
+    render_png_download(
+        fig,
+        "Download graph-based spine as PNG",
+        "vga_centrality_spine.png",
+        "centrality_spine_png",
+        subtitle=(
+            f"Top {top_percent}% integration cells, {measure_label.lower()} centrality | "
+            f"path {result['selected_zone_size']} cells | spine angle {result['spine_angle']:.1f}° "
+            f"({result['spine_direction']})"
+        ),
+    )
+
+
 def render_clustering_tab():
-    st.subheader("K-Means Clustering of VGA Metrics")
+    st.subheader("Metric Analysis")
     clustering_upload = st.file_uploader(
         "Import previously analysed VGA JSON (optional)",
         type=["json"],
@@ -1070,6 +1286,11 @@ def render_clustering_tab():
         st.error("VGA results must include `x` and `y` coordinates to draw the clustered floorplan.")
         return
 
+    render_centrality_spine_section(clustering_df, clustering_walls)
+
+    st.markdown("---")
+    st.subheader("K-Means Clustering of VGA Metrics")
+    st.caption("Group cells with similar metric profiles, after the spine has been identified above.")
     requested_k = st.number_input(
         "Number of groups (optional; leave at 0 to use the elbow method)",
         min_value=0,
@@ -1168,57 +1389,6 @@ def render_clustering_tab():
         file_name="vga_metric_clusters.png",
         mime="image/png",
     )
-
-    st.subheader("Automatic Spine Calculation")
-    st.caption(
-        "Edge-adjacent VGA cells form separate zones across all groups. One zone is "
-        "selected by maximizing cell count × mean integration of the zone; "
-        "ties favor the zone closest to the mall center."
-    )
-    try:
-        winning_group, winning_zone = select_mall_spine_zone(clustered_df)
-        spine_result = calculate_cluster_spine(
-            clustered_df[clustered_df["cluster"] == winning_group],
-            count_df=clustered_df,
-            grid_df=clustered_df,
-            selected_zone=winning_zone,
-        )
-        st.caption(
-            f"Selected zone: Group {winning_group} | "
-            f"{spine_result['selected_zone_size']} cells | "
-            f"mean integration {spine_result['selected_zone_mean_integration']:.3f} | "
-            f"score {spine_result['selected_zone_score']:.3f}"
-        )
-        spine_fig = render_cluster_spine_map(
-            clustered_df,
-            clustering_walls,
-            winning_group,
-            spine_result,
-        )
-        st.plotly_chart(spine_fig, width="stretch")
-        angle_col, direction_col = st.columns(2)
-        angle_col.metric("Spine angle", f"{spine_result['spine_angle']:.1f}°")
-        direction_col.metric(
-            "Spine Direction",
-            spine_result["spine_direction"],
-            help=(
-                "C = Clockwise (more cells to the right of Point 0 → Point 1); "
-                "AC = AntiClockwise (more cells to the left). Equal counts are Balanced."
-            ),
-        )
-        render_png_download(
-            spine_fig,
-            "Download spine calculation as PNG",
-            "vga_cluster_spine.png",
-            "clustering_spine_png",
-            subtitle=(
-                f"Winning zone: Group {winning_group} | {spine_result['selected_zone_size']} cells | "
-                f"mean integration {spine_result['selected_zone_mean_integration']:.3f} | "
-                f"spine angle {spine_result['spine_angle']:.1f}° ({spine_result['spine_direction']})"
-            ),
-        )
-    except ValueError as error:
-        st.warning(f"Could not calculate a mall-wide spine: {error}")
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
@@ -1910,7 +2080,7 @@ def render_projection_tab():
     )
 
 
-analysis_tab, clustering_tab, projection_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering", "2.3 Crowd Projection"])
+analysis_tab, clustering_tab, projection_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Analysis", "2.3 Crowd Projection"])
 
 @st.cache_resource
 def vga_result_store():
