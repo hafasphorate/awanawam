@@ -178,7 +178,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
     # Manual button trigger to protect CPU from continuous slider inference
     col_btn, col_info = st.columns([1, 2])
     with col_btn:
-        run_preview = st.button(" Run Frame Preview", type="primary", use_container_width=True)
+        run_preview = st.button(" Run Frame Preview", type="primary", width="stretch")
     with col_info:
         st.caption("Click button to execute YOLO model on selected frame. Prevents slider CPU throttling.")
 
@@ -210,7 +210,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         st.image(
             annotated_frame,
             caption=f"Frame #{frame_idx} | Detected People: {len(df_detections)}",
-            use_container_width=True,
+            width="stretch",
         )
 
     #  Right Column: 2D Floorplan Mapping
@@ -301,14 +301,14 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
         )
         configure_floorplan_figure(fig_2d)
 
-        st.plotly_chart(fig_2d, use_container_width=True)
+        st.plotly_chart(fig_2d, width="stretch")
 
     # Position table
     if not df_detections.empty:
         st.markdown("###  Single Frame Position Coordinates")
         display_df = df_detections[["track_id", "img_x", "img_y", "world_x", "world_y"]].copy()
         display_df.columns = ["Track ID", "Image X (px)", "Image Y (px)", "Floorplan X (m)", "Floorplan Y (m)"]
-        st.dataframe(display_df, use_container_width=True)
+        st.dataframe(display_df, width="stretch")
 
     #  Batch Video Sequence Execution
     st.markdown("---")
@@ -366,7 +366,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
             video_placeholder.image(
                 ann_frame,
                 caption=f"Processing Frame {curr_frame_idx}/{total_frames} (Frame Skip: {frame_skip})",
-                use_container_width=True,
+                width="stretch",
             )
 
             progress_bar.progress(min(1.0, curr_frame_idx / max(1, total_frames)))
@@ -403,7 +403,7 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
                 data=csv_bytes,
                 file_name="human_tracking_data.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
         # 2. Combined JSON Export (Includes VGA Grid Metadata)
@@ -431,5 +431,5 @@ def render_tracking_view(dxf_walls: list, vga_grid_df: pd.DataFrame = None):
                 data=json_bytes,
                 file_name="human_tracking_and_vga.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )

@@ -532,7 +532,7 @@ with tab_region:
             st.markdown(
                 "<div style='margin-top: 15px;'></div>", unsafe_allow_html=True
             )
-            if st.button(" Clear Sketches", use_container_width=True):
+            if st.button(" Clear Sketches", width="stretch"):
                 st.session_state.frame_sketches = []
                 st.session_state.sketch_canvas_key_ver += 1
                 st.rerun()
@@ -627,7 +627,7 @@ with tab_region:
 
             v_events = st.plotly_chart(
                 fig_img,
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 config=plotly_config,
                 key=f"video_sketch_canvas_{st.session_state.get('sketch_canvas_key_ver', 0)}",
@@ -710,7 +710,7 @@ with tab_region:
             )
             video_feature_events = st.plotly_chart(
                 feature_fig,
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 selection_mode="points",
                 key="video_feature_canvas",
@@ -746,7 +746,7 @@ with tab_region:
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button(" Clear All Features", use_container_width=True):
+            if st.button(" Clear All Features", width="stretch"):
                 st.session_state.video_feature_points = []
                 st.session_state.floorplan_feature_points = []
                 st.session_state.four_corners = []
@@ -954,7 +954,7 @@ with tab_region:
 
         chart_events = st.plotly_chart(
             fig,
-            use_container_width=True,
+            width="stretch",
             on_select="rerun",
             selection_mode="points",
             key="roi_floorplan_canvas",
@@ -1328,7 +1328,7 @@ with tab_playback:
                     margin=dict(l=10, r=10, t=20, b=10),
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_play, use_container_width=True)
+                st.plotly_chart(fig_play, width="stretch")
 
             with col_fb2:
                 st.markdown(
@@ -1353,7 +1353,7 @@ with tab_playback:
                     margin=dict(l=10, r=10, t=20, b=10),
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_f_hm, use_container_width=True)
+                st.plotly_chart(fig_f_hm, width="stretch")
 
             st.markdown("---")
 
@@ -1388,7 +1388,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_vol, use_container_width=True)
+                st.plotly_chart(fig_vol, width="stretch")
 
             with m_tab2:
                 st.markdown("#### Binned Pedestrian Density Grid")
@@ -1423,7 +1423,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_dens, use_container_width=True)
+                st.plotly_chart(fig_dens, width="stretch")
 
             with m_tab3:
                 st.markdown("#### Velocity Heatmap")
@@ -1441,7 +1441,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_spd, use_container_width=True)
+                st.plotly_chart(fig_spd, width="stretch")
 
             with m_tab4:
                 st.markdown("#### Directional Shift Field (Degrees from North)")
@@ -1461,7 +1461,7 @@ with tab_playback:
                     height=500,
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
-                st.plotly_chart(fig_dir, use_container_width=True)
+                st.plotly_chart(fig_dir, width="stretch")
 
             st.markdown("---")
             st.markdown(
@@ -1540,14 +1540,14 @@ with tab_playback:
                 data=json.dumps(crowd_vga_export, indent=2),
                 file_name="integrated_vga_crowd_analysis.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
             # Quick preview table for correlation analysis
             if integrated_correlation_nodes:
                 st.markdown("#### Preview Node Correlation Data")
                 df_corr_preview = pd.DataFrame(integrated_correlation_nodes)
-                st.dataframe(df_corr_preview.head(10), use_container_width=True)
+                st.dataframe(df_corr_preview.head(10), width="stretch")
 
         else:
             st.error(

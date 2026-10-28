@@ -79,7 +79,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
 
     with col_mock:
         st.markdown("**Test Drive:**")
-        if st.button(" Load Sample Data", use_container_width=True):
+        if st.button(" Load Sample Data", width="stretch"):
             st.session_state.tracking_results_df = _generate_mock_tracking_data()
             st.session_state.wall_lines = _generate_mock_walls()
             st.rerun()
@@ -163,7 +163,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         st.caption("Press Play inside the chart viewport to view dynamic heatmaps in real-time.")
         
         anim_fig = _build_plotly_animation(df, active_walls, metric_choice, trail_length)
-        st.plotly_chart(anim_fig, use_container_width=True)
+        st.plotly_chart(anim_fig, width="stretch")
 
     # --- TAB 2: Frame-by-Frame Manual View ---
     with tab_frame:
@@ -173,7 +173,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
         selected_frame = st.slider("Select Frame Index", min_value=min_f, max_value=max_f, value=min_f, step=1)
         
         frame_fig = _build_single_frame_figure(df, active_walls, selected_frame, metric_choice, trail_length)
-        st.plotly_chart(frame_fig, use_container_width=True)
+        st.plotly_chart(frame_fig, width="stretch")
 
     # --- TAB 3: Full Session Aggregated Heatmap ---
     with tab_agg:
@@ -186,7 +186,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
             arrow_scale = st.slider("Vector Arrow Scaling", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
 
         agg_fig = _build_aggregated_figure(df, active_walls, metric_choice, grid_bins, show_vectors, arrow_scale)
-        st.plotly_chart(agg_fig, use_container_width=True)
+        st.plotly_chart(agg_fig, width="stretch")
 
     # --- 6. EXPORT SECTION ---
     st.markdown("---")
@@ -202,7 +202,7 @@ def render_playback_view(wall_lines=None, tracking_df=None):
             data=json_bytes,
             file_name="crowd_analytics_export.json",
             mime="application/json",
-            use_container_width=True
+            width="stretch"
         )
 
 

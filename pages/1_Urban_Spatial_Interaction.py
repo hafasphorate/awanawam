@@ -543,9 +543,16 @@ def analyze_desire_paths(graph, paths, edge_centrality, path_type="Desire path")
 
 
 uploaded_json = st.file_uploader("Import Urban Spatial Interaction JSON", type=["json"])
-if uploaded_json is not None:
+import_signature = (
+    (uploaded_json.name, uploaded_json.size) if uploaded_json is not None else None
+)
+if uploaded_json is None:
+    st.session_state.pop("urban_import_signature", None)
+# Import once per upload; the uploader keeps its file across reruns and would
+# otherwise overwrite the loaded state (and edits) on every interaction.
+elif st.session_state.get("urban_import_signature") != import_signature:
     try:
-        imported = json.load(uploaded_json)
+        imported = json.loads(uploaded_json.getvalue())
         imported_edges = gpd.GeoDataFrame.from_features(imported["plan"]["edges"]["features"])
         imported_nodes = gpd.GeoDataFrame.from_features(imported["plan"]["nodes"]["features"])
         if "u" in imported_edges.columns and "v" in imported_edges.columns and "key" in imported_edges.columns:
@@ -623,9 +630,12 @@ if uploaded_json is not None:
             result.setdefault("mean_betweenness", 0.0)
             result.setdefault("max_betweenness", 0.0)
             result.setdefault("network_edge_count", 0)
+        st.session_state.selected_node = None
+        st.session_state.path_map_revision += 1
+        st.session_state.urban_import_signature = import_signature
         st.success("Urban plan imported. The map and pathways are ready to view.")
-    except (KeyError, ValueError, TypeError) as error:
-        st.error(f"Could not import this JSON package: {error}")
+    except Exception as error:
+        st.error(f"Could not import this JSON package: {error!r}")
 
 
 if st.button("Load Street Plan"):
@@ -914,7 +924,7 @@ if st.session_state.graph_data is not None:
     )
     if path_analysis:
         st.subheader("Pathway Centrality Results")
-        st.dataframe(path_analysis, use_container_width=True)
+        st.dataframe(path_analysis, width="stretch")
 
     # Feature Explanations for Map
     st.markdown("### Feature Explanations & Urban Implications")
@@ -1070,7 +1080,7 @@ if st.session_state.graph_data is not None:
         plot_bgcolor='#1E1E1E'
     )
 
-    event = st.plotly_chart(fig_jg, use_container_width=True, on_select="rerun", key="jgraph_chart")
+    event = st.plotly_chart(fig_jg, width="stretch", on_select="rerun", key="jgraph_chart")
     
     if event and "selection" in event and event["selection"]["points"]:
         point = event["selection"]["points"][0]
@@ -1461,7 +1471,7 @@ with tab_gravity:
 
     if summary is not None and not summary.empty:
         st.subheader("Density Along All Street Paths")
-        st.dataframe(summary, use_container_width=True)
+        st.dataframe(summary, width="stretch")
         profile = go.Figure()
         for path_id, group in samples.groupby("path_id"):
             profile.add_trace(go.Scatter(
@@ -1472,7 +1482,7 @@ with tab_gravity:
             template="plotly_dark", xaxis_title="Distance along path (m)",
             yaxis_title="Density (people / m)", height=380,
         )
-        st.plotly_chart(profile, use_container_width=True)
+        st.plotly_chart(profile, width="stretch")
         st.download_button(
             "Download sample densities (.csv)",
             data=samples.drop(columns=["x", "y"]).to_csv(index=False),
@@ -1505,7 +1515,7 @@ with tab_gravity:
 
     edited_events = st.data_editor(
         st.session_state.gravity_events_base,
-        num_rows="dynamic", use_container_width=True,
+        num_rows="dynamic", width="stretch",
         key=f"gravity_events_editor_{st.session_state.gravity_events_rev}",
         column_config={
             "label": st.column_config.TextColumn("Event"),

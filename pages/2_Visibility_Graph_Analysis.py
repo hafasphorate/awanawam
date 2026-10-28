@@ -20,6 +20,12 @@ import streamlit as st
 from utils.navigation import render_home_button
 from utils.plotly_floorplan import configure_floorplan_figure
 from utils.dataset_locks import unlocked_records
+from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
+from utils.grid_normalization import (
+    REFERENCE_GRID_MM,
+    infer_grid_interval_mm,
+    resample_to_reference_grid,
+)
 from utils.crowd_visuals import (
     add_deviation_rays,
     add_direction_arrows,
@@ -1035,14 +1041,14 @@ def render_clustering_tab():
         elbow_df, x="k", y="inertia", markers=True, title="Elbow Method",
         labels={"k": "Number of groups", "inertia": "Within-group inertia"},
     )
-    st.plotly_chart(elbow_fig, use_container_width=True)
+    st.plotly_chart(elbow_fig, width="stretch")
     render_png_download(elbow_fig, "Download elbow chart as PNG", "vga_elbow.png", "clustering_elbow_png")
     group_options = ["All groups"] + [f"Group {group}" for group in sorted(clustered_df["cluster"].unique())]
     selected_group_label = st.selectbox("View group", group_options)
     selected_group = None if selected_group_label == "All groups" else int(selected_group_label.split()[-1])
 
     cluster_fig = render_cluster_map(clustered_df, clustering_walls, selected_group)
-    st.plotly_chart(cluster_fig, use_container_width=True)
+    st.plotly_chart(cluster_fig, width="stretch")
     render_png_download(cluster_fig, "Download cluster map as PNG", "vga_cluster_map.png", "clustering_map_png")
     st.download_button(
         "Download colour-coded plan as PNG",
@@ -1077,7 +1083,7 @@ def render_clustering_tab():
             winning_group,
             spine_result,
         )
-        st.plotly_chart(spine_fig, use_container_width=True)
+        st.plotly_chart(spine_fig, width="stretch")
         angle_col, direction_col = st.columns(2)
         angle_col.metric("Spine angle", f"{spine_result['spine_angle']:.1f}°")
         direction_col.metric(
@@ -1099,11 +1105,11 @@ def render_clustering_tab():
 
     group_averages = clustered_df.groupby("cluster")[metric_columns].mean().reset_index()
     radar_fig = render_cluster_radar(group_averages, metric_columns, selected_group)
-    st.plotly_chart(radar_fig, use_container_width=True)
+    st.plotly_chart(radar_fig, width="stretch")
     render_png_download(radar_fig, "Download radar chart as PNG", "vga_cluster_radar.png", "clustering_radar_png")
     group_averages.insert(0, "Group", group_averages.pop("cluster").map(lambda value: f"Group {value}"))
     st.subheader("Average Metrics by Group")
-    st.dataframe(group_averages, use_container_width=True, hide_index=True)
+    st.dataframe(group_averages, width="stretch", hide_index=True)
 
 
 @st.cache_resource
@@ -1288,6 +1294,7 @@ def render_projection_tab():
     source_walls = st.session_state.get("wall_lines", [])
     source_metadata = st.session_state.get("vga_source_metadata", {})
 
+    upload_grid_mm = None
     if projection_upload is not None:
         try:
             imported = json.load(projection_upload)
@@ -1297,6 +1304,11 @@ def render_projection_tab():
                 source_metadata = imported.get("metadata", {})
                 if not isinstance(source_metadata, dict):
                     source_metadata = {}
+                upload_settings = imported.get("analysis_settings")
+                if not isinstance(upload_settings, dict):
+                    upload_settings = source_metadata.get("analysis_settings", {})
+                if isinstance(upload_settings, dict):
+                    upload_grid_mm = upload_settings.get("grid_size_mm")
             if imported_walls:
                 source_walls = imported_walls
             st.success(f"Loaded {len(source_df)} VGA points from `{projection_upload.name}`.")
@@ -1307,6 +1319,33 @@ def render_projection_tab():
     if source_df is None or source_df.empty or not {"x", "y"}.issubset(source_df.columns):
         st.info("Upload a VGA JSON session or run VGA analysis above to begin.")
         return
+
+    # Historical data lives on the reference grid, so a finer source grid is
+    # resampled onto it for matching and the result is copied back to each node.
+    source_grid_mm = infer_grid_interval_mm(
+        source_df,
+        upload_grid_mm if projection_upload is not None else st.session_state.get("vga_grid_spacing"),
+    )
+    source_area, _ = extract_analysis_area(
+        {"analysis_settings": {"grid_size_mm": source_grid_mm}},
+        node_count=len(source_df),
+        node_data=source_df,
+    )
+    model_df, block_index = resample_to_reference_grid(
+        add_comparison_metrics(source_df.reset_index(drop=True), source_area),
+        source_grid_mm,
+    )
+    if source_grid_mm and source_grid_mm < REFERENCE_GRID_MM:
+        st.caption(
+            f"Node interval {source_grid_mm:g} mm is finer than the {REFERENCE_GRID_MM:g} mm reference grid "
+            f"used by the historical data: {len(source_df):,} nodes are matched as {len(model_df):,} "
+            "reference-grid blocks and each node receives its block's projection."
+        )
+    elif source_grid_mm and source_grid_mm > REFERENCE_GRID_MM:
+        st.warning(
+            f"Node interval {source_grid_mm:g} mm is coarser than the {REFERENCE_GRID_MM:g} mm "
+            "reference grid; projections may be less reliable."
+        )
     try:
         historical_df, historical_node_count, historical_dataset_count = (
             fetch_historical_crowd_metrics(init_supabase())
@@ -1327,7 +1366,11 @@ def render_projection_tab():
         f"from {historical_dataset_count:,} data sets."
     )
 
-    vga_columns = [column for column in source_df.select_dtypes(include=np.number).columns if column not in {"x", "y"}]
+    vga_columns = [
+        column
+        for column in model_df.select_dtypes(include=np.number).columns
+        if column not in {"x", "y", "grid_size_mm"}
+    ]
     shared_vga_columns = [
         column
         for column in vga_columns
@@ -1427,6 +1470,7 @@ def render_projection_tab():
         json.dumps(
             {
                 "source": source_hash,
+                "source_grid_mm": source_grid_mm,
                 "history": history_hash,
                 "targets": selected_targets,
                 "features": feature_columns,
@@ -1443,7 +1487,7 @@ def render_projection_tab():
         key="generate_crowd_projection",
     ):
         projections, standard_deviations, neighbor_count = project_crowd_metrics_knn(
-            source_df,
+            model_df,
             historical_df,
             feature_columns,
             selected_targets,
@@ -1451,11 +1495,14 @@ def render_projection_tab():
         usable_projections = {}
         usable_standard_deviations = {}
         for target, values in projections.items():
-            mean_values = pd.Series(values, index=source_df.index).clip(lower=0)
+            mean_values = pd.Series(
+                np.asarray(values)[block_index], index=source_df.index
+            ).clip(lower=0)
             if pd.notna(mean_values).any():
                 usable_projections[target] = mean_values
                 usable_standard_deviations[target] = pd.Series(
-                    standard_deviations[target], index=source_df.index
+                    np.asarray(standard_deviations[target])[block_index],
+                    index=source_df.index,
                 )
         st.session_state["crowd_projection_result"] = {
             "signature": projection_signature,
@@ -1499,7 +1546,7 @@ def render_projection_tab():
                 "Method": "Inverse-distance weighted mean ± 1 standard deviation",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1666,7 +1713,7 @@ def render_projection_tab():
                 yaxis=dict(title="Y (mm)"),
             )
             configure_floorplan_figure(fig_metric)
-            st.plotly_chart(fig_metric, use_container_width=True)
+            st.plotly_chart(fig_metric, width="stretch")
 
             if is_direction_metric:
                 st.caption(
@@ -1838,7 +1885,7 @@ def render_analysis_tab():
 
             chart_events = st.plotly_chart(
                 fig_plan,
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 selection_mode="points",
                 key="floorplan_selector",
@@ -2084,7 +2131,7 @@ def render_analysis_tab():
                         map_bearing,
                         length=vector_length,
                     )
-                st.plotly_chart(fig_heatmap, use_container_width=True)
+                st.plotly_chart(fig_heatmap, width="stretch")
                 render_png_download(fig_heatmap, "Download heatmap as PNG", "vga_heatmap.png", "vga_heatmap_png")
 
 

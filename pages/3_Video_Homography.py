@@ -162,10 +162,24 @@ def update_vga_grid_spacing(data):
         st.session_state["vga_grid_spacing"] = grid_spacing
 
 
-def infer_cell_area_m2(node):
-    """Return the effective cell area in m², defaulting to 1 m² for VGA grids."""
+def current_grid_interval_mm(vga_nodes):
+    """Return the VGA node interval in mm, or None when it cannot be determined."""
+    try:
+        return float(infer_vga_grid_interval(vga_nodes, st.session_state.get("vga_grid_spacing")))
+    except (ValueError, TypeError):
+        return None
+
+
+def default_cell_area_m2(vga_nodes):
+    """Cell area in m² from the VGA node interval (coordinates are in mm)."""
+    interval_mm = current_grid_interval_mm(vga_nodes)
+    return (interval_mm * COORDINATE_MM_TO_METERS) ** 2 if interval_mm else 1.0
+
+
+def infer_cell_area_m2(node, default_area_m2=1.0):
+    """Return the effective cell area in m²; default_area_m2 applies when the node has no area."""
     if not isinstance(node, dict):
-        return 1.0
+        return default_area_m2
 
     for key in [
         "cell_area_m2",
@@ -181,6 +195,14 @@ def infer_cell_area_m2(node):
                     return area
             except (TypeError, ValueError):
                 pass
+
+    if node.get("grid_size_mm") is not None:
+        try:
+            size_mm = float(node["grid_size_mm"])
+            if size_mm > 0:
+                return (size_mm * COORDINATE_MM_TO_METERS) ** 2
+        except (TypeError, ValueError):
+            pass
 
     for key in [
         "cell_size_m",
@@ -198,7 +220,7 @@ def infer_cell_area_m2(node):
             except (TypeError, ValueError):
                 pass
 
-    return 1.0
+    return default_area_m2
 
 
 def build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size=1.0, max_cells=250000):
@@ -221,8 +243,8 @@ def build_square_grid_edges(x_min, x_max, y_min, y_max, cell_size=1.0, max_cells
     return x_edges, y_edges
 
 
-def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
-    """Build average people density per spatial bin over the imported video."""
+def build_average_density_grid(x_values, y_values, frame_count, cell_size=1000.0):
+    """Build average people density per spatial bin (cell_size in mm) over the imported video."""
     points = pd.DataFrame({"x": x_values, "y": y_values}).apply(pd.to_numeric, errors="coerce").dropna()
     if points.empty:
         return None
@@ -237,7 +259,7 @@ def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     y_positions = {value: index for index, value in enumerate(y_bins)}
     for (x_bin, y_bin), count in observations.items():
         average_people[y_positions[y_bin], x_positions[x_bin]] = count / max(int(frame_count), 1)
-    cell_area = cell_size * cell_size
+    cell_area = (cell_size * COORDINATE_MM_TO_METERS) ** 2
     average_density = average_people / cell_area
 
     return {
@@ -249,7 +271,7 @@ def build_average_density_grid(x_values, y_values, frame_count, cell_size=1.0):
     }
 
 
-def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1.0):
+def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1000.0):
     """Build maximum instantaneous people density per spatial bin over the video."""
     points = pd.DataFrame({"x": x_values, "y": y_values, "frame": frame_values})
     points["x"] = pd.to_numeric(points["x"], errors="coerce")
@@ -269,7 +291,7 @@ def build_peak_density_grid(x_values, y_values, frame_values, cell_size=1.0):
     y_positions = {value: index for index, value in enumerate(y_bins)}
     for (x_bin, y_bin), count in peak.items():
         peak_observations[y_positions[y_bin], x_positions[x_bin]] = count
-    cell_area = cell_size * cell_size
+    cell_area = (cell_size * COORDINATE_MM_TO_METERS) ** 2
     return {
         "x": np.array(x_bins, dtype=float) * cell_size + cell_size / 2,
         "y": np.array(y_bins, dtype=float) * cell_size + cell_size / 2,
@@ -313,6 +335,7 @@ def build_vga_metric_grid(df_track, vga_nodes, frame_col, id_col, metric):
     if "grid_node_idx" not in df_track.columns or not nodes:
         return None
 
+    default_area = default_cell_area_m2(nodes)
     node_rows = []
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
@@ -326,7 +349,7 @@ def build_vga_metric_grid(df_track, vga_nodes, frame_col, id_col, metric):
                 "grid_node_idx": index,
                 "x": float(x_value),
                 "y": float(y_value),
-                "cell_area": infer_cell_area_m2(node),
+                "cell_area": infer_cell_area_m2(node, default_area),
             }
         )
     if not node_rows:
@@ -338,7 +361,9 @@ def build_vga_metric_grid(df_track, vga_nodes, frame_col, id_col, metric):
         return None
 
     if metric == "volume" or metric == "density":
-        values = grouped.groupby(["grid_node_idx", frame_col])[id_col].nunique().groupby(level=0).mean()
+        # Average over every observed frame; frames with nobody in the cell count as zero.
+        observed_frames = max(int(df_track[frame_col].nunique()), 1)
+        values = grouped.groupby(["grid_node_idx", frame_col])[id_col].nunique().groupby(level=0).sum() / observed_frames
         if metric == "density":
             values = values / node_df.set_index("grid_node_idx")["cell_area"]
     elif metric == "peak_density":
@@ -413,7 +438,8 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
             df_track.groupby(["grid_node_idx", frame_col])[id_col]
             .nunique()
             .groupby(level=0)
-            .mean()
+            .sum()
+            .div(max(int(df_track[frame_col].nunique()), 1))
             .to_dict()
         )
         peak_people_by_grid = (
@@ -428,6 +454,8 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
         peak_people_by_grid = {}
         mean_heading_by_grid = {}
 
+    default_area_m2 = default_cell_area_m2(vga_nodes)
+    grid_interval_mm = current_grid_interval_mm(vga_nodes)
     for idx, node in enumerate(vga_nodes):
         row = dict(node) if isinstance(node, dict) else {"node_id": idx}
         for legacy_name in legacy_metric_names:
@@ -440,7 +468,7 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
 
         agg = crowd_by_grid.get(grid_key, {})
         unique_pedestrians = int(agg.get("unique_pedestrians", 0))
-        cell_area_m2 = infer_cell_area_m2(row)
+        cell_area_m2 = infer_cell_area_m2(row, default_area_m2)
         person_frames = int(agg.get("person_frames", 0))
         mean_people = float(mean_people_by_grid.get(grid_key, 0.0))
         peak_people = float(peak_people_by_grid.get(grid_key, 0.0))
@@ -454,6 +482,7 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
                 "speed_mps": float(agg.get("avg_speed", 0.0)),
                 "degrees_from_spine": float(mean_heading_by_grid.get(grid_key, 0.0)),
                 "deviation_from_spine_degrees": float(agg.get("mean_deviation_deg", 0.0)) if deviation_col else 0.0,
+                **({"grid_size_mm": grid_interval_mm} if grid_interval_mm else {}),
             }
         )
         vga_rows.append(row)
@@ -462,9 +491,9 @@ def build_grid_aligned_crowd_vga_export(vga_nodes, df_track, id_col, frame_col, 
         for grid_idx, group in df_track.groupby("grid_node_idx"):
             unique_pedestrians = int(group[id_col].nunique())
             person_frames = int(group[id_col].count())
-            mean_people = float(group.groupby(frame_col)[id_col].nunique().mean())
+            mean_people = float(group.groupby(frame_col)[id_col].nunique().sum() / max(int(df_track[frame_col].nunique()), 1))
             peak_people = float(group.groupby(frame_col)[id_col].nunique().max())
-            cell_area_m2 = 1.0
+            cell_area_m2 = default_area_m2
             crowd_density = mean_people / cell_area_m2 if cell_area_m2 > 0 else 0.0
             peak_density = peak_people / cell_area_m2 if cell_area_m2 > 0 else 0.0
             vga_rows.append(
@@ -723,7 +752,7 @@ with tab_region:
             st.markdown(
                 "<div style='margin-top: 15px;'></div>", unsafe_allow_html=True
             )
-            if st.button(" Clear Sketches", use_container_width=True):
+            if st.button(" Clear Sketches", width="stretch"):
                 st.session_state.frame_sketches = []
                 st.session_state.sketch_canvas_key_ver += 1
                 st.rerun()
@@ -816,7 +845,7 @@ with tab_region:
 
             v_events = st.plotly_chart(
                 fig_img,
-                use_container_width=True,
+                width="stretch",
                 on_select="rerun",
                 config=plotly_config,
                 key=f"video_sketch_canvas_{st.session_state.get('sketch_canvas_key_ver', 0)}",
@@ -856,7 +885,7 @@ with tab_region:
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button(" Clear All Corners", use_container_width=True):
+            if st.button(" Clear All Corners", width="stretch"):
                 st.session_state.four_corners = []
                 st.session_state.editing_point_idx = None
                 st.session_state.last_click_hash = None
@@ -864,7 +893,7 @@ with tab_region:
 
         with col_btn2:
             if st.session_state.editing_point_idx is not None:
-                if st.button("❌ Cancel Edit", use_container_width=True):
+                if st.button("❌ Cancel Edit", width="stretch"):
                     st.session_state.editing_point_idx = None
                     st.rerun()
 
@@ -902,7 +931,7 @@ with tab_region:
                     is_editing = st.session_state.editing_point_idx == idx
                     btn_label = " Target" if is_editing else " Edit"
                     if st.button(
-                        btn_label, key=f"edit_btn_{idx}", use_container_width=True
+                        btn_label, key=f"edit_btn_{idx}", width="stretch"
                     ):
                         st.session_state.editing_point_idx = idx
                         st.session_state.last_click_hash = None
@@ -930,7 +959,7 @@ with tab_region:
                 st.number_input("X (m)", key=refine_x_key, format="%.6f")
             with refine_y_col:
                 st.number_input("Y (m)", key=refine_y_key, format="%.6f")
-            if st.button("Apply exact coordinates", use_container_width=True, key="apply_corner_refinement"):
+            if st.button("Apply exact coordinates", width="stretch", key="apply_corner_refinement"):
                 st.session_state.four_corners[refine_idx] = [
                     float(st.session_state[refine_x_key]),
                     float(st.session_state[refine_y_key]),
@@ -943,7 +972,7 @@ with tab_region:
                         "",
                         key=f"del_btn_{idx}",
                         help=f"Delete {c_lbl}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state.four_corners.pop(idx)
                         if st.session_state.editing_point_idx == idx:
@@ -1123,7 +1152,7 @@ with tab_region:
 
         chart_events = st.plotly_chart(
             fig,
-            use_container_width=True,
+            width="stretch",
             on_select="rerun",
             selection_mode="points",
             key="roi_floorplan_canvas",
@@ -1333,7 +1362,8 @@ def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col, configured_spac
         return df_track
 
     grid_interval = infer_vga_grid_interval(grid_nodes, configured_spacing)
-    max_distance = grid_interval / np.sqrt(2)
+    # Each node represents a square cell of side grid_interval centred on it.
+    max_distance = grid_interval / 2
 
     # Keep original indices so mapped rows continue to align with the exported node list.
     node_indices = []
@@ -1365,7 +1395,7 @@ def map_points_to_grid_nodes(df_track, grid_nodes, x_col, y_col, configured_spac
     if df_track.empty:
         return df_track
 
-    distances, indices = tree.query(track_coords)
+    distances, indices = tree.query(track_coords, p=np.inf)
     within_grid = distances <= np.nextafter(max_distance, np.inf)
     df_track = df_track.loc[within_grid].copy()
     indices = indices[within_grid]
@@ -1588,7 +1618,7 @@ with tab_playback:
                 st.info(
                     f"Matched tracking points to VGA nodes; retained {len(df_track)} of "
                     f"{original_point_count} points within the grid-cell boundary "
-                    f"(maximum distance {grid_interval / np.sqrt(2):.2f} in floorplan coordinate units)."
+                    f"(maximum distance {grid_interval / 2:.2f} in floorplan coordinate units from a node centre, per axis)."
                 )
                 if df_track.empty:
                     st.error("No tracking points fall within the VGA grid.")
@@ -1641,7 +1671,7 @@ with tab_playback:
                     showlegend=False,
                 )
                 configure_floorplan_figure(preview_fig)
-                st.plotly_chart(preview_fig, use_container_width=True, key="spine_floorplan_preview")
+                st.plotly_chart(preview_fig, width="stretch", key="spine_floorplan_preview")
 
             with vector_col:
                 st.markdown("#### Spine Vector Preview")
@@ -1676,13 +1706,13 @@ with tab_playback:
                     yaxis=dict(range=[-1.2, 1.2], zeroline=True, showgrid=False, title="North", scaleanchor="x", scaleratio=1),
                     showlegend=False,
                 )
-                st.plotly_chart(vector_fig, use_container_width=True, key="spine_vector_preview")
+                st.plotly_chart(vector_fig, width="stretch", key="spine_vector_preview")
 
             st.markdown("---")
             if st.button(
                 "Load Playback and Crowd Metrics",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="confirm_spine_setup",
             ):
                 st.session_state.spine_setup_confirmed = True
@@ -1738,6 +1768,12 @@ with tab_playback:
             st.markdown("### 3. Motion Playback & Frame Analytics")
             frames_available = sorted(df_track[frame_col].unique())
             observed_frame_count = df_track[frame_col].nunique()
+            _interval_mm = current_grid_interval_mm(vga_nodes) if vga_nodes else None
+            cell_description = (
+                f"{_interval_mm:g} mm x {_interval_mm:g} mm = {(_interval_mm * COORDINATE_MM_TO_METERS) ** 2:.4g} m²"
+                if _interval_mm
+                else "1000 mm x 1000 mm fallback bin"
+            )
             selected_f = st.slider(
                 "Select Frame for Instant Inspection",
                 min_value=int(min(frames_available)),
@@ -1774,7 +1810,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_play)
-                st.plotly_chart(fig_play, use_container_width=True)
+                st.plotly_chart(fig_play, width="stretch")
 
             with col_fb2:
                 st.markdown(
@@ -1800,7 +1836,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_f_hm)
-                st.plotly_chart(fig_f_hm, use_container_width=True)
+                st.plotly_chart(fig_f_hm, width="stretch")
 
             st.markdown("---")
 
@@ -1846,8 +1882,8 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_vol)
-                st.plotly_chart(fig_vol, use_container_width=True)
-                st.caption(f"Volume is average people per 1 m x 1 m bin across {observed_frame_count} observed frames. Empty/skipped frame indices are not included. Cumulative person-frames remain available in the export.")
+                st.plotly_chart(fig_vol, width="stretch")
+                st.caption(f"Volume is average people per VGA cell ({cell_description}) across {observed_frame_count} observed frames. Empty/skipped frame indices are not included. Cumulative person-frames remain available in the export.")
 
             with m_tab2:
                 st.markdown("#### Average Pedestrian Density Grid")
@@ -1891,7 +1927,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_dens)
-                st.plotly_chart(fig_dens, use_container_width=True)
+                st.plotly_chart(fig_dens, width="stretch")
                 if density_grid is not None:
                     bin_width = density_grid["x"][1] - density_grid["x"][0] if len(density_grid["x"]) > 1 else 0.0
                     bin_height = density_grid["y"][1] - density_grid["y"][0] if len(density_grid["y"]) > 1 else 0.0
@@ -1927,7 +1963,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_spd)
-                st.plotly_chart(fig_spd, use_container_width=True)
+                st.plotly_chart(fig_spd, width="stretch")
                 st.caption(f"Speed is averaged per spatial bin. Assuming tracking coordinates are in millimetres and the video is {VIDEO_FPS:.0f} FPS, speed is reported in {speed_unit} using the frame-number differences.")
 
             with m_tab4:
@@ -1977,7 +2013,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_dir)
-                st.plotly_chart(fig_dir, use_container_width=True)
+                st.plotly_chart(fig_dir, width="stretch")
                 st.caption(f"Direction is circularly averaged per spatial bin. Unit: degrees {st.session_state.spine_angle_orientation.lower()} from the spine. Spine is {float(st.session_state.spine_angle_from_horizontal_input):.1f}° from horizontal.")
 
             with m_tab5:
@@ -2031,7 +2067,7 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_deviation)
-                st.plotly_chart(fig_deviation, use_container_width=True)
+                st.plotly_chart(fig_deviation, width="stretch")
                 st.caption("Deviation is averaged per spatial bin and is orientation-independent: movement from Point 1 to Point 2 and Point 2 to Point 1 both equal 0°, while perpendicular movement equals 90°. Four rays show both directions along the spine and both deviations from it.")
 
             with m_tab6:
@@ -2062,8 +2098,8 @@ with tab_playback:
                     xaxis=dict(scaleanchor="y", scaleratio=1),
                 )
                 configure_floorplan_figure(fig_peak_density)
-                st.plotly_chart(fig_peak_density, use_container_width=True)
-                st.caption(f"Highest density is the maximum single-frame density observed in each 1 m x 1 m spatial bin ({density_unit}).")
+                st.plotly_chart(fig_peak_density, width="stretch")
+                st.caption(f"Highest density is the maximum single-frame density observed in each VGA cell ({cell_description}) ({density_unit}).")
 
             st.markdown("---")
             st.markdown(
@@ -2092,6 +2128,9 @@ with tab_playback:
                 export_homography = export_homography.tolist()
 
             crowd_vga_export = {
+                "analysis_settings": {
+                    "grid_size_mm": current_grid_interval_mm(vga_nodes_export),
+                },
                 "metadata": {
                     "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "four_corners_roi": st.session_state.get("four_corners", []),
@@ -2155,14 +2194,14 @@ with tab_playback:
                 data=json.dumps(crowd_vga_export, indent=2),
                 file_name="integrated_vga_crowd_analysis.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
             # Quick preview table for correlation analysis
             if integrated_correlation_nodes:
                 st.markdown("#### Preview Node Correlation Data")
                 df_corr_preview = pd.DataFrame(integrated_correlation_nodes)
-                st.dataframe(df_corr_preview.head(10), use_container_width=True)
+                st.dataframe(df_corr_preview.head(10), width="stretch")
 
         else:
             st.error(

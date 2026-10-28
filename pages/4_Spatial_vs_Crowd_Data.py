@@ -11,6 +11,12 @@ import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 from utils.derived_vga_metrics import add_comparison_metrics, extract_analysis_area
+from utils.grid_normalization import (
+    REFERENCE_GRID_MM,
+    cell_area_m2,
+    infer_grid_interval_mm,
+    resample_to_reference_grid,
+)
 from utils.crowd_visuals import crowd_metric_label
 from utils.navigation import render_home_button
 
@@ -83,10 +89,22 @@ uploaded_file = st.file_uploader("Upload Data File (JSON)", type=["json"])
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def load_and_parse_json(json_bytes):
-    """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present."""
+def load_and_parse_json(json_bytes, reference_grid_mm=None):
+    """Parse JSON dataset into a pandas DataFrame, flattening nested structures if present.
+
+    When reference_grid_mm is set, nodes finer than it are resampled onto that
+    grid so datasets with different node intervals are comparable.
+    """
     data = json.loads(json_bytes)
     raw_nodes = data
+
+    configured_grid_mm = None
+    if isinstance(data, dict):
+        settings = data.get("analysis_settings")
+        if not isinstance(settings, dict) and isinstance(data.get("metadata"), dict):
+            settings = data["metadata"].get("analysis_settings")
+        if isinstance(settings, dict):
+            configured_grid_mm = settings.get("grid_size_mm")
 
     if isinstance(data, dict):
         for key in (
@@ -110,6 +128,14 @@ def load_and_parse_json(json_bytes):
                 break
 
     df = pd.json_normalize(raw_nodes)
+    row_grid_mm = (
+        df["grid_size_mm"].dropna().iloc[0]
+        if "grid_size_mm" in df.columns and df["grid_size_mm"].notna().any()
+        else None
+    )
+    grid_size_mm = infer_grid_interval_mm(
+        df, configured_grid_mm if configured_grid_mm is not None else row_grid_mm
+    )
 
     if isinstance(data, dict):
         has_crowd_metrics = any(
@@ -137,24 +163,47 @@ def load_and_parse_json(json_bytes):
                     None,
                 )
                 if id_column:
+                    frame_column = next(
+                        (
+                            column
+                            for column in ("frame_number", "frame")
+                            if column in trajectory_df.columns
+                        ),
+                        None,
+                    )
+                    frame_total = (
+                        max(int(trajectory_df[frame_column].nunique()), 1)
+                        if frame_column
+                        else 1
+                    )
+                    area_m2 = cell_area_m2(grid_size_mm) if grid_size_mm else 1.0
                     crowd_df = trajectory_df.groupby(grid_column).agg(
-                        volume=(id_column, "count"),
-                        density=(id_column, "count"),
-                        pedestrian_count=(id_column, "count"),
+                        person_frames=(id_column, "count"),
                         unique_pedestrians=(id_column, "nunique"),
                     ).reset_index()
+                    # Average people per frame, then people per m² of the node's cell.
+                    average_people = crowd_df["person_frames"] / frame_total
+                    crowd_df["volume"] = average_people
+                    crowd_df["density"] = average_people / area_m2
+                    crowd_df["pedestrian_count"] = crowd_df["person_frames"]
+                    crowd_df = crowd_df.drop(columns=["person_frames"])
                     df = df.merge(crowd_df, on=grid_column, how="left").fillna(0)
 
     analysis_area, analysis_area_source = extract_analysis_area(
         data, node_count=len(df), node_data=df
     )
-    return add_comparison_metrics(df, analysis_area), analysis_area_source
+    df = add_comparison_metrics(df, analysis_area)
+    if grid_size_mm:
+        df["grid_size_mm"] = float(grid_size_mm)
+        if reference_grid_mm:
+            df, _ = resample_to_reference_grid(df, grid_size_mm, reference_grid_mm)
+    return df, analysis_area_source
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def prepare_valid_upload_data(json_bytes, selected_metrics):
+def prepare_valid_upload_data(json_bytes, selected_metrics, reference_grid_mm=None):
     """Prepare selected numeric metrics and rows eligible for upload."""
-    df_nodes, _ = load_and_parse_json(json_bytes)
+    df_nodes, _ = load_and_parse_json(json_bytes, reference_grid_mm)
     numeric_df = df_nodes[list(selected_metrics)].apply(
         pd.to_numeric, errors="coerce"
     )
@@ -172,6 +221,10 @@ def prepare_valid_upload_data(json_bytes, selected_metrics):
         valid_df = valid_df[(valid_df[crowd_cols] > 0).all(axis=1)]
     else:
         valid_df = valid_df[~(valid_df == 0).all(axis=1)]
+
+    if "grid_size_mm" in df_nodes.columns:
+        # Record the node interval so stored datasets stay traceable.
+        valid_df = valid_df.assign(grid_size_mm=df_nodes.loc[valid_df.index, "grid_size_mm"])
 
     return valid_df, len(df_nodes) - len(valid_df)
 
@@ -289,9 +342,19 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
 if uploaded_file is not None:
     try:
         json_bytes = uploaded_file.getvalue()
-        df_nodes, analysis_area_source = load_and_parse_json(json_bytes)
+        normalize_grid = st.sidebar.checkbox(
+            f"Resample to {REFERENCE_GRID_MM:g} mm reference grid",
+            value=True,
+            help=(
+                "Aggregates finer node intervals into reference-size blocks (densities "
+                "and other per-area metrics are averaged, counts are summed) so datasets "
+                "recorded at different node intervals can be compared and stored together."
+            ),
+        )
+        reference_grid_mm = REFERENCE_GRID_MM if normalize_grid else None
+        df_nodes, analysis_area_source = load_and_parse_json(json_bytes, reference_grid_mm)
 
-        coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor"}
+        coord_or_id_cols = {"x", "y", "z", "node_id", "id", "index", "floor", "grid_size_mm"}
         all_numeric_cols = [
             col
             for col in df_nodes.columns
@@ -455,15 +518,19 @@ if uploaded_file is not None:
             ):
                 st.markdown("""
                 Please ensure your analysis followed standard VGA protocols prior to upload:
-                - **Grid Dimension:** Set between at **1000mm**.
+                - **Grid Dimension:** Any node interval is accepted. Finer grids are resampled to the **1000mm** reference grid (sidebar option) before upload.
                 - **Ray Angle Step (Degrees):** Fixed at **2.00** standard.
                 - **Isovist Radius:** **360° unobstructed field** (or consistent truncation limit).
                 - **Data Cleanliness:** Ensure crowd numbers match node timestamps accurately.
                 """)
 
             valid_df, omitted_count = prepare_valid_upload_data(
-                json_bytes, tuple(selected_metrics)
+                json_bytes, tuple(selected_metrics), reference_grid_mm
             )
+            if "grid_size_mm" in df_nodes.columns:
+                st.caption(
+                    f"Node interval of the data to be stored: {df_nodes['grid_size_mm'].iloc[0]:g} mm."
+                )
 
             if "relative_isovist_area_pct" not in df_nodes.columns:
                 st.warning(

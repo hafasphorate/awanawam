@@ -458,7 +458,7 @@ def render_pair_focused_inspector(
             _pair_scatter_figure(
                 raw_df, col_x, col_y, clean_x, clean_y, "Raw data by mall"
             ),
-            use_container_width=True,
+            width="stretch",
         )
     with raw_stats:
         st.markdown("##### Statistical Relationship Comparison (raw)")
@@ -497,7 +497,7 @@ def render_pair_focused_inspector(
                 clean_y,
                 "Mall-centered outcome vs raw predictor",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     with collapsed_stats:
         st.markdown("##### Statistical Relationship Comparison (directional)")
@@ -673,7 +673,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
             yaxis=dict(autorange="reversed"),
             margin=dict(l=20, r=20, t=40, b=20),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
     with rc2:
         st.markdown("#####  Ranked Feature Impact")
@@ -685,7 +685,7 @@ def render_multivariate_regression(df: pd.DataFrame, numeric_cols: list):
                     "Impact Direction",
                 ]
             ].style.format({"Standardized Coefficient Weight": "{:.3f}"}),
-            use_container_width=True,
+            width="stretch",
             height=320,
         )
 
@@ -766,7 +766,7 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
     )
     st.dataframe(
         results.style.format({"Estimate": "{:.4f}"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     if lower_ci <= 0 <= upper_ci:
@@ -819,7 +819,7 @@ def render_mediation_analysis(df: pd.DataFrame, numeric_cols: list):
             dict(x=1.0, y=0.16, text=f"c' = {direct_effect:.3f}", showarrow=False, font=dict(color="#8e44ad")),
         ],
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # -----------------------------------------------------------------------------
@@ -1032,7 +1032,7 @@ else:
 
             # Matplotlib Grid Display
             fig = plot_vga_pairs_matrix(df_global, selected_metrics, dpi_val=100)
-            st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig, width="stretch")
 
             # High-Res Export Buffer
             buffer = io.BytesIO()
@@ -1127,7 +1127,7 @@ else:
                             directional_corr_display.style.background_gradient(
                                 cmap="coolwarm", vmin=-1, vmax=1
                             ).format("{:.3f}", na_rep="—"),
-                            use_container_width=True,
+                            width="stretch",
                         )
             else:
                 st.info(
@@ -1174,7 +1174,7 @@ if input_pass == admin_password:
             batch_summary["temporarily_locked"] = batch_summary["upload_batch_id"].map(locked_by_batch).fillna(False)
 
         st.subheader("Uploaded Datasets Overview")
-        st.dataframe(batch_summary, use_container_width=True)
+        st.dataframe(batch_summary, width="stretch")
 
         batch_options = {}
         for _, row in batch_summary.iterrows():
