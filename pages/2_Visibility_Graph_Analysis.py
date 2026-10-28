@@ -940,16 +940,27 @@ def cluster_map_png(df, wall_lines, selected_group=None, spine_result=None, subt
     return output.getvalue()
 
 
-def choose_elbow_k(inertias):
-    """Select the elbow as the point furthest from the first-to-last line."""
-    if len(inertias) <= 2:
-        return 2
+ELBOW_STRENGTH_THRESHOLD = 0.3
 
-    points = np.column_stack((np.arange(len(inertias)), inertias))
-    start, end = points[0], points[-1]
-    line = end - start
-    distances = np.abs(np.cross(line, points - start)) / np.linalg.norm(line)
-    return int(np.argmax(distances) + 2)
+
+def elbow_analysis(inertias):
+    """Locate the elbow on min-max normalised axes and report how pronounced it is.
+
+    Strength is the largest gap between the normalised curve and the straight line
+    joining its endpoints (0 = straight line, 1 = perfect right angle).
+    """
+    inertias = np.asarray(inertias, dtype=float)
+    if len(inertias) <= 2 or np.ptp(inertias) == 0:
+        return 2, 0.0
+    x_norm = np.linspace(0.0, 1.0, len(inertias))
+    y_norm = (inertias - inertias.min()) / np.ptp(inertias)
+    gaps = (1.0 - y_norm) - x_norm
+    return int(np.argmax(gaps) + 2), float(gaps.max())
+
+
+def choose_elbow_k(inertias):
+    """Select the elbow k (see elbow_analysis)."""
+    return elbow_analysis(inertias)[0]
 
 
 def cluster_vga_metrics(source_df, requested_k=None):
@@ -974,8 +985,28 @@ def cluster_vga_metrics(source_df, requested_k=None):
 
     max_k = min(10, len(source_df) - 1)
     candidate_ks = list(range(2, max_k + 1))
-    inertias = [KMeans(n_clusters=k, random_state=42, n_init=10).fit(scaled_values).inertia_ for k in candidate_ks]
-    selected_k = requested_k if requested_k is not None else choose_elbow_k(inertias)
+    inertias = []
+    silhouettes = []
+    for k in candidate_ks:
+        fitted = KMeans(n_clusters=k, random_state=42, n_init=10).fit(scaled_values)
+        k_labels = fitted.labels_
+        inertias.append(float(fitted.inertia_))
+        silhouettes.append(
+            float(silhouette_score(scaled_values, k_labels, sample_size=min(3000, len(scaled_values)), random_state=42))
+            if len(set(k_labels)) > 1 else float("nan")
+        )
+
+    elbow_k, elbow_strength = elbow_analysis(inertias)
+    has_clear_elbow = elbow_strength >= ELBOW_STRENGTH_THRESHOLD
+    if requested_k is not None:
+        selection_method = "manual"
+        selected_k = requested_k
+    elif has_clear_elbow:
+        selection_method = "elbow"
+        selected_k = elbow_k
+    else:
+        selection_method = "silhouette"
+        selected_k = candidate_ks[int(np.nanargmax(silhouettes))]
     if selected_k not in candidate_ks:
         raise ValueError(f"Choose a number of groups between 2 and {max_k}.")
     model = KMeans(n_clusters=selected_k, random_state=42, n_init=10)
@@ -984,7 +1015,13 @@ def cluster_vga_metrics(source_df, requested_k=None):
     clustered_df = source_df.copy()
     clustered_df["cluster"] = labels + 1
     score = silhouette_score(scaled_values, labels) if len(set(labels)) > 1 else float("nan")
-    elbow_df = pd.DataFrame({"k": candidate_ks, "inertia": inertias})
+    elbow_df = pd.DataFrame({"k": candidate_ks, "inertia": inertias, "silhouette": silhouettes})
+    elbow_df.attrs.update(
+        elbow_k=elbow_k,
+        elbow_strength=elbow_strength,
+        has_clear_elbow=has_clear_elbow,
+        selection_method=selection_method,
+    )
     return clustered_df, metric_columns, selected_k, score, elbow_df
 
 
@@ -1063,14 +1100,54 @@ def render_clustering_tab():
     metric_col.metric("Groups", selected_k)
     score_col.metric("Silhouette coefficient", f"{silhouette:.3f}")
 
-    elbow_fig = px.line(
-        elbow_df, x="k", y="inertia", markers=True, title="Elbow Method",
-        labels={"k": "Number of groups", "inertia": "Within-group inertia"},
+    elbow_info = elbow_df.attrs
+    method = elbow_info.get("selection_method", "elbow")
+    strength = elbow_info.get("elbow_strength", float("nan"))
+    elbow_fig = go.Figure()
+    elbow_fig.add_trace(go.Scatter(
+        x=elbow_df["k"], y=elbow_df["inertia"], mode="lines+markers",
+        name="Within-group inertia", line=dict(color="#4D96FF"),
+    ))
+    if "silhouette" in elbow_df:
+        elbow_fig.add_trace(go.Scatter(
+            x=elbow_df["k"], y=elbow_df["silhouette"], mode="lines+markers",
+            name="Silhouette (right axis)", yaxis="y2",
+            line=dict(color="#FFD166", dash="dot"),
+        ))
+    selected_inertia = float(elbow_df.loc[elbow_df["k"] == selected_k, "inertia"].iloc[0])
+    elbow_fig.add_trace(go.Scatter(
+        x=[selected_k], y=[selected_inertia], mode="markers",
+        name=f"Selected k = {selected_k}",
+        marker=dict(size=16, color="rgba(0,0,0,0)", line=dict(color="#FF4D4D", width=3)),
+    ))
+    elbow_fig.update_layout(
+        title="Elbow Method", template="plotly_dark", height=420,
+        xaxis=dict(title="Number of groups", dtick=1),
+        yaxis=dict(title="Within-group inertia"),
+        yaxis2=dict(title="Silhouette coefficient", overlaying="y", side="right", showgrid=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=60, b=20),
     )
     st.plotly_chart(elbow_fig, width="stretch")
+    if method == "manual":
+        st.caption(
+            f"Group count set manually. Elbow strength {strength:.2f} "
+            f"(≥ {ELBOW_STRENGTH_THRESHOLD:.2f} indicates a clear elbow, suggesting k = {elbow_info.get('elbow_k')})."
+        )
+    elif method == "elbow":
+        st.caption(f"Clear elbow detected at k = {selected_k} (strength {strength:.2f}).")
+    else:
+        st.warning(
+            f"No clear elbow (strength {strength:.2f}, needs ≥ {ELBOW_STRENGTH_THRESHOLD:.2f}); the inertia curve "
+            f"falls smoothly. Using k = {selected_k}, the group count with the best silhouette coefficient. "
+            "Set a group count manually if you prefer another value."
+        )
     render_png_download(
         elbow_fig, "Download elbow chart as PNG", "vga_elbow.png", "clustering_elbow_png",
-        subtitle=f"Selected {selected_k} groups | silhouette coefficient {silhouette:.3f}",
+        subtitle=(
+            f"Selected {selected_k} groups ({method}) | elbow strength {strength:.2f} | "
+            f"silhouette coefficient {silhouette:.3f}"
+        ),
     )
     group_options = ["All groups"] + [f"Group {group}" for group in sorted(clustered_df["cluster"].unique())]
     selected_group_label = st.selectbox("View group", group_options)
