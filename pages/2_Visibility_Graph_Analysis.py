@@ -17,6 +17,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize, unary_union
 from shapely.strtree import STRtree
 import streamlit as st
+import shapely
 from utils.navigation import render_home_button
 from utils.plotly_floorplan import configure_floorplan_figure
 from utils.dataset_locks import unlocked_records
@@ -125,18 +126,12 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
 
     adj_matrix = np.zeros((num_nodes, num_nodes), dtype=bool)
     start_time = time.time()
+    xs = np.array([r["x"] for r in vga_results], dtype=float)
+    ys = np.array([r["y"] for r in vga_results], dtype=float)
 
     for i in range(num_nodes):
-        poly_i = isovist_polys[i]
-
-        for j in range(i + 1, num_nodes):
-            pt_j = Point(vga_results[j]["x"], vga_results[j]["y"])
-            poly_j = isovist_polys[j]
-            pt_i = Point(vga_results[i]["x"], vga_results[i]["y"])
-
-            if poly_i.contains(pt_j) or poly_j.contains(pt_i):
-                adj_matrix[i, j] = True
-                adj_matrix[j, i] = True
+        # Vectorised point-in-polygon test of every node against isovist i.
+        adj_matrix[i] = shapely.contains_xy(isovist_polys[i], xs, ys)
 
         completed = i + 1
         progress_ratio = completed / num_nodes
@@ -152,33 +147,39 @@ def compute_graph_topology_with_progress(vga_results, isovist_polys, status_cont
                 f" **Computing Graph Topology (Integration & Entropy)...** Node {completed}/{num_nodes} ({int(progress_ratio * 100)}%) | **Est. remaining:** `{time_str}`"
             )
 
-    for i in range(num_nodes):
-        visited = {i: 0}
-        queue = [i]
+    # Two nodes are linked when either can see the other (blockwise to avoid a full n² temporary).
+    block = 1000
+    for start in range(0, num_nodes, block):
+        stop = min(start + block, num_nodes)
+        adj_matrix[start:stop] |= adj_matrix[:, start:stop].T.copy()
+    np.fill_diagonal(adj_matrix, False)
 
-        while queue:
-            curr = queue.pop(0)
-            curr_depth = visited[curr]
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
 
-            neighbors = np.where(adj_matrix[curr])[0]
-            for nxt in neighbors:
-                if nxt not in visited:
-                    visited[nxt] = curr_depth + 1
-                    queue.append(nxt)
+    graph = csr_matrix(adj_matrix)
+    del adj_matrix
+    status_container.markdown(" **Computing visual depth between nodes...**")
+    batch = 250
+    for start in range(0, num_nodes, batch):
+        indices = np.arange(start, min(start + batch, num_nodes))
+        depth_rows = dijkstra(graph, directed=False, unweighted=True, indices=indices)
+        for row_number, i in enumerate(indices):
+            depths = depth_rows[row_number]
+            depths = depths[np.isfinite(depths)]
+            total_depth = float(depths.sum())
+            reachable_nodes = len(depths)
 
-        depths = list(visited.values())
-        total_depth = sum(depths)
-        reachable_nodes = len(depths)
+            if reachable_nodes > 1:
+                mean_depth = total_depth / (reachable_nodes - 1)
+                integration = 1.0 / (2.0 * (mean_depth - 1.0) / max(1, reachable_nodes - 2)) if mean_depth > 1 else 0.0
+            else:
+                mean_depth = 0.0
+                integration = 0.0
 
-        if reachable_nodes > 1:
-            mean_depth = total_depth / (reachable_nodes - 1)
-            integration = 1.0 / (2.0 * (mean_depth - 1.0) / max(1, reachable_nodes - 2)) if mean_depth > 1 else 0.0
-        else:
-            mean_depth = 0.0
-            integration = 0.0
-
-        vga_results[i]["mean_depth"] = round(mean_depth, 3)
-        vga_results[i]["integration"] = round(integration, 3)
+            vga_results[i]["mean_depth"] = round(mean_depth, 3)
+            vga_results[i]["integration"] = round(integration, 3)
+        progress_bar.progress(min(1.0, (indices[-1] + 1) / num_nodes))
 
     return vga_results
 
@@ -1777,6 +1778,12 @@ def render_projection_tab():
 
 analysis_tab, clustering_tab, projection_tab = st.tabs(["2.1 VGA Analysis", "2.2 Metric Clustering", "2.3 Crowd Projection"])
 
+@st.cache_resource
+def vga_result_store():
+    """Process-wide store of finished VGA runs, shared across browser sessions."""
+    return {}
+
+
 def render_analysis_tab():
     uploaded_file = st.file_uploader(
         "Upload CAD Floorplan (DXF, DWG) or Saved Session (JSON)",
@@ -1926,6 +1933,32 @@ def render_analysis_tab():
                     f"✅ **{len(selected_polygons)} Zone(s) Selected & Highlighted!** Combined Area: `{round(total_area, 2)} m²`"
                 )
 
+        # Server-side copy of finished runs. A long analysis can outlive the browser
+        # connection, which starts a fresh session; this lets the results be recovered.
+        run_key = hashlib.sha256(
+            json.dumps(
+                [
+                    upload_signature, float(grid_size), int(ray_count), float(door_snap_dist),
+                    selection_mode_option,
+                    sorted(p.wkt for p in selected_polygons),
+                ],
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        result_store = vga_result_store()
+
+        def publish_results(df_results):
+            st.session_state["vga_df"] = df_results
+            st.session_state["vga_floorplan_nodes"] = df_results.to_dict(orient="records")
+            st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
+            st.session_state["clustering_source_df"] = df_results
+            st.session_state["clustering_walls"] = wall_lines
+            st.session_state["vga_grid_spacing"] = float(grid_size)
+
+        if "vga_df" not in st.session_state and run_key in result_store:
+            publish_results(result_store[run_key])
+            st.info("Restored the finished analysis for this file and settings.")
+
         if st.button("Run Visibility Analysis"):
             if selected_polygons and selection_mode_option != "Full Floorplan":
                 combined_bounds = unary_union(selected_polygons).bounds
@@ -1999,12 +2032,10 @@ def render_analysis_tab():
                     )
 
                     df_results = pd.DataFrame(final_vga_results)
-                    st.session_state["vga_df"] = df_results
-                    st.session_state["vga_floorplan_nodes"] = df_results.to_dict(orient="records")
-                    st.session_state["vga_results"] = st.session_state["vga_floorplan_nodes"]
-                    st.session_state["clustering_source_df"] = df_results
-                    st.session_state["clustering_walls"] = wall_lines
-                    st.session_state["vga_grid_spacing"] = float(grid_size)
+                    result_store[run_key] = df_results
+                    while len(result_store) > 3:
+                        result_store.pop(next(iter(result_store)))
+                    publish_results(df_results)
                 else:
                     progress_bar.empty()
                     st.error("Could not extract valid isovists. Selected points may be inside wall geometry.")

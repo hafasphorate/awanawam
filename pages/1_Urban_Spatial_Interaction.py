@@ -453,7 +453,7 @@ def analyze_desire_paths(graph, paths, edge_centrality, path_type="Desire path")
                     edge_centrality.get(
                         (v, u),
                         float(graph.get_edge_data(u, v)[edge_key].get("betweenness", 0.0))
-                        if edge_key in graph.get_edge_data(u, v, default={}) else 0.0,
+                        if graph.is_multigraph() and edge_key in graph.get_edge_data(u, v, default={}) else 0.0,
                     ),
                 ),
             ),
@@ -492,6 +492,9 @@ def analyze_desire_paths(graph, paths, edge_centrality, path_type="Desire path")
         route_length = 0.0
         for u, v in route_edges:
             edge_data = graph.get_edge_data(u, v)
+            if not graph.is_multigraph():
+                # Simple graphs (e.g. imported plans) return one attribute dict, not {key: attributes}.
+                edge_data = {0: edge_data}
             edge_key, attributes = min(edge_data.items(), key=lambda item: item[1].get("length", float("inf")))
             scores.append(edge_score(u, v, edge_key))
             route_length += float(attributes.get("length", 0.0))
