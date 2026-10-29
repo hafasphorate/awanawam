@@ -1,4 +1,5 @@
 import io
+import textwrap
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -268,8 +269,10 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
         for col in selected_cols
     ]
 
-    font_size = max(6, int(14 - 0.45 * n_vars))
-    text_val_size = max(7, int(15 - 0.55 * n_vars))
+    # Scale text with the physical cell size so it stays legible in exports.
+    font_size = max(12, int(cell_size * 4.5))
+    text_val_size = max(12, int(cell_size * 5))
+    clean_labels = [textwrap.fill(label, 16) for label in clean_labels]
     import seaborn as sns
 
     for i in range(n_vars):
@@ -308,7 +311,7 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                     ax.plot(
                         x_line,
                         slope * x_line + intercept,
-                        color="#d73027",
+                        color="#d73027" if slope >= 0 else "#2b5c8f",
                         linewidth=1.6,
                     )
 
@@ -357,13 +360,19 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
                 ax.set_xticklabels([])
             else:
                 ax.set_xlabel(clean_labels[j], fontsize=font_size, fontweight="bold")
-                ax.tick_params(axis="x", rotation=45, labelsize=font_size - 1)
+                ax.tick_params(axis="x", labelsize=font_size - 2)
+                plt.setp(
+                    ax.get_xticklabels(),
+                    rotation=45,
+                    ha="right",
+                    rotation_mode="anchor",
+                )
 
             if j > 0 and i != j:
                 ax.set_yticklabels([])
             if j == 0:
                 ax.set_ylabel(clean_labels[i], fontsize=font_size, fontweight="bold")
-                ax.tick_params(axis="y", labelsize=font_size - 1)
+                ax.tick_params(axis="y", labelsize=font_size - 2)
 
             ax.set_facecolor(AXIS_BACKGROUND)
             ax.tick_params(colors=TEXT_COLOR)
@@ -374,39 +383,48 @@ def plot_vga_pairs_matrix(df: pd.DataFrame, selected_cols: list, dpi_val: int = 
 
     from matplotlib.lines import Line2D
 
-    fig.suptitle(
-        "Global Spatial Analysis: Pairwise Metric Correlations",
-        fontsize=max(14, font_size + 4),
-        fontweight="bold",
-        color=TEXT_COLOR,
-        x=0.01,
-        ha="left",
-        y=0.995,
+    title_size = font_size + 8
+    legend_size = font_size + 1
+    fig.legend(
+        handles=[
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="#2c3e50", alpha=0.6, markersize=9, label="Observation"),
+            Line2D([0], [0], color="#d73027", linewidth=2.2, label="Linear fit, positive r"),
+            Line2D([0], [0], color="#2b5c8f", linewidth=2.2, label="Linear fit, negative r"),
+            Line2D([0], [0], marker="s", color="none", markerfacecolor="#d73027", markersize=11, label="Positive r (upper triangle)"),
+            Line2D([0], [0], marker="s", color="none", markerfacecolor="#2b5c8f", markersize=11, label="Negative r (upper triangle)"),
+        ],
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        fontsize=legend_size,
+        labelcolor=TEXT_COLOR,
     )
+    plt.tight_layout(rect=[0, 0.07, 1, 0.92])
+    if n_vars > 1:
+        fig.align_ylabels(axes[:, 0])
+
+    # Anchor the title to the left edge of the matrix, not the figure.
+    left = axes[0, 0].get_position().x0 if n_vars > 1 else 0.05
     fig.text(
-        0.01,
-        0.962,
-        f"n = {len(sub_df)} records | Pearson r in upper triangle | significance: "
-        "* p<0.05, ** p<0.01, *** p<0.001, none = not significant",
-        fontsize=max(8, font_size - 1),
+        left,
+        0.985,
+        "Global Spatial Analysis: Pairwise Metric Correlations",
+        fontsize=title_size,
+        fontweight="bold",
         color=TEXT_COLOR,
         ha="left",
         va="top",
     )
-    fig.legend(
-        handles=[
-            Line2D([0], [0], marker="o", color="none", markerfacecolor="#2c3e50", alpha=0.6, markersize=7, label="Observation"),
-            Line2D([0], [0], color="#d73027", linewidth=1.8, label="Linear fit (Pearson)"),
-            Line2D([0], [0], marker="s", color="none", markerfacecolor="#d73027", markersize=8, label="Positive r (upper triangle)"),
-            Line2D([0], [0], marker="s", color="none", markerfacecolor="#2b5c8f", markersize=8, label="Negative r (upper triangle)"),
-        ],
-        loc="lower center",
-        ncol=4,
-        frameon=False,
-        fontsize=max(8, font_size - 1),
-        labelcolor=TEXT_COLOR,
+    fig.text(
+        left,
+        0.985 - 2.2 * title_size / (fig_size * 72),
+        f"n = {len(sub_df)} records | Pearson r in upper triangle | significance: "
+        "* p<0.05, ** p<0.01, *** p<0.001, none = not significant",
+        fontsize=font_size,
+        color=TEXT_COLOR,
+        ha="left",
+        va="top",
     )
-    plt.tight_layout(rect=[0, 0.04, 1, 0.94])
     return fig
 
 

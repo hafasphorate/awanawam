@@ -1,5 +1,6 @@
 import json
 import re
+import textwrap
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo  # Built-in Python 3.9+ timezone library
@@ -240,8 +241,8 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
     )
 
     cell_size = max(2.0, min(3.2, 20.0 / n_vars))
-    font_size = max(6, min(11, int(14 - 0.6 * n_vars)))
-    text_val_size = max(7, min(13, int(15 - 0.7 * n_vars)))
+    font_size = max(11, int(cell_size * 4.5))
+    text_val_size = max(11, int(cell_size * 5))
 
     fig, axes = plt.subplots(
         n_vars, n_vars, figsize=(cell_size * n_vars, cell_size * n_vars)
@@ -252,6 +253,7 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
         crowd_metric_label(col.replace("isovist_", ""))
         for col in selected_cols
     ]
+    clean_labels = [textwrap.fill(label, 16) for label in clean_labels]
     import seaborn as sns
 
     for i in range(n_vars):
@@ -280,6 +282,15 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
                     s=max(10, int(30 - 1.5 * n_vars)),
                     color="#2c3e50",
                 )
+                if sub_df[col_x].nunique() > 1 and len(sub_df) > 2:
+                    slope, intercept = np.polyfit(sub_df[col_x], sub_df[col_y], 1)
+                    x_line = np.array([sub_df[col_x].min(), sub_df[col_x].max()])
+                    ax.plot(
+                        x_line,
+                        slope * x_line + intercept,
+                        color="#d73027" if slope >= 0 else "#2b5c8f",
+                        linewidth=1.6,
+                    )
             else:
                 r_val = np.clip(corr_matrix.loc[col_y, col_x], -1.0, 1.0)
                 norm_val = (r_val + 1) / 2 if not np.isnan(r_val) else 0.5
@@ -322,7 +333,13 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
                 ax.set_xlabel(
                     clean_labels[j], fontsize=font_size, fontweight="bold"
                 )
-                ax.tick_params(axis="x", rotation=45, labelsize=font_size - 1)
+                ax.tick_params(axis="x", labelsize=font_size - 2)
+                plt.setp(
+                    ax.get_xticklabels(),
+                    rotation=45,
+                    ha="right",
+                    rotation_mode="anchor",
+                )
 
             if j > 0 and i != j:
                 ax.set_yticklabels([])
@@ -330,9 +347,11 @@ def plot_vga_pairs_matrix(sub_df, selected_cols, corr_matrix):
                 ax.set_ylabel(
                     clean_labels[i], fontsize=font_size, fontweight="bold"
                 )
-                ax.tick_params(axis="y", labelsize=font_size - 1)
+                ax.tick_params(axis="y", labelsize=font_size - 2)
 
     plt.tight_layout()
+    if n_vars > 1:
+        fig.align_ylabels(axes[:, 0])
     return fig
 
 
